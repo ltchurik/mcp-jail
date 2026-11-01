@@ -15,7 +15,14 @@ def probe(args):
         net = "reachable"
     except OSError as e:
         net = "blocked:" + type(e).__name__
-    return {"home": home, "home_visible": os.path.isdir(home), "cwd": os.getcwd(), "net": net}
+    sentinel = args.get("sentinel")
+    return {
+        "home": home,
+        "home_visible": os.path.isdir(home),
+        "sentinel_visible": bool(sentinel) and os.path.exists(sentinel),
+        "cwd": os.getcwd(),
+        "net": net,
+    }
 for line in sys.stdin:
     try:
         m = json.loads(line)

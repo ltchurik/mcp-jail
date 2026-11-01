@@ -7,7 +7,7 @@ BIN=${BIN:-./bin/mcp-jail}
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
-trap 'kill $LISTENER 2>/dev/null; rm -rf "$MCP_JAIL_HOME" "$WORK"' EXIT
+trap 'kill $LISTENER 2>/dev/null; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
 LISTENER=
 cp examples/echo-server.py "$WORK/"
 
@@ -20,7 +20,10 @@ DEL='{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_file
 $PY -c 'import socket,sys;s=socket.socket();s.bind(("127.0.0.1",0));s.listen();print(s.getsockname()[1],flush=True);[s.accept()[0].close() for _ in iter(int,1)]' >"$WORK/port" &
 LISTENER=$!
 sleep 0.5; PORT=$(cat "$WORK/port")
-PROBE='{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"probe","arguments":{"host":"127.0.0.1","port":'"$PORT"'}}}'
+# a file in $HOME that the jail must not see (bwrap may create empty parent dirs for bound paths)
+SENTINEL="$HOME/.mcp-jail-e2e-$$"
+echo secret >"$SENTINEL"
+PROBE='{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"probe","arguments":{"host":"127.0.0.1","port":'"$PORT"',"sentinel":"'"$SENTINEL"'"}}}'
 
 run() { # $1 = policy file
   req "$INIT" "$LIST" "$READ" "$DEL" "$PROBE" | "$BIN" run --quiet --policy "$1" -- "$PY" "$WORK/echo-server.py" 2>"$WORK/stderr" \
@@ -41,6 +44,7 @@ OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?3, ?"result"'
 assert "$OUT" '"id":4,"error":\{"code":-32001'
 assert "$OUT" '"net\\": \\"reachable'
+assert "$OUT" '"sentinel_visible\\": true'
 assert "$(cat "$WORK/audit.jsonl")" '"tool":"delete_file","decision":"deny"'
 assert "$($BIN locks)" 'e2e'
 
@@ -64,7 +68,7 @@ tools: { default: allow }
 lock: { enabled: false }
 YML
   OUT=$(run "$WORK/s.yml")
-  assert "$OUT" '"home_visible\\": false'
+  assert "$OUT" '"sentinel_visible\\": false'
   assert "$OUT" '"net\\": \\"blocked:'
 else
   echo "== bubblewrap: skipped ($(uname -s))"
