@@ -1,0 +1,4 @@
+/bin/
+/dist/
+*.jsonl
+.mcp-jail/

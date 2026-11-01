@@ -1,0 +1,10 @@
+name: echo
+network: { mode: none }
+filesystem: { tmp: true }
+tools:
+  default: deny
+  rules:
+    "read_*": allow
+lock: { enabled: true }
+audit: { path: ./echo-audit.jsonl, args: true }
+sandbox: { disabled: true }   # set false on Linux with bubblewrap installed
