@@ -35,8 +35,17 @@ type Proxy struct {
 	pmu     sync.Mutex
 	pending map[string]pendingReq
 
-	tainted bool // rug-pull detected; all tool calls denied
-	tty     *os.File
+	// Lock state. verified: this session's tool set matched the lock.
+	// listInflight: tools/list requests awaiting a response. tainted: a
+	// mismatch was seen. Guarded by lmu; lcond wakes callers parked in
+	// waitVerified.
+	lmu          sync.Mutex
+	lcond        *sync.Cond
+	verified     bool
+	tainted      bool
+	listInflight int
+
+	tty *os.File
 }
 
 type pendingReq struct {
@@ -50,12 +59,20 @@ type pendingReq struct {
 func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer, serverOut io.Reader) error {
 	p.client, p.server = clientOut, serverIn
 	p.pending = map[string]pendingReq{}
+	p.lcond = sync.NewCond(&p.lmu)
+	if !p.Policy.Lock.Enabled {
+		p.verified = true
+	}
 	errc := make(chan error, 2)
 	go func() { errc <- p.pump(clientIn, p.fromClient) }()
 	go func() { errc <- p.pump(serverOut, p.fromServer) }()
 	err := <-errc
+	p.lmu.Lock()
+	p.tainted = true // release anyone parked in waitVerified with a deny
+	p.lcond.Broadcast()
+	p.lmu.Unlock()
 	if p.tty != nil {
-		p.tty.Close()
+		_ = p.tty.Close()
 	}
 	return err
 }
@@ -96,6 +113,11 @@ func (p *Proxy) fromClient(line []byte) {
 	}
 	if m.IsRequest() {
 		pr := pendingReq{method: m.Method, start: time.Now()}
+		if m.Method == "tools/list" {
+			p.lmu.Lock()
+			p.listInflight++
+			p.lmu.Unlock()
+		}
 		if m.Method == "tools/call" {
 			var tc jsonrpc.ToolCallParams
 			_ = json.Unmarshal(m.Params, &tc)
@@ -118,9 +140,10 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 	if p.Policy.Audit.Args {
 		args = tc.Arguments
 	}
-	if p.tainted {
-		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: "rug-pull pending approval", Args: args})
-		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: tool definitions changed; run `mcp-jail approve "+p.Policy.Name+"`"))
+	if why := p.waitVerified(); why != "" {
+		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
+		p.Logf("deny tools/call %s (%s)", tc.Name, why)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
 		return false
 	}
 	d := p.Policy.Decide(tc.Name)
@@ -146,6 +169,34 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 	}
 }
 
+// waitVerified blocks a tools/call until the tool set has been checked
+// against the lock. Returns "" when the call may proceed, otherwise the
+// reason it must be denied. A call that arrives while tools/list is in
+// flight waits for that response; a call before any tools/list is refused,
+// so a client cannot race the lock by calling before listing.
+func (p *Proxy) waitVerified() string {
+	p.lmu.Lock()
+	defer p.lmu.Unlock()
+	for {
+		switch {
+		case p.tainted:
+			return "tool definitions changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
+		case p.verified:
+			return ""
+		case p.listInflight == 0:
+			return "tools/call before tools/list was verified against the lock"
+		}
+		p.lcond.Wait()
+	}
+}
+
+func (p *Proxy) setLock(verified, tainted bool) {
+	p.lmu.Lock()
+	p.verified, p.tainted = verified, tainted
+	p.lcond.Broadcast()
+	p.lmu.Unlock()
+}
+
 // ask prompts on the controlling terminal. Without one, the answer is no.
 func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 	if p.tty == nil {
@@ -159,7 +210,7 @@ func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 	if len(args) > 400 {
 		args = args[:400] + "…"
 	}
-	fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n  allow? [y/N] ", p.Policy.Name, tc.Name, args)
+	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n  allow? [y/N] ", p.Policy.Name, tc.Name, args)
 	rd := bufio.NewReader(p.tty)
 	ans, err := rd.ReadString('\n')
 	if err != nil {
@@ -187,7 +238,12 @@ func (p *Proxy) fromServer(line []byte) {
 		if ok {
 			switch pr.method {
 			case "tools/list":
-				if !p.checkLock(m) {
+				ok := p.checkLock(m)
+				p.lmu.Lock()
+				p.listInflight--
+				p.lcond.Broadcast()
+				p.lmu.Unlock()
+				if !ok {
 					return
 				}
 			case "tools/call":
@@ -205,8 +261,11 @@ func (p *Proxy) fromServer(line []byte) {
 // checkLock enforces rug-pull protection on a tools/list response. Returns
 // false when the response was replaced with an error.
 func (p *Proxy) checkLock(m *jsonrpc.Message) bool {
-	if !p.Policy.Lock.Enabled || m.Error != nil {
+	if !p.Policy.Lock.Enabled {
 		return true
+	}
+	if m.Error != nil {
+		return true // server refused to list; nothing to verify, nothing to call
 	}
 	var res jsonrpc.ToolsListResult
 	if err := json.Unmarshal(m.Result, &res); err != nil {
@@ -231,15 +290,16 @@ func (p *Proxy) checkLock(m *jsonrpc.Message) bool {
 		}
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: hash[:12]})
 		p.Logf("lock: recorded %d tools (%s)", len(per), hash[:12])
+		p.setLock(true, false)
 		return true
 	}
 	if cur.Hash == hash {
-		p.tainted = false
+		p.setLock(true, false)
 		return true
 	}
 	d := lock.Compare(cur.Tools, per)
 	_ = lock.SavePending(&lock.Pending{Name: p.Policy.Name, Hash: hash, Tools: per, SeenAt: now})
-	p.tainted = true
+	p.setLock(false, true)
 	reason := fmt.Sprintf("added=%v removed=%v changed=%v", d.Added, d.Removed, d.Changed)
 	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: reason})
 	p.Logf("RUG-PULL: tool definitions changed: %s", reason)
