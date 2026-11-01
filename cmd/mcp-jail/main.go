@@ -107,7 +107,7 @@ func cmdRun(args []string) error {
 	if err != nil {
 		return fmt.Errorf("audit: %w", err)
 	}
-	defer al.Close()
+	defer func() { _ = al.Close() }()
 
 	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}}
 	if p.Network.Mode == policy.NetAllowlist {
@@ -122,7 +122,7 @@ func cmdRun(args []string) error {
 		if err != nil {
 			return fmt.Errorf("netproxy: %w", err)
 		}
-		defer np.Close()
+		defer func() { _ = np.Close() }()
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			spec.Env[k] = np.Addr()
 		}
@@ -187,7 +187,7 @@ func cmdInit(args []string) error {
 	if _, err := os.Stat(*out); err == nil {
 		return fmt.Errorf("%s exists", *out)
 	}
-	if err := os.WriteFile(*out, []byte(policy.Example), 0o644); err != nil {
+	if err := os.WriteFile(*out, []byte(policy.Example), 0o600); err != nil {
 		return err
 	}
 	fmt.Println("wrote", *out)

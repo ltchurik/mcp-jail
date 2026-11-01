@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 
@@ -26,6 +27,15 @@ type Spec struct {
 // Build returns an exec.Cmd for the jailed server and a description of the
 // isolation that was applied (for the log line).
 func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
+	cmd, how, err := build(p, s)
+	if err != nil {
+		return nil, "", err
+	}
+	return exec.Command(cmd[0], cmd[1:]...), how, nil
+}
+
+// build is Build without the exec.Cmd, for tests.
+func build(p *policy.Policy, s Spec) ([]string, string, error) {
 	if len(s.Command) == 0 {
 		return nil, "", fmt.Errorf("no server command given (use: mcp-jail run --policy p.yml -- <cmd> [args])")
 	}
@@ -35,13 +45,11 @@ func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
 	}
 
 	if p.Sandbox.Disabled || runtime.GOOS != "linux" {
-		cmd := exec.Command(s.Command[0], s.Command[1:]...)
-		cmd.Env = env
 		why := "sandbox disabled by policy"
 		if runtime.GOOS != "linux" {
 			why = "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
 		}
-		return cmd, why, nil
+		return append([]string{"env", "-i"}, append(env, s.Command...)...), why, nil
 	}
 
 	bwrap, err := exec.LookPath("bwrap")
@@ -79,8 +87,12 @@ func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
 	for _, d := range p.Filesystem.ReadWrite {
 		args = append(args, "--bind", d, d)
 	}
-	// The server's own binary/working dir must be visible when it lives
-	// outside the bound paths (e.g. ~/.npm, ~/.cache). Bind the cwd read-only.
+	// The server binary often lives outside /usr (nvm, pyenv, ~/.local, a
+	// venv). Bind its toolchain prefix read-only so it can start at all.
+	if prefix := toolchainPrefix(s.Command[0]); prefix != "" && !covered(prefix, p) {
+		args = append(args, "--ro-bind", prefix, prefix)
+	}
+	// Same for the working directory (relative script paths, package.json).
 	if cwd, err := os.Getwd(); err == nil && !covered(cwd, p) {
 		args = append(args, "--ro-bind", cwd, cwd, "--chdir", cwd)
 	}
@@ -92,12 +104,36 @@ func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
 	args = append(args, "--")
 	args = append(args, s.Command...)
 
-	cmd := exec.Command(bwrap, args...)
 	why := "bwrap: user/pid/ipc/uts ns"
 	if p.Network.Mode == policy.NetNone {
 		why += ", net ns (no network)"
 	}
-	return cmd, why, nil
+	return append([]string{bwrap}, args...), why, nil
+}
+
+// toolchainPrefix resolves argv[0] through PATH and symlinks and returns the
+// directory that should be visible for it to run: the parent of a ".../bin"
+// directory (covers /usr/local, ~/.nvm/versions/node/vX, venvs, pyenv
+// shims), otherwise the binary's own directory. Paths already under /usr,
+// /bin, /sbin or /lib are covered by the base mounts and yield "".
+func toolchainPrefix(argv0 string) string {
+	path, err := exec.LookPath(argv0)
+	if err != nil {
+		return ""
+	}
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	dir := filepath.Dir(path)
+	for _, base := range []string{"/usr/", "/bin/", "/sbin/", "/lib/", "/lib64/"} {
+		if strings.HasPrefix(dir+"/", base) {
+			return ""
+		}
+	}
+	if filepath.Base(dir) == "bin" {
+		return filepath.Dir(dir)
+	}
+	return dir
 }
 
 func covered(dir string, p *policy.Policy) bool {
