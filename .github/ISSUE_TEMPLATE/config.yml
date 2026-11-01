@@ -1,0 +1,5 @@
+blank_issues_enabled: true
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/ltchurik/mcp-jail/security/advisories/new
+    about: Jail escapes and policy bypasses go here, privately.

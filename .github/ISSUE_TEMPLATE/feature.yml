@@ -1,0 +1,10 @@
+name: Feature request
+labels: [enhancement]
+body:
+  - type: textarea
+    id: problem
+    attributes: { label: What can a server do today that it shouldn't, or what gets in your way? }
+    validations: { required: true }
+  - type: textarea
+    id: proposal
+    attributes: { label: Proposal }

@@ -98,7 +98,7 @@ sandbox:
 | `filesystem.*` | bubblewrap bind-mounts; nothing else from `$HOME` is visible | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
-| `lock` | SHA-256 of canonical `tools/list`; mismatch ⇒ `tools/list` and all `tools/call` fail until approved | **Hard** |
+| `lock` | SHA-256 of canonical `tools/list`; mismatch ⇒ `tools/list` and all `tools/call` fail until approved. A `tools/call` sent before (or racing) `tools/list` is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
 Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax.
@@ -128,6 +128,19 @@ mcp-jail reset filesystem     # forget everything
 ```
 
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
+
+## Servers started with `npx` / `uvx`
+
+The jail only shows the paths in `filesystem.*`, plus the toolchain the server binary lives in (resolved through `PATH` and symlinks: `/usr/local`, `~/.nvm/versions/node/vX`, a venv). Package *caches* are not included by default — `npx -y` writes to `~/.npm/_npx` and `uvx` to `~/.cache/uv`, so add them:
+
+```yaml
+filesystem:
+  read_write: [~/.npm/_npx]      # npx
+  read_only:  [~/.npm/_cacache]  # npx, optional
+  # read_write: [~/.cache/uv]    # uvx
+```
+
+Or install the server once (`npm i -g`) and point `command` at the binary; then nothing beyond the toolchain is needed.
 
 ## Audit log
 
@@ -160,7 +173,17 @@ cd examples
 ../bin/mcp-jail run --policy echo-policy.yml -- python3 echo-server.py
 ```
 
-Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, and the second run after editing a description in `echo-server.py` trips the lock.
+Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and the second run after editing a description in `echo-server.py` trips the lock. `scripts/e2e.sh` runs the whole scenario — including the bubblewrap jail on Linux — and is what CI runs.
+
+## Development
+
+```sh
+make lint   # go vet + golangci-lint
+make test   # unit tests (-race)
+make e2e    # build + scripts/e2e.sh
+```
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 

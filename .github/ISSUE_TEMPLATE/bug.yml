@@ -1,0 +1,27 @@
+name: Bug report
+description: Something behaves differently from the policy or the docs
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: "If this is a jail escape or a policy bypass, use **Security → Report a vulnerability** instead."
+  - type: input
+    id: version
+    attributes: { label: mcp-jail version, placeholder: "mcp-jail version" }
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes: { label: OS / bubblewrap version, placeholder: "Ubuntu 24.04, bwrap 0.9.0" }
+    validations: { required: true }
+  - type: textarea
+    id: policy
+    attributes: { label: Policy, render: yaml }
+    validations: { required: true }
+  - type: textarea
+    id: cmd
+    attributes: { label: Server command and client }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What happened / what you expected, description: "Paste the [mcp-jail] stderr lines and relevant audit log entries." }
+    validations: { required: true }

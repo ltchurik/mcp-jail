@@ -1,0 +1,27 @@
+version: "2"
+linters:
+  default: standard
+  enable:
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - revive
+    - staticcheck
+    - unused
+    - unparam
+    - unconvert
+    - bodyclose
+    - errorlint
+  settings:
+    gosec:
+      excludes:
+        - G204 # subprocess with variable: launching the server is the whole point
+        - G304 # file inclusion: policy path is user-supplied by design
+    revive:
+      rules:
+        - name: package-comments
+          disabled: true
+formatters:
+  enable: [gofmt, goimports]
