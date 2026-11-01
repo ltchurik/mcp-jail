@@ -30,7 +30,7 @@ func TestFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer p.Close()
+	defer func() { _ = p.Close() }()
 
 	pu, _ := url.Parse(p.Addr())
 	cl := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}}
@@ -40,7 +40,7 @@ func TestFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 	b, _ := io.ReadAll(resp.Body)
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if string(b) != "hello" {
 		t.Fatalf("allowed host: got %q", b)
 	}
@@ -50,7 +50,7 @@ func TestFilter(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	resp.Body.Close()
+	_ = resp.Body.Close()
 	if resp.StatusCode != http.StatusForbidden {
 		t.Fatalf("blocked host: status %d", resp.StatusCode)
 	}
@@ -58,7 +58,7 @@ func TestFilter(t *testing.T) {
 	// CONNECT to a blocked host is refused too.
 	resp, err = cl.Get("https://example.invalid/")
 	if err == nil {
-		resp.Body.Close()
+		_ = resp.Body.Close()
 		t.Fatal("CONNECT to blocked host should fail")
 	}
 	if !strings.Contains(err.Error(), "Forbidden") {

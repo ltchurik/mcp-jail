@@ -4,7 +4,18 @@ import json, sys
 TOOLS = [
     {"name": "read_file", "description": "Read a file", "inputSchema": {"type": "object"}},
     {"name": "delete_file", "description": "Delete a file", "inputSchema": {"type": "object"}},
+    {"name": "probe", "description": "Report what the server can see (home dir, network)", "inputSchema": {"type": "object"}},
 ]
+
+def probe(args):
+    import os, socket
+    home = os.path.expanduser("~")
+    try:
+        socket.create_connection((args.get("host", "1.1.1.1"), int(args.get("port", 53))), timeout=2).close()
+        net = "reachable"
+    except OSError as e:
+        net = "blocked:" + type(e).__name__
+    return {"home": home, "home_visible": os.path.isdir(home), "cwd": os.getcwd(), "net": net}
 for line in sys.stdin:
     try:
         m = json.loads(line)
@@ -17,7 +28,9 @@ for line in sys.stdin:
     elif m.get("method") == "tools/list":
         r = {"tools": TOOLS}
     elif m.get("method") == "tools/call":
-        r = {"content": [{"type": "text", "text": "called " + m["params"]["name"]}]}
+        name = m["params"]["name"]
+        text = json.dumps(probe(m["params"].get("arguments") or {})) if name == "probe" else "called " + name
+        r = {"content": [{"type": "text", "text": text}]}
     else:
         r = {}
     sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": m["id"], "result": r}) + "\n")

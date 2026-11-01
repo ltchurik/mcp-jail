@@ -88,19 +88,19 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	}
 	hj, ok := w.(http.Hijacker)
 	if !ok {
-		up.Close()
+		_ = up.Close()
 		http.Error(w, "hijack unsupported", http.StatusInternalServerError)
 		return
 	}
 	cl, buf, err := hj.Hijack()
 	if err != nil {
-		up.Close()
+		_ = up.Close()
 		return
 	}
 	_, _ = fmt.Fprint(cl, "HTTP/1.1 200 Connection Established\r\n\r\n")
 	go pipe(up, readerOf(buf, cl))
 	pipe(cl, up)
-	up.Close()
+	_ = up.Close()
 }
 
 func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
@@ -116,7 +116,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+	defer func() { _ = resp.Body.Close() }()
 	stripHop(resp.Header)
 	for k, vs := range resp.Header {
 		for _, v := range vs {
