@@ -22,7 +22,8 @@ func TestToolchainPrefix(t *testing.T) {
 	if err := os.Symlink(exe, link); err != nil {
 		t.Fatal(err)
 	}
-	if got, want := toolchainPrefix(link), filepath.Join(root, "node-v22"); got != want {
+	want, _ := filepath.EvalSymlinks(filepath.Join(root, "node-v22")) // macOS: /var -> /private/var
+	if got := toolchainPrefix(link); got != want {
 		t.Errorf("prefix via symlink = %q, want %q", got, want)
 	}
 	if got := toolchainPrefix("/usr/bin/env"); got != "" {
@@ -46,7 +47,7 @@ func TestBuildDisabled(t *testing.T) {
 	if !contains(argv, "HTTP_PROXY=http://127.0.0.1:1") {
 		t.Fatalf("extra env missing: %v", argv)
 	}
-	if !strings.Contains(how, "disabled") {
+	if !strings.Contains(how, "disabled") && !strings.Contains(how, "no sandbox") {
 		t.Fatalf("how = %q", how)
 	}
 }

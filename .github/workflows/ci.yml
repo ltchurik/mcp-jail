@@ -16,6 +16,7 @@ jobs:
         with: { version: v2.1 }
   test:
     strategy:
+      fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest]
     runs-on: ${{ matrix.os }}
@@ -31,5 +32,8 @@ jobs:
       - uses: actions/setup-go@v5
         with: { go-version: "1.24" }
       - run: sudo apt-get install -y bubblewrap
+      # Ubuntu 24.04 restricts unprivileged user namespaces by default.
+      - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true
+      - run: bwrap --unshare-user-try --unshare-net --ro-bind /usr /usr --ro-bind /lib /lib --ro-bind-try /lib64 /lib64 --proc /proc --dev /dev -- /usr/bin/true
       - run: make build
       - run: ./scripts/e2e.sh
