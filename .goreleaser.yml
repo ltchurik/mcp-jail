@@ -18,7 +18,7 @@ changelog:
   format: "{{ .SHA }}: {{ .Message }}"
   filters:
     exclude:
-      - '^Merge pull request'   # branch refs carry the owner's handle; the PR commits say it all
+      - '^Merge (pull request|branch)'   # branch refs carry the owner's handle; the PR commits say it all
   groups:
     - title: Features
       regexp: '^feat'

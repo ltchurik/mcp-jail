@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+Closes everything the v0.4.0 security review left open.
+
+### Security
+
+- Rug-pull lock: a `tools/call` or `prompts/get` for a name that the verified
+  list does not contain is refused (the lock had checked the list hash, not that
+  a use was in the list). Paged lists (`nextCursor`) are collected and verified
+  whole on the last page instead of tripping a false rug-pull; a continuation
+  with a cursor the server never issued, or more than 10 000 items, taints the
+  section; a call between pages is refused rather than parked.
+- Proxy: the requests waiting for a server answer are bounded (1024). Past that
+  the oldest is dropped, audited and answered with error `-32004`, so a server
+  that stops answering cannot grow the proxy without bound.
+- Registry: the server command is recorded with credentials redacted (values of
+  token/key/password/auth flags and `KEY=VALUE` pairs, URL passwords, tokens with
+  a well-known prefix), so `mcp-jail ps` and the dashboard no longer show them.
+  Run and `known/` file names of servers with unusual names carry a short hash,
+  so two names that sanitise alike cannot overwrite each other's entry.
+- Dashboard rule promotion: policy edits take an advisory lock on the policy's
+  directory, so two concurrent promotions cannot lose a rule.
+- CI and release: every GitHub Action is pinned to a commit; release archives
+  and `checksums.txt` carry a build provenance attestation
+  (`gh attestation verify <file> --repo ltchurik/mcp-jail`); the sandbox-exec
+  end-to-end scenarios run in CI on macOS.
+
+### Fixed
+
+- Control socket close waited at most one second for in-flight requests, which
+  flaked in CI; it now waits up to five seconds and then cuts the connection.
+
 ## v0.4.0 — 2026-11-02
 
 Promote rules and stop jails from the dashboard, and a hardening release: an internal
