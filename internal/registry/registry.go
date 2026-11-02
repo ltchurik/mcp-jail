@@ -62,6 +62,7 @@ func Register(e Entry) (func(), error) {
 		e.StartedAt = time.Now().UTC()
 	}
 	e.Hostname, _ = os.Hostname()
+	e.Command = Redact(e.Command)
 	if err := os.MkdirAll(Dir(), 0o700); err != nil {
 		return nil, fmt.Errorf("registry: %w", err)
 	}
