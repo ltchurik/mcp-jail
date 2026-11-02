@@ -184,6 +184,17 @@ func parse(b []byte, path string) (*Policy, error) {
 
 // Validate checks enum fields and expands paths.
 func (p *Policy) Validate() error {
+	if err := checkName(p.Name); err != nil {
+		return fmt.Errorf("name: %w", err)
+	}
+	for _, s := range append(append(append([]string{}, p.Network.Allow...), p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...) {
+		if hasControl(s) {
+			return fmt.Errorf("%q: control character in a path or host", s)
+		}
+	}
+	if hasControl(p.Audit.Path) {
+		return fmt.Errorf("audit.path: control character")
+	}
 	switch p.Network.Mode {
 	case NetNone, NetAllowlist, NetAll:
 	default:
@@ -251,6 +262,32 @@ func (p *Policy) Validate() error {
 		}
 	}
 	return nil
+}
+
+// checkName bounds the server name: it becomes part of lock, registry and
+// socket file names, so it must be one path element without control
+// characters. Empty is allowed and filled in by `run`.
+func checkName(n string) error {
+	switch {
+	case n == "": // `run` fills in the command's base name
+		return nil
+	case n == "." || n == "..":
+		return fmt.Errorf("%q is not a name", n)
+	case len(n) > 128:
+		return errors.New("longer than 128 bytes")
+	case strings.ContainsAny(n, "/\\") || hasControl(n):
+		return fmt.Errorf("%q: must not contain path separators or control characters", n)
+	}
+	return nil
+}
+
+func hasControl(s string) bool {
+	for _, r := range s {
+		if r < 0x20 || r == 0x7f {
+			return true
+		}
+	}
+	return false
 }
 
 func checkDecision(d Decision) error {

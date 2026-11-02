@@ -4,6 +4,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 BIN=${BIN:-./bin/mcp-jail}
+BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")   # absolute: some scenarios run from another directory
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
@@ -314,6 +315,19 @@ YML
   assert "$OUT" '"sentinel_visible\\": false'
   assert "$OUT" '"net\\": \\"blocked:'
 
+  echo "== bubblewrap: cwd inside \$HOME is not shared"
+  cat >"$WORK/cwd.yml" <<YML
+name: e2e-cwd
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-cwd.jsonl }
+YML
+  OUT=$(cd "$HOME" && run "$WORK/cwd.yml" "$INIT" "$LIST" "$PROBE")
+  assert "$OUT" '"home_visible\\": false'
+  assert "$(cat "$WORK/audit-cwd.jsonl")" '"kind":"start","reason":"[^"]*cwd not shared \(home\)'
+
   echo "== bubblewrap: hard egress allowlist"
   cat >"$WORK/a.yml" <<YML
 name: e2e-allowlist
@@ -360,6 +374,19 @@ YML
   assert "$OUT" '"sentinel_visible\\": false'
   assert "$OUT" '"home_visible\\": false'
   assert "$OUT" '"net\\": \\"blocked:'
+
+  echo "== sandbox-exec: cwd inside \$HOME is not shared"
+  cat >"$WORK/cwd.yml" <<YML
+name: e2e-cwd
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-cwd.jsonl }
+YML
+  OUT=$(cd "$HOME" && run "$WORK/cwd.yml" "$INIT" "$LIST" "$PROBE")
+  assert "$OUT" '"home_visible\\": false'
+  assert "$(cat "$WORK/audit-cwd.jsonl")" '"kind":"start","reason":"[^"]*cwd not shared \(home\)'
 
   echo "== sandbox-exec: allowlist reachable only through the proxy"
   cat >"$WORK/a.yml" <<YML

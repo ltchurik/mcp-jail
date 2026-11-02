@@ -33,6 +33,11 @@ type Spec struct {
 	// ProxyPort is the loopback port of the cooperative HTTP proxy; macOS
 	// lets the jail reach only that port in allowlist mode.
 	ProxyPort int
+	// Protect lists host paths the jailed server must never see even when a
+	// bind would otherwise expose them: the policy file, the audit log, the
+	// lock/registry directories with the control socket. Directories and
+	// files; missing entries are ignored.
+	Protect []string
 }
 
 // Egress describes the relay the in-jail shim connects to. See package egress.
@@ -61,17 +66,19 @@ func HardEgress(p *policy.Policy) bool {
 // Build returns an exec.Cmd for the jailed server and a description of the
 // isolation that was applied (for the log line).
 func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
-	cmd, how, err := build(p, s)
+	argv, how, dir, err := build(p, s)
 	if err != nil {
 		return nil, "", err
 	}
-	return exec.Command(cmd[0], cmd[1:]...), how, nil
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir // "" keeps the current directory
+	return cmd, how, nil
 }
 
 // build is Build without the exec.Cmd, for tests.
-func build(p *policy.Policy, s Spec) ([]string, string, error) {
+func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error) {
 	if len(s.Command) == 0 {
-		return nil, "", fmt.Errorf("no server command given (use: mcp-jail run --policy p.yml -- <cmd> [args])")
+		return nil, "", "", fmt.Errorf("no server command given (use: mcp-jail run --policy p.yml -- <cmd> [args])")
 	}
 	env := passthroughEnv(p.Sandbox.Env)
 	for k, v := range s.Env {
@@ -79,7 +86,7 @@ func build(p *policy.Policy, s Spec) ([]string, string, error) {
 	}
 
 	if p.Sandbox.Disabled {
-		return append([]string{"env", "-i"}, append(env, s.Command...)...), "sandbox disabled by policy", nil
+		return append([]string{"env", "-i"}, append(env, s.Command...)...), "sandbox disabled by policy", "", nil
 	}
 	switch runtime.GOOS {
 	case "linux":
@@ -88,19 +95,19 @@ func build(p *policy.Policy, s Spec) ([]string, string, error) {
 		return buildDarwin(p, s, env)
 	}
 	why := "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
-	return append([]string{"env", "-i"}, append(env, s.Command...)...), why, nil
+	return append([]string{"env", "-i"}, append(env, s.Command...)...), why, "", nil
 }
 
-func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, error) {
+func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, string, error) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		return nil, "", fmt.Errorf("bwrap not found; install bubblewrap or set sandbox.disabled: true")
+		return nil, "", "", fmt.Errorf("bwrap not found; install bubblewrap or set sandbox.disabled: true")
 	}
 
 	hard := p.Network.Mode == policy.NetAllowlist
 	if hard && s.Egress == nil {
 		// Fail closed: never fall back to the cooperative proxy on Linux.
-		return nil, "", fmt.Errorf("network.mode=allowlist needs the egress relay; refusing to start without it")
+		return nil, "", "", fmt.Errorf("network.mode=allowlist needs the egress relay; refusing to start without it")
 	}
 	var args []string
 	if hard {
@@ -153,12 +160,32 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, error
 	}
 	// The server binary often lives outside /usr (nvm, pyenv, ~/.local, a
 	// venv). Bind its toolchain prefix read-only so it can start at all.
-	if prefix := toolchainPrefix(s.Command[0]); prefix != "" && !covered(prefix, p) {
+	var notes []string
+	bound := append(append([]string{}, p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...)
+	if prefix, note := toolchainBind(s.Command[0], s.Protect); prefix != "" && !covered(prefix, p) {
 		args = append(args, "--ro-bind", prefix, prefix)
+		bound = append(bound, prefix)
+	} else if note != "" {
+		notes = append(notes, note)
 	}
-	// Same for the working directory (relative script paths, package.json).
+	// Same for the working directory (relative script paths, package.json),
+	// unless sharing it would expose the home directory or our own state.
 	if cwd, err := os.Getwd(); err == nil && !covered(cwd, p) {
-		args = append(args, "--ro-bind", cwd, cwd, "--chdir", cwd)
+		if why := tooBroad(cwd, s.Protect); why == "" {
+			args = append(args, "--ro-bind", cwd, cwd, "--chdir", cwd)
+			bound = append(bound, cwd)
+		} else {
+			args = append(args, "--chdir", "/")
+			notes = append(notes, "cwd not shared ("+why+")")
+		}
+	}
+	// Mask our own state wherever a bind would expose it.
+	for _, m := range masks(s.Protect, bound) {
+		if m.dir {
+			args = append(args, "--tmpfs", m.path)
+		} else {
+			args = append(args, "--ro-bind", "/dev/null", m.path)
+		}
 	}
 	args = append(args, "--clearenv")
 	for _, kv := range env {
@@ -181,40 +208,54 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, error
 	case p.Network.Mode == policy.NetNone:
 		why += ", net ns (no network)"
 	}
-	return append([]string{bwrap}, args...), why, nil
+	if len(notes) > 0 {
+		why += "; " + strings.Join(notes, "; ")
+	}
+	return append([]string{bwrap}, args...), why, "", nil
 }
 
 // buildDarwin wraps the server in sandbox-exec with a profile generated from
 // the policy. The profile is written into s.WorkDir.
-func buildDarwin(p *policy.Policy, s Spec, env []string) ([]string, string, error) {
+func buildDarwin(p *policy.Policy, s Spec, env []string) ([]string, string, string, error) {
 	sbx, err := exec.LookPath("sandbox-exec")
 	if err != nil {
-		return nil, "", fmt.Errorf("sandbox-exec not found; set sandbox.disabled: true")
+		return nil, "", "", fmt.Errorf("sandbox-exec not found; set sandbox.disabled: true")
 	}
 	if s.WorkDir == "" {
-		return nil, "", fmt.Errorf("sandbox: WorkDir is required on macOS")
+		return nil, "", "", fmt.Errorf("sandbox: WorkDir is required on macOS")
 	}
 	if p.Network.Mode == policy.NetAllowlist && s.ProxyPort == 0 {
 		// Fail closed: without a proxy port the profile would have to allow
 		// the whole network or none; neither is what the policy asked for.
-		return nil, "", fmt.Errorf("network.mode=allowlist needs the filtering proxy; refusing to start without it")
+		return nil, "", "", fmt.Errorf("network.mode=allowlist needs the filtering proxy; refusing to start without it")
 	}
 	var tmp string
 	if p.Filesystem.Tmp {
 		tmp = filepath.Join(s.WorkDir, "tmp")
 		if err := os.Mkdir(tmp, 0o700); err != nil && !os.IsExist(err) {
-			return nil, "", err
+			return nil, "", "", err
 		}
 		for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
 			env = append(env, k+"="+tmp)
 		}
 	}
 	home, _ := os.UserHomeDir()
+	var notes []string
+	toolchain, note := toolchainBind(s.Command[0], s.Protect)
+	if note != "" {
+		notes = append(notes, note)
+	}
+	cwd := cwdOr("")
+	dir := "" // where the server starts: its cwd unless that is not shared
+	if why := tooBroad(cwd, s.Protect); cwd != "" && why != "" && !covered(cwd, p) {
+		notes = append(notes, "cwd not shared ("+why+")")
+		cwd, dir = "", "/"
+	}
 	prof := darwinProfile(p, s, profilePaths{home: home, userTmp: os.TempDir(), privateTmp: tmp,
-		toolchain: toolchainPrefix(s.Command[0]), cwd: cwdOr("")})
+		toolchain: toolchain, cwd: cwd, protect: s.Protect})
 	profPath := filepath.Join(s.WorkDir, "profile.sb")
 	if err := os.WriteFile(profPath, []byte(prof), 0o600); err != nil {
-		return nil, "", err
+		return nil, "", "", err
 	}
 	args := []string{sbx, "-f", profPath, "env", "-i"}
 	args = append(args, env...)
@@ -227,16 +268,20 @@ func buildDarwin(p *policy.Policy, s Spec, env []string) ([]string, string, erro
 	case policy.NetAllowlist:
 		why += ", net via proxy only (hard, HTTP_PROXY)"
 	}
-	return args, why, nil
+	if len(notes) > 0 {
+		why += "; " + strings.Join(notes, "; ")
+	}
+	return args, why, dir, nil
 }
 
 // profilePaths are the host facts the macOS profile is built from.
 type profilePaths struct {
-	home       string // $HOME: hidden unless listed
-	userTmp    string // the per-user temp dir (os.TempDir): hidden
-	privateTmp string // our private tmp, or "" when filesystem.tmp is false
-	toolchain  string // toolchainPrefix of the server binary, may be ""
-	cwd        string // working directory, may be ""
+	home       string   // $HOME: hidden unless listed
+	userTmp    string   // the per-user temp dir (os.TempDir): hidden
+	privateTmp string   // our private tmp, or "" when filesystem.tmp is false
+	toolchain  string   // toolchainPrefix of the server binary, may be ""
+	cwd        string   // working directory, may be ""
+	protect    []string // mcp-jail's own state: denied last, so nothing above re-allows it
 }
 
 // darwinProfile renders the sandbox-exec (SBPL) profile. Later rules win, so
@@ -284,7 +329,99 @@ func darwinProfile(p *policy.Policy, s Spec, h profilePaths) string {
 		b.WriteString(";; network.mode allowlist: only the filtering proxy on the host loopback\n(deny network*)\n")
 		fmt.Fprintf(&b, "(allow network-outbound (remote tcp \"localhost:%d\"))\n", s.ProxyPort)
 	}
+	// Last, so no allow above can re-open it: mcp-jail's own state. The
+	// control socket is a Unix socket, hence the network rule as well.
+	if pr := realPaths(h.protect...); len(pr) > 0 {
+		b.WriteString(";; mcp-jail state: policy, audit log, locks, registry, control socket\n")
+		b.WriteString("(deny file* " + subpaths(pr) + ")\n(deny network* " + subpaths(pr) + ")\n")
+	}
 	return b.String()
+}
+
+// tooBroad reports why dir must not be shared with the jail as a
+// convenience bind: it is the root, the home directory or one of its
+// parents, or it holds one of the protected paths. "" means fine.
+func tooBroad(dir string, protect []string) string {
+	dir = filepath.Clean(dir)
+	if dir == "/" || dir == "." {
+		return "root"
+	}
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		if under(filepath.Clean(home), dir) {
+			return "home"
+		}
+	}
+	for _, p := range protect {
+		if p != "" && under(filepath.Clean(p), dir) {
+			return "contains mcp-jail state"
+		}
+	}
+	return ""
+}
+
+// under reports whether path is dir itself or inside it.
+func under(path, dir string) bool {
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
+}
+
+// toolchainBind picks the directory to expose for the server binary:
+// toolchainPrefix unless that is too broad, then the binary's own
+// directory, then nothing (with a note saying why).
+func toolchainBind(argv0 string, protect []string) (string, string) {
+	prefix := toolchainPrefix(argv0)
+	if prefix == "" {
+		return "", ""
+	}
+	why := tooBroad(prefix, protect)
+	if why == "" {
+		return prefix, ""
+	}
+	// fall back to the directory of the binary itself
+	if path, err := exec.LookPath(argv0); err == nil {
+		if real, err := filepath.EvalSymlinks(path); err == nil {
+			path = real
+		}
+		if dir := filepath.Dir(path); dir != prefix && tooBroad(dir, protect) == "" {
+			return dir, ""
+		}
+	}
+	return "", "toolchain dir not shared (" + why + ")"
+}
+
+type mask struct {
+	path string
+	dir  bool
+}
+
+// masks lists the protected paths that exist and would be visible through
+// one of the bound directories, so the Linux sandbox can cover them.
+func masks(protect, bound []string) []mask {
+	var out []mask
+	seen := map[string]bool{}
+	for _, p := range protect {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		if seen[p] {
+			continue
+		}
+		st, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		for _, b := range bound {
+			if under(p, filepath.Clean(b)) {
+				seen[p] = true
+				out = append(out, mask{path: p, dir: st.IsDir()})
+				break
+			}
+		}
+	}
+	return out
 }
 
 func subpaths(paths []string) string {
@@ -295,8 +432,15 @@ func subpaths(paths []string) string {
 	return strings.Join(parts, " ")
 }
 
-// sbQuote renders an SBPL string literal.
+// sbQuote renders an SBPL string literal. Control characters (a newline
+// would end a comment or a rule) are replaced, never emitted.
 func sbQuote(s string) string {
+	s = strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f {
+			return '?'
+		}
+		return r
+	}, s)
 	s = strings.ReplaceAll(s, "\\", "\\\\")
 	s = strings.ReplaceAll(s, "\"", "\\\"")
 	return "\"" + s + "\""
