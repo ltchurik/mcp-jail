@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -403,6 +404,7 @@ type PendingSection struct {
 type State struct {
 	Now      time.Time     `json:"now"`
 	Version  string        `json:"version"`
+	Home     string        `json:"home,omitempty"` // the page abbreviates paths under it to ~
 	Servers  []ServerState `json:"servers"`
 	Extra    []string      `json:"extra_audit,omitempty"`
 	Warnings []string      `json:"warnings,omitempty"`
@@ -410,6 +412,9 @@ type State struct {
 
 func (s *Server) state() State {
 	st := State{Now: s.Now().UTC(), Version: s.version, Extra: s.extra, Servers: []ServerState{}}
+	if h, err := os.UserHomeDir(); err == nil {
+		st.Home = h
+	}
 	byName := map[string]*ServerState{}
 	order := []string{}
 	get := func(name string) *ServerState {

@@ -1,44 +1,89 @@
 # mcp-jail
 
-**Run any MCP server in a jail: egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log.**
+**Run any MCP server in a jail.** Egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, and a local dashboard to watch and approve what your servers do.
 
-Static scanners tell you a server *looks* suspicious. `mcp-jail` makes sure it *can't do* anything your policy doesn't allow — at runtime, for any server, in any language, without touching its code.
+[![CI](https://github.com/ltchurik/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/ltchurik/mcp-jail/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/ltchurik/mcp-jail?display_name=tag&color=2f5fd0)](https://github.com/ltchurik/mcp-jail/releases/latest)
+[![Go](https://img.shields.io/badge/go-1.24-00ADD8)](go.mod)
+[![License](https://img.shields.io/github/license/ltchurik/mcp-jail?color=1f8a4c)](LICENSE)
+
+Static scanners tell you a server *looks* suspicious. `mcp-jail` makes sure it *can't do* anything your policy doesn't allow: at runtime, for any server, in any language, without touching its code.
 
 ```
 Claude / Cursor / Claude Code ──stdio──▶ mcp-jail ──stdio──▶ MCP server (in a jail)
                                            │
                                    policy · lock · audit
+                                           │
+                                      mcp-jail ui
 ```
+
+<p align="center">
+  <img src="docs/dashboard-overview.jpg" alt="mcp-jail dashboard: a pending approval for github create_issue, server cards with lock state and a rug-pull waiting for approval, a 24-hour report with decisions over time, calls per tool, hosts reached or blocked and the reasons things were refused" width="100%">
+  <br>
+  <sub><code>mcp-jail ui</code>: approve a headless call, catch a rug-pull, see what every server did in the last 24 hours.</sub>
+</p>
+
+## Contents
+
+- [Why](#why)
+- [Install](#install)
+- [Quick start](#quick-start)
+- [Dashboard](#dashboard)
+- [Policy](#policy)
+- [What each layer does](#what-each-layer-does)
+- [Hard egress allowlist](#hard-egress-allowlist)
+- [Headless approvals](#headless-approvals)
+- [Rug-pull lock](#rug-pull-lock)
+- [Servers started with npx / uvx](#servers-started-with-npx--uvx)
+- [Audit log](#audit-log)
+- [Platform support](#platform-support)
+- [Use cases](#use-cases)
+- [Development](#development)
+- [Roadmap](#roadmap)
 
 ## Why
 
 An MCP server is arbitrary code you let an AI agent drive. Today it is installed with `npx -y` and gets your whole home directory, your whole network and every tool it feels like advertising. Three things go wrong:
 
-- **Tool poisoning** — a tool description quietly tells the model to read `~/.ssh/id_rsa` first.
-- **Rug pull** — the server is clean on day one and changes its tool descriptions after you trusted it.
-- **Exfiltration** — a "weather" server posts your files to a domain you never heard of.
+- **Tool poisoning.** A tool description quietly tells the model to read `~/.ssh/id_rsa` first.
+- **Rug pull.** The server is clean on day one and changes its tool descriptions after you trusted it.
+- **Exfiltration.** A "weather" server posts your files to a domain you never heard of.
 
-Scanners pattern-match descriptions and produce [mostly false positives](https://appsecsanta.com/research/mcp-server-security-audit-2026). `mcp-jail` takes the infrastructure approach instead: namespaces, bind-mounts, an egress allowlist and a hash lock.
+Scanners pattern-match descriptions and produce [mostly false positives](https://appsecsanta.com/research/mcp-server-security-audit-2026). `mcp-jail` takes the infrastructure approach instead: namespaces, bind-mounts, an egress allowlist and a hash lock. Whatever the verdict on a server, the blast radius is what the policy says.
+
+| | |
+|---|---|
+| **Hard boundaries** | Linux namespaces via bubblewrap, `sandbox-exec` on macOS, a kernel-enforced egress allowlist. Not an `HTTP_PROXY` the server may ignore. |
+| **Per-tool policy** | `allow` / `deny` / `ask` per tool with glob rules, plus constraints on arguments: a path must stay under a directory, a URL host must be on the allowlist. |
+| **Rug-pull lock** | Tools, prompts, resources and templates are hashed on first run. A change is refused until you look at the diff and approve it. |
+| **Audit and dashboard** | Every decision is a JSONL line. `mcp-jail ui` shows servers, pending approvals, a report for any range and the live event stream. |
+| **Zero friction** | One binary, no dependencies beyond bubblewrap on Linux. `mcp-jail wrap` rewrites your client config in one go. |
 
 ## Install
 
 ```sh
 go install github.com/ltchurik/mcp-jail/cmd/mcp-jail@latest
-# Linux sandboxing needs bubblewrap:
-sudo apt install bubblewrap      # Debian/Ubuntu
+```
+
+Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached.
+
+Linux sandboxing needs bubblewrap:
+
+```sh
+sudo apt install bubblewrap      # Debian / Ubuntu
 sudo dnf install bubblewrap      # Fedora
 ```
 
-Or grab a static binary from [Releases](https://github.com/ltchurik/mcp-jail/releases).
-
 ## Quick start
 
+**1. Write a policy.** `init` writes a commented starter you can edit:
+
 ```sh
-mcp-jail init --policy fs.yml     # writes a commented starter policy
+mcp-jail init --policy fs.yml
 $EDITOR fs.yml
 ```
 
-Then wrap the server in your client config. Claude Desktop / Cursor / Claude Code all take the same shape:
+**2. Wrap the server in your client config.** Claude Desktop, Cursor and Claude Code all take the same shape:
 
 ```json
 {
@@ -52,9 +97,9 @@ Then wrap the server in your client config. Claude Desktop / Cursor / Claude Cod
 }
 ```
 
-That's it. The client talks to `mcp-jail`; the server never sees your real machine.
+The client talks to `mcp-jail`; the server never sees your real machine.
 
-Or let `mcp-jail` rewrite an existing client config for you:
+**Or let `mcp-jail` rewrite an existing config:**
 
 ```sh
 mcp-jail wrap ~/Library/Application\ Support/Claude/claude_desktop_config.json   # Claude Desktop
@@ -62,15 +107,38 @@ mcp-jail wrap ~/.cursor/mcp.json                                                
 mcp-jail wrap .mcp.json                                                           # Claude Code (project)
 ```
 
-Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml` (network `none`, directories from the command line writable, npx/uvx caches, `env` keys passed through, `ask` for unknown tools). The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
+Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml`: network `none`, the directories named on the command line writable, npx/uvx caches, the server's `env` keys passed through, `ask` for unknown tools. The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
 
-## Use cases
+**3. Watch it.**
 
-Worked scenarios with a complete policy each, in [`use-cases/`](use-cases/README.md):
-scope the filesystem server to one project, try an unknown server safely, give
-an API server exactly one host and its token, keep a fetch tool on a leash,
-catch a rug-pull, approve calls from Slack or a web form, wrap an existing
-client config, and watch, report and hand over.
+```sh
+mcp-jail ui --open
+```
+
+## Dashboard
+
+```sh
+mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
+mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (--open launches the browser)
+mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
+mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, --server NAME
+```
+
+`mcp-jail ui` is a local page over everything the other commands know.
+
+**Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
+
+**Waiting for your decision.** Headless `ask` calls (Claude Desktop and Cursor have no terminal) appear at the top of the page with their arguments and a countdown. **Allow** sends the call on, **Deny** refuses it, the deadline refuses it. See [Headless approvals](#headless-approvals).
+
+**Events.** The audit logs, live: filter by server, kind, decision, time range or text, click a row for the full JSON, and watch new lines arrive as they are written. Denies, blocks and lock events pop up as notifications on either tab.
+
+<p align="center">
+  <img src="docs/dashboard-events.jpg" alt="mcp-jail dashboard, Events tab: the audit log as a live table with filters, showing allowed and denied tool calls, a blocked lock change and the sandbox each server started with" width="100%">
+</p>
+
+Built to be boring: plain HTML, CSS and JavaScript embedded in the binary, no framework, nothing fetched from the internet. It binds to the loopback interface only and refuses any other `--listen` address. Every request needs the random token from the printed URL (exchanged for an `HttpOnly; SameSite=Strict` cookie on first visit); foreign `Host` headers and cross-site fetches are rejected, and a write additionally needs a custom request header that only a same-origin script can set. The dashboard changes nothing about enforcement: the proxy decides, the page watches and relays your clicks.
+
+Running jails register themselves in `~/.config/mcp-jail/run/`, next to the locks, and talk to the page over a user-only Unix socket; entries whose process is gone are pruned automatically.
 
 ## Policy
 
@@ -122,12 +190,14 @@ sandbox:
   env: [PATH, HOME, LANG]   # env vars passed into the jail
 ```
 
-### What each layer does
+Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax. Argument constraints apply to the rule that matched; string and list-of-string arguments are checked element by element.
+
+## What each layer does
 
 | Layer | Mechanism | Hard or cooperative |
 |---|---|---|
 | `network.mode: none` | Separate network namespace, no interfaces | **Hard** |
-| `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail — see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
+| `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail, see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
 | `network.mode: allowlist` (macOS) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy, and the `sandbox-exec` profile lets the server open **only** that loopback port | **Hard** for the network (HTTP(S) via proxy only); a server that ignores `HTTP_PROXY` has no network at all |
 | `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
@@ -136,8 +206,6 @@ sandbox:
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
-
-Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax. Argument constraints apply to the rule that matched; string and list-of-string arguments are checked element by element.
 
 ## Hard egress allowlist
 
@@ -156,7 +224,7 @@ jail (netns: lo only)                          host (mcp-jail process)
 - The jail is created with `--unshare-net`, so there is no route anywhere. The only way out is the Unix socket the shim talks to.
 - The shim is `mcp-jail` itself, re-executed inside the jail. It resolves every allowed name to `127.0.0.1` and sniffs the real destination from the `Host` header or the TLS SNI; the host-side relay re-checks it against `network.allow` and is the one that dials. Both decisions are audited (`kind: net`, `kind: dns`).
 - Servers that honour `HTTP_PROXY` use the proxy on :3128 (set automatically, including `NODE_USE_ENV_PROXY=1` for Node's `fetch`). Servers that don't still work for plain HTTP and HTTPS through the transparent listeners.
-- Anything else — raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed — fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
+- Anything else (raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed) fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
 - Needs unprivileged user namespaces (same requirement as bubblewrap itself) and bubblewrap ≥ 0.5 for `--cap-add`. No `CAP_NET_ADMIN`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
 
 Inside the jail the shim briefly runs as the user namespace's root so it can bind the privileged ports; the server itself is started in a nested user namespace under your normal uid/gid with no capabilities.
@@ -173,11 +241,11 @@ Claude Desktop and Cursor start servers without a terminal, so `ask` would alway
  "ts":"2026-11-02T10:00:00Z","text":"[mcp-jail] filesystem wants to call write_file {\"path\":...}"}
 ```
 
-The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else — a timeout, a non-200 status, a body that is not a decision, a connection error — denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is a deny, so pair it with a small approval service when you want to say yes. A terminal, when there is one, still takes precedence over the webhook.
+The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else (a timeout, a non-200 status, a body that is not a decision, a connection error) denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is not a decision, so on its own that is a deny. With the dashboard open as well, a non-decision from the webhook leaves the call waiting for the page until the deadline: Slack pings you, you click Allow. An explicit webhook `deny` is final. A terminal, when there is one, still takes precedence over both.
 
 ## Rug-pull lock
 
-First run records each list the client asks for — tools, prompts, resources and resource templates are locked independently, so a server that only has tools never trips over the others:
+First run records each list the client asks for. Tools, prompts, resources and resource templates are locked independently, so a server that only has tools never trips over the others:
 
 ```
 [mcp-jail] lock: recorded 11 tools (5dc4bc0b04d6)
@@ -191,20 +259,20 @@ If the server later changes any name, description, schema, prompt text or resour
 [mcp-jail]           inspect with `mcp-jail diff filesystem`, accept with `mcp-jail approve filesystem`
 ```
 
-The client sees an error instead of that list, and every use of it (`tools/call`, `prompts/get`, `resources/read`) is refused until you look — the other lists keep working if they are unchanged:
+The client sees an error instead of that list, and every use of it (`tools/call`, `prompts/get`, `resources/read`) is refused until you look. The other lists keep working if they are unchanged.
 
 ```sh
-mcp-jail diff filesystem      # which tools changed
-mcp-jail approve filesystem   # accept the new set
+mcp-jail diff filesystem      # what changed, per section
+mcp-jail approve filesystem   # accept the new set (or click Approve in the dashboard)
 mcp-jail locks                # overview of all locks
 mcp-jail reset filesystem     # forget everything
 ```
 
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
 
-## Servers started with `npx` / `uvx`
+## Servers started with npx / uvx
 
-The jail only shows the paths in `filesystem.*`, plus the toolchain the server binary lives in (resolved through `PATH` and symlinks: `/usr/local`, `~/.nvm/versions/node/vX`, a venv). Package *caches* are not included by default — `npx -y` writes to `~/.npm/_npx` and `uvx` to `~/.cache/uv`, so add them:
+The jail only shows the paths in `filesystem.*`, plus the toolchain the server binary lives in (resolved through `PATH` and symlinks: `/usr/local`, `~/.nvm/versions/node/vX`, a venv). Package *caches* are not included by default: `npx -y` writes to `~/.npm/_npx` and `uvx` to `~/.cache/uv`, so add them:
 
 ```yaml
 filesystem:
@@ -217,7 +285,7 @@ Or install the server once (`npm i -g`) and point `command` at the binary; then 
 
 ## Audit log
 
-One JSON object per line:
+One JSON object per line, written by the proxy on the host, never by the server:
 
 ```json
 {"ts":"2026-11-02T00:31:48Z","server":"filesystem","kind":"tool_call","tool":"read_file","decision":"allow"}
@@ -226,57 +294,44 @@ One JSON object per line:
 {"ts":"2026-11-02T00:31:49Z","server":"filesystem","kind":"lock","decision":"blocked","reason":"changed=[read_file]"}
 ```
 
-Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails you `decision=="blocked"` lines.
-
-## Dashboard
-
-```sh
-mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
-mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (add --open to launch the browser)
-mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
-mcp-jail report --since 7d      # text summary of the same data; --json, --csv, --server NAME
-```
-
-`mcp-jail ui` is a local page over everything the other commands know: every
-server that ever ran through `mcp-jail run` (running or not), its sandbox,
-network mode, lock sections and any **pending change** waiting for
-`mcp-jail approve`; a **report** for the chosen range (decisions over time,
-calls per tool with how many were refused, hosts reached or blocked, the
-reasons things were refused, lock events) with CSV/JSON export; and a live,
-filterable view of the audit logs. New lines stream in as they are written;
-denies, blocks and lock events pop up as notifications. `mcp-jail report`
-prints the same aggregation in the terminal for cron jobs and tickets.
-
-Two things on it change state: a pending rug-pull can be **approved** from
-the server card (the same as `mcp-jail approve`; a running jail picks the new
-lock up on the client's next list request), and headless **`ask` decisions**
-can be answered at the top of the page (see [Headless
-approvals](#headless-approvals)). Everything else is read-only.
-It is built to be boring: plain HTML/CSS/JS embedded in the binary, no
-framework, nothing fetched from the internet. It binds to the
-loopback interface only, refuses any other `--listen` address, and every
-request needs the random token from the printed URL (exchanged for a
-`HttpOnly; SameSite=Strict` cookie on first visit). Foreign `Host` headers and
-cross-site fetches are rejected; a write additionally needs a custom request
-header that only a same-origin script can set. Whether the dashboard runs or not changes
-nothing about enforcement: the proxy decides, the page only watches.
-
-Running jails register themselves in `~/.config/mcp-jail/run/` (next to the
-locks); entries whose process is gone are pruned automatically.
+Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails you `decision=="blocked"` lines, or `mcp-jail report --since 7d` for the weekly summary.
 
 ## Platform support
 
-| OS | Sandbox | Policy / lock / audit |
+| OS | Sandbox | Policy / lock / audit / dashboard |
 |---|---|---|
 | Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist | ✓ |
 | macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
 | Windows | not yet | ✓ (WSL recommended) |
 
-`sandbox.disabled: true` runs the server without any of this (policy, lock and audit still apply).
+`sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
 
 macOS notes: `sandbox-exec` is deprecated by Apple but still ships and works on current releases. The profile is an *allow by default, hide the sensitive trees* design: the server keeps access to system frameworks and its toolchain, but `/Users`, `$HOME`, the per-user temp dir and (with `filesystem.tmp: true`) `/tmp` are invisible unless listed, and nothing outside `filesystem.read_write` is writable. There is no PID or mount isolation and no transparent egress (a server that ignores `HTTP_PROXY` simply has no network in allowlist mode).
 
-## Try it
+## Use cases
+
+Worked scenarios with a complete policy each, in [`use-cases/`](use-cases/README.md):
+
+- [Scope the filesystem server to one project](use-cases/filesystem-server-for-one-project.md)
+- [Try an unknown server safely](use-cases/try-an-unknown-server.md)
+- [Let a server reach exactly one API](use-cases/api-server-with-an-egress-allowlist.md)
+- [Keep a web-fetch tool on a leash](use-cases/fetch-tool-with-host-constraints.md)
+- [Catch a rug-pull](use-cases/catch-a-rug-pull.md)
+- [Approve dangerous calls from Slack or a web form](use-cases/approvals-without-a-terminal.md)
+- [Wrap every server your client already has](use-cases/wrap-an-existing-client-config.md)
+- [Watch, report and hand over](use-cases/monitor-report-and-hand-over.md)
+
+## Development
+
+```sh
+make build              # bin/mcp-jail
+make lint               # go vet + golangci-lint
+make test               # unit tests (-race)
+make e2e                # build + scripts/e2e.sh (bubblewrap on Linux, sandbox-exec on macOS)
+scripts/e2e-docker.sh   # the Linux e2e, including hard egress, from macOS in a privileged container
+```
+
+Try it by hand with the example server:
 
 ```sh
 make build
@@ -284,29 +339,22 @@ cd examples
 ../bin/mcp-jail run --policy echo-policy.yml -- python3 echo-server.py
 ```
 
-Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and the second run after editing a description in `echo-server.py` trips the lock. `scripts/e2e.sh` runs the whole scenario — including the bubblewrap jail on Linux and the `sandbox-exec` jail on macOS — and is what CI runs.
+Paste JSON-RPC lines on stdin: `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and a second run after editing a description in `echo-server.py` trips the lock.
 
-## Development
-
-```sh
-make lint   # go vet + golangci-lint
-make test   # unit tests (-race)
-make e2e    # build + scripts/e2e.sh
-scripts/e2e-docker.sh   # the Linux e2e (bubblewrap + hard egress) from macOS, in a privileged container
-```
-
-See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md).
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
 
 ## Roadmap
 
 - [x] Hard egress allowlist on Linux (v0.2)
 - [x] macOS sandbox via `sandbox-exec` profiles (v0.2)
 - [x] `ask` via webhook for headless use (v0.2)
-- [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
-- [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [x] Dashboard: monitor, reports, lock approval and `ask` answers (`mcp-jail ui`, `mcp-jail report`) (v0.3)
+- [x] `mcp-jail wrap`: rewrite an existing client config in place (v0.2)
+- [x] Dashboard: monitor, reports, lock approval and `ask` answers (v0.3)
+- [ ] Promote a rule to allow/deny and stop a jail from the dashboard
+- [ ] Streamable HTTP transport (wrap remote servers the same way)
+- [ ] Windows sandbox
 
 ## Non-goals
 

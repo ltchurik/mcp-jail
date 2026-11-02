@@ -8,7 +8,9 @@
   const fmtDate = (iso) => { const d = new Date(iso); return isNaN(d) ? iso : d.toLocaleString([], { hour12: false }); };
   const dur = (ms) => { if (ms < 0) ms = 0; const s = Math.floor(ms / 1000), m = Math.floor(s / 60), h = Math.floor(m / 60), d = Math.floor(h / 24); return d ? `${d}d ${h % 24}h` : h ? `${h}h ${m % 60}m` : m ? `${m}m ${s % 60}s` : `${s}s`; };
 
-  const state = { events: [], servers: [], filters: {}, follow: true, es: null, maxRows: 2000 };
+  const state = { events: [], servers: [], filters: {}, follow: true, es: null, maxRows: 2000, home: "" };
+  // tilde shortens absolute paths under the home directory for display only
+  const tilde = (p) => (state.home && typeof p === "string" && (p === state.home || p.startsWith(state.home + "/"))) ? "~" + p.slice(state.home.length) : p;
   const filtersForm = $("#filters");
   const tbody = $("#events");
 
@@ -59,6 +61,7 @@
   function renderServers(st) {
     if (state.confirming) return; // an inline confirmation is open: do not pull the card from under the user
     state.servers = st.servers || [];
+    state.home = st.home || "";
     $("#version").textContent = st.version ? "v" + st.version.replace(/^v/, "") : "";
     $("#server-count").textContent = state.servers.length ? `(${state.servers.filter(s => s.running).length} running / ${state.servers.length})` : "";
     const sel = filtersForm.elements.server;
@@ -138,9 +141,9 @@
         });
       }
       const paths = f("paths");
-      if (s.policy) { const d = el("div"); d.title = s.policy; d.textContent = "policy " + s.policy; paths.append(d); }
-      if (s.audit) { const d = el("div"); d.title = s.audit; d.textContent = "audit " + s.audit; paths.append(d); }
-      if (s.command && s.command.length) { const d = el("div", "mono"); d.title = s.command.join(" "); d.textContent = s.command.join(" "); paths.append(d); }
+      if (s.policy) { const d = el("div"); d.title = s.policy; d.textContent = "policy " + tilde(s.policy); paths.append(d); }
+      if (s.audit) { const d = el("div"); d.title = s.audit; d.textContent = "audit " + tilde(s.audit); paths.append(d); }
+      if (s.command && s.command.length) { const d = el("div", "mono"); d.title = s.command.join(" "); d.textContent = s.command.map(tilde).join(" "); paths.append(d); }
       if (s.error) paths.append(el("div", "pill deny", s.error));
       wrap.append(c);
     }
