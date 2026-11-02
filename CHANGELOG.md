@@ -9,6 +9,11 @@
   sections, pending changes and the last 24h of decisions, plus a live,
   filterable audit event view streamed over server-sent events. Loopback
   only, token-protected, no external assets, read-only.
+- **`mcp-jail report`** and the dashboard's report panel: decisions over
+  time, calls per tool (most refused first) with average duration, hosts
+  reached or blocked, top refusal reasons and lock events for a time range;
+  `--json`, `--csv`, `--server`, `--audit`. The same data is served at
+  `/api/report` (`format=json|csv|text`).
 - **`mcp-jail ps`**: list running jails. `run` now registers itself in
   `~/.config/mcp-jail/run/` (or `$MCP_JAIL_HOME/run`) for the lifetime of
   the process.

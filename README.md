@@ -222,14 +222,18 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
 mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (add --open to launch the browser)
 mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
+mcp-jail report --since 7d      # text summary of the same data; --json, --csv, --server NAME
 ```
 
 `mcp-jail ui` is a local page over everything the other commands know: every
 server that ever ran through `mcp-jail run` (running or not), its sandbox,
 network mode, lock sections and any **pending change** waiting for
-`mcp-jail approve`, plus a live, filterable view of the audit logs with the
-last 24h of decisions per server. New lines stream in as they are written;
-denies, blocks and lock events pop up as notifications.
+`mcp-jail approve`; a **report** for the chosen range (decisions over time,
+calls per tool with how many were refused, hosts reached or blocked, the
+reasons things were refused, lock events) with CSV/JSON export; and a live,
+filterable view of the audit logs. New lines stream in as they are written;
+denies, blocks and lock events pop up as notifications. `mcp-jail report`
+prints the same aggregation in the terminal for cron jobs and tickets.
 
 It is read-only for now and built to be boring: plain HTML/CSS/JS embedded in
 the binary, no framework, nothing fetched from the internet. It binds to the
@@ -284,7 +288,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [ ] Dashboard: monitor (`mcp-jail ui`, done), reports, approving lock changes and `ask` from the page
+- [ ] Dashboard: monitor and reports (`mcp-jail ui`, `mcp-jail report`, done), approving lock changes and `ask` from the page
 
 ## Non-goals
 

@@ -3,6 +3,7 @@ package ui
 import (
 	"bufio"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -237,6 +238,40 @@ func TestStateAndEvents(t *testing.T) {
 	}
 }
 
+func TestReportEndpoint(t *testing.T) {
+	ts := newTestServer(t, sampleLog(t))
+	bearer := map[string]string{"Authorization": "Bearer " + tok}
+	var rep Report
+	getJSON(t, ts.URL+"/api/report?since=1h", bearer, &rep)
+	if rep.Total != 17 || len(rep.Tools) != 3 || rep.Bucket != "5m0s" || len(rep.Files) != 1 {
+		t.Fatalf("report: total=%d tools=%d bucket=%s files=%v", rep.Total, len(rep.Tools), rep.Bucket, rep.Files)
+	}
+	getJSON(t, ts.URL+"/api/report?server=nope", bearer, &rep)
+	if rep.Total != 0 || rep.Tools == nil {
+		t.Fatalf("filtered report: %+v", rep)
+	}
+	r := get(t, ts.URL+"/api/report?format=csv", bearer)
+	body, _ := io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusOK || !strings.HasPrefix(r.Header.Get("Content-Type"), "text/csv") || !strings.Contains(r.Header.Get("Content-Disposition"), "attachment") || !strings.HasPrefix(string(body), "server,tool,total") {
+		t.Fatalf("csv: %d %q %q", r.StatusCode, r.Header.Get("Content-Type"), body[:min(len(body), 40)])
+	}
+	r = get(t, ts.URL+"/api/report?format=text", bearer)
+	body, _ = io.ReadAll(r.Body)
+	_ = r.Body.Close()
+	if r.StatusCode != http.StatusOK || !strings.Contains(string(body), "mcp-jail report") {
+		t.Fatalf("text: %d %s", r.StatusCode, body)
+	}
+	for _, bad := range []string{"format=xml", "since=soon"} {
+		if c := status(t, ts.URL+"/api/report?"+bad, bearer); c != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, c)
+		}
+	}
+	if c := status(t, ts.URL+"/api/report", nil); c != http.StatusUnauthorized {
+		t.Errorf("no auth: %d", c)
+	}
+}
+
 func TestStream(t *testing.T) {
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "live.jsonl")
@@ -291,17 +326,17 @@ func TestStream(t *testing.T) {
 
 func TestParseTime(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	if got, _ := parseTime("", now); !got.IsZero() {
+	if got, _ := ParseTime("", now); !got.IsZero() {
 		t.Fatal("empty")
 	}
-	if got, _ := parseTime("2h", now); !got.Equal(now.Add(-2 * time.Hour)) {
+	if got, _ := ParseTime("2h", now); !got.Equal(now.Add(-2 * time.Hour)) {
 		t.Fatalf("duration: %v", got)
 	}
-	if got, _ := parseTime("2026-01-01T00:00:00Z", now); got.Year() != 2026 || got.Day() != 1 {
+	if got, _ := ParseTime("2026-01-01T00:00:00Z", now); got.Year() != 2026 || got.Day() != 1 {
 		t.Fatalf("rfc3339: %v", got)
 	}
 	for _, bad := range []string{"-1h", "0s", "soon"} {
-		if _, err := parseTime(bad, now); err == nil {
+		if _, err := ParseTime(bad, now); err == nil {
 			t.Errorf("%q accepted", bad)
 		}
 	}

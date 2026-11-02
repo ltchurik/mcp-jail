@@ -80,6 +80,7 @@ func New(token, version string, extra []string) (*Server, error) {
 	s.mux.Handle("GET /api/state", s.requireAuth(http.HandlerFunc(s.handleState)))
 	s.mux.Handle("GET /api/events", s.requireAuth(http.HandlerFunc(s.handleEvents)))
 	s.mux.Handle("GET /api/stream", s.requireAuth(http.HandlerFunc(s.handleStream)))
+	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
 	return s, nil
 }
 
@@ -345,7 +346,11 @@ func nz(s []string) []string {
 }
 
 // auditPaths lists every audit file the dashboard reads.
-func (s *Server) auditPaths() []string {
+func (s *Server) auditPaths() []string { return AuditPaths(s.extra) }
+
+// AuditPaths lists the audit files of every known or running server plus
+// extra, absolute, deduplicated and sorted.
+func AuditPaths(extra []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string) {
@@ -364,7 +369,10 @@ func (s *Server) auditPaths() []string {
 			add(e.Audit)
 		}
 	}
-	for _, e := range s.extra {
+	for _, e := range extra {
+		if a, err := filepath.Abs(e); err == nil {
+			e = a
+		}
 		add(e)
 	}
 	sort.Strings(out)
@@ -387,11 +395,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := Filter{Server: q.Get("server"), Kind: q.Get("kind"), Decision: q.Get("decision"), Tool: q.Get("tool"), Host: q.Get("host"), Query: q.Get("q")}
 	var err error
-	if f.Since, err = parseTime(q.Get("since"), s.Now()); err != nil {
+	if f.Since, err = ParseTime(q.Get("since"), s.Now()); err != nil {
 		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if f.Until, err = parseTime(q.Get("until"), s.Now()); err != nil {
+	if f.Until, err = ParseTime(q.Get("until"), s.Now()); err != nil {
 		http.Error(w, "until: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -415,8 +423,38 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, EventsResponse{Events: evs, Skipped: skipped, Files: files, Limit: limit})
 }
 
-// parseTime accepts RFC 3339, a Go duration meaning "ago" (24h, 15m), or "".
-func parseTime(v string, now time.Time) (time.Time, error) {
+// handleReport aggregates the audit logs over ?since/?until (and ?server);
+// ?format=csv returns the per-tool and per-host tables as a download.
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := Filter{Server: q.Get("server")}
+	var err error
+	if f.Since, err = ParseTime(q.Get("since"), s.Now()); err != nil {
+		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if f.Until, err = ParseTime(q.Get("until"), s.Now()); err != nil {
+		http.Error(w, "until: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	rep := BuildReport(s.auditPaths(), f, s.Now())
+	switch q.Get("format") {
+	case "", "json":
+		writeJSON(w, rep)
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="mcp-jail-report.csv"`)
+		_ = rep.WriteCSV(w)
+	case "text":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_ = rep.WriteText(w)
+	default:
+		http.Error(w, "format: json, csv or text", http.StatusBadRequest)
+	}
+}
+
+// ParseTime accepts RFC 3339, a Go duration meaning "ago" (24h, 15m), or "".
+func ParseTime(v string, now time.Time) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, nil
 	}
