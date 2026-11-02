@@ -43,6 +43,9 @@ func Listen(allow Allower, observe Observer) (*Proxy, error) {
 // Addr returns the proxy URL to put into HTTP_PROXY / HTTPS_PROXY.
 func (p *Proxy) Addr() string { return "http://" + p.ln.Addr().String() }
 
+// Port returns the loopback port the proxy listens on.
+func (p *Proxy) Port() int { return p.ln.Addr().(*net.TCPAddr).Port }
+
 // Close stops the listener.
 func (p *Proxy) Close() error { return p.ln.Close() }
 

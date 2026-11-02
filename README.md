@@ -95,8 +95,9 @@ sandbox:
 |---|---|---|
 | `network.mode: none` | Separate network namespace, no interfaces | **Hard** |
 | `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail — see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
-| `network.mode: allowlist` (macOS, `sandbox.disabled`) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy; non-listed hosts get 403 | Cooperative (honoured by every mainstream HTTP client; a server that ignores the proxy variables is not stopped) |
-| `filesystem.*` | bubblewrap bind-mounts; nothing else from `$HOME` is visible | **Hard** |
+| `network.mode: allowlist` (macOS) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy, and the `sandbox-exec` profile lets the server open **only** that loopback port | **Hard** for the network (HTTP(S) via proxy only); a server that ignores `HTTP_PROXY` has no network at all |
+| `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
+| `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`; mismatch ⇒ `tools/list` and all `tools/call` fail until approved. A `tools/call` sent before (or racing) `tools/list` is held until the list is verified, or refused | **Hard** |
@@ -182,11 +183,13 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 
 | OS | Sandbox | Policy / lock / audit |
 |---|---|---|
-| Linux | bubblewrap (user, PID, IPC, UTS, net namespaces) | ✓ |
-| macOS | not yet — runs unsandboxed with a warning | ✓ |
+| Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist | ✓ |
+| macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
 | Windows | not yet | ✓ (WSL recommended) |
 
-`sandbox.disabled: true` gives the same behaviour on Linux if you don't want bubblewrap.
+`sandbox.disabled: true` runs the server without any of this (policy, lock and audit still apply).
+
+macOS notes: `sandbox-exec` is deprecated by Apple but still ships and works on current releases. The profile is an *allow by default, hide the sensitive trees* design: the server keeps access to system frameworks and its toolchain, but `/Users`, `$HOME`, the per-user temp dir and (with `filesystem.tmp: true`) `/tmp` are invisible unless listed, and nothing outside `filesystem.read_write` is writable. There is no PID or mount isolation and no transparent egress (a server that ignores `HTTP_PROXY` simply has no network in allowlist mode).
 
 ## Try it
 
@@ -196,7 +199,7 @@ cd examples
 ../bin/mcp-jail run --policy echo-policy.yml -- python3 echo-server.py
 ```
 
-Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and the second run after editing a description in `echo-server.py` trips the lock. `scripts/e2e.sh` runs the whole scenario — including the bubblewrap jail on Linux — and is what CI runs.
+Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and the second run after editing a description in `echo-server.py` trips the lock. `scripts/e2e.sh` runs the whole scenario — including the bubblewrap jail on Linux and the `sandbox-exec` jail on macOS — and is what CI runs.
 
 ## Development
 
@@ -212,7 +215,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 ## Roadmap
 
 - [x] Hard egress allowlist on Linux (v0.2)
-- [ ] macOS sandbox via `sandbox-exec` profiles
+- [x] macOS sandbox via `sandbox-exec` profiles (v0.2)
 - [ ] `ask` via webhook/approval inbox for headless use
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [ ] Per-tool argument constraints (`path` must be under X, `url` host must be in allowlist)

@@ -116,7 +116,42 @@ YML
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"dns","decision":"blocked","host":"blocked.e2e.test"'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"allowed.e2e.test"|"kind":"net","decision":"allow","host":"allowed.e2e.test"'
+elif [[ "$(uname -s)" == Darwin ]] && command -v sandbox-exec >/dev/null; then
+  echo "== sandbox-exec: no home, no network"
+  cat >"$WORK/s.yml" <<YML
+name: e2e-sandbox
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+YML
+  OUT=$(run "$WORK/s.yml")
+  assert "$OUT" '"sentinel_visible\\": false'
+  assert "$OUT" '"home_visible\\": false'
+  assert "$OUT" '"net\\": \\"blocked:'
+
+  echo "== sandbox-exec: allowlist reachable only through the proxy"
+  cat >"$WORK/a.yml" <<YML
+name: e2e-allowlist
+network: { mode: allowlist, allow: ["127.0.0.1"] }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-allowlist.jsonl }
+YML
+  OUT=$(run "$WORK/a.yml" "$INIT" "$LIST" \
+    "$(probe 10 '{"host":"127.0.0.1","port":'"$PORT"'}')" \
+    "$(probe 11 '{"url":"http://127.0.0.1:'"$PORT"'/"}')" \
+    "$(probe 12 '{"url":"http://blocked.e2e.test/"}')" \
+    "$(probe 13 '{"url":"http://127.0.0.1:'"$PORT"'/","proxy":false}')")
+  # direct TCP, even to an allowed host, is refused by the sandbox: only the proxy port is open
+  assert "$OUT" '"id": ?10.*"net\\": \\"blocked:'
+  assert "$OUT" '"id": ?11.*"http\\": \\"status:200'
+  assert "$OUT" '"id": ?12.*"http\\": \\"status:403'
+  assert "$OUT" '"id": ?13.*"http\\": \\"error:URLError'
+  assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
+  assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"blocked.e2e.test"'
 else
-  echo "== bubblewrap: skipped ($(uname -s))"
+  echo "== sandbox: skipped ($(uname -s))"
 fi
 echo "e2e OK"

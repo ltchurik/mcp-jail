@@ -159,3 +159,109 @@ func TestBuildHardEgress(t *testing.T) {
 		t.Error("HardEgress must be false when the sandbox is disabled")
 	}
 }
+
+func TestDarwinProfile(t *testing.T) {
+	root := t.TempDir()
+	root, _ = filepath.EvalSymlinks(root)
+	mk := func(rel string) string {
+		d := filepath.Join(root, rel)
+		if err := os.MkdirAll(d, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	home := mk("home")
+	ro := mk("home/projects")
+	rw := mk("home/projects/scratch")
+	userTmp := mk("vartmp")
+	priv := mk("work/tmp")
+	tool := mk("home/.nvm/node-v22")
+	// a symlink to the rw dir: the profile must contain the real path
+	link := filepath.Join(root, "rw-link")
+	if err := os.Symlink(rw, link); err != nil {
+		t.Fatal(err)
+	}
+
+	p := policy.Default()
+	p.Name = "fs \"quoted\""
+	p.Network.Mode = policy.NetAllowlist
+	p.Filesystem.ReadOnly = []string{ro}
+	p.Filesystem.ReadWrite = []string{link}
+	prof := darwinProfile(p, Spec{ProxyPort: 4567}, profilePaths{home: home, userTmp: userTmp, privateTmp: priv, toolchain: tool, cwd: ro})
+
+	for _, want := range []string{
+		"(version 1)", "(allow default)",
+		`(deny file* (subpath "/Users") (subpath "` + home + `") (subpath "` + userTmp + `"))`,
+		`(deny file* (subpath "/private/tmp"))`,
+		"(deny file-write*)", `(allow file-write-data (literal "/dev/null"))`,
+		`(allow file-read* (subpath "` + ro + `"))`,
+		`(allow file* (subpath "` + rw + `"))`, // symlink resolved
+		`(allow file* (subpath "` + priv + `"))`,
+		`(allow file-read* (subpath "` + tool + `"))`,
+		"(deny network*)", `(allow network-outbound (remote tcp "localhost:4567"))`,
+		`policy "fs \"quoted\""`,
+	} {
+		if !strings.Contains(prof, want) {
+			t.Errorf("profile missing %q:\n%s", want, prof)
+		}
+	}
+	if strings.Contains(prof, link) {
+		t.Errorf("symlink must be resolved: %s", prof)
+	}
+	// cwd is inside read_only: no separate rule for it
+	if strings.Count(prof, `(subpath "`+ro+`")`) != 1 {
+		t.Errorf("cwd covered by read_only should not be listed twice:\n%s", prof)
+	}
+	// Re-allows must come after the denies: later rules win in SBPL.
+	if strings.Index(prof, "(deny file-write*)") > strings.Index(prof, `(allow file* (subpath "`+rw+`"))`) {
+		t.Error("write re-allow must follow the global write deny")
+	}
+
+	p.Network.Mode = policy.NetNone
+	p.Filesystem.Tmp = false
+	prof = darwinProfile(p, Spec{}, profilePaths{home: home, userTmp: userTmp})
+	if !strings.Contains(prof, "(deny network*)") || strings.Contains(prof, "network-outbound") {
+		t.Errorf("mode none: %s", prof)
+	}
+	if strings.Contains(prof, "/private/tmp") {
+		t.Errorf("tmp:false must not hide the shared /tmp: %s", prof)
+	}
+	p.Network.Mode = policy.NetAll
+	prof = darwinProfile(p, Spec{}, profilePaths{home: home})
+	if strings.Contains(prof, "network") {
+		t.Errorf("mode all must not mention the network: %s", prof)
+	}
+}
+
+func TestBuildDarwin(t *testing.T) {
+	if runtime.GOOS != "darwin" {
+		t.Skip("darwin only")
+	}
+	p := policy.Default()
+	p.Network.Mode = policy.NetAllowlist
+	p.Network.Allow = []string{"example.com"}
+	work := t.TempDir()
+	if _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, WorkDir: work}); err == nil {
+		t.Fatal("allowlist without a proxy port must fail closed")
+	}
+	argv, how, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, WorkDir: work, ProxyPort: 9})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(argv[0]) != "sandbox-exec" || argv[1] != "-f" || argv[len(argv)-2] != "/usr/bin/true" {
+		t.Fatalf("argv = %v", argv)
+	}
+	prof, err := os.ReadFile(argv[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(prof), `"localhost:9"`) {
+		t.Fatalf("profile: %s", prof)
+	}
+	if !contains(argv, "TMPDIR="+filepath.Join(work, "tmp")) {
+		t.Fatalf("private TMPDIR missing: %v", argv)
+	}
+	if !strings.Contains(how, "proxy only") {
+		t.Fatalf("how = %q", how)
+	}
+}

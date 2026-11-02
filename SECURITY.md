@@ -25,12 +25,15 @@ In scope — anything that lets a jailed server do what the policy says it can't
 
 Known limitations, documented in the README and **not** vulnerabilities:
 
-- `network.mode: allowlist` is only hard on Linux with the sandbox on. With
-  `sandbox.disabled: true`, or on macOS/Windows, it relies on `HTTP_PROXY`
-  and a server that ignores it is not stopped; use `mode: none` there
+- `network.mode: allowlist` is hard on Linux (transparent) and on macOS
+  (proxy port only) with the sandbox on. With `sandbox.disabled: true`, or on
+  Windows, it relies on `HTTP_PROXY` and a server that ignores it is not
+  stopped; use `mode: none` there
 - in the hard allowlist the relay dials whatever an allowed name resolves to
   on the host, including private addresses; choose `network.allow` accordingly
-- no sandbox on macOS/Windows yet; policy, lock and audit still apply
+- the macOS sandbox scopes the filesystem and the network only: no PID or
+  mount isolation, and system locations outside `/Users` stay readable
+- no sandbox on Windows yet; policy, lock and audit still apply
 - a hostile MCP *client* is out of scope
 
 ## Supported versions

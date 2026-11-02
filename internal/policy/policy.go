@@ -44,11 +44,11 @@ type Policy struct {
 	} `yaml:"network"`
 
 	Filesystem struct {
-		// ReadOnly paths bind-mounted read-only into the jail.
+		// ReadOnly paths visible read-only inside the jail.
 		ReadOnly []string `yaml:"read_only"`
-		// ReadWrite paths bind-mounted read-write into the jail.
+		// ReadWrite paths visible read-write inside the jail.
 		ReadWrite []string `yaml:"read_write"`
-		// Tmp gives the jail a private writable /tmp.
+		// Tmp gives the jail a private writable tmp (/tmp on Linux, $TMPDIR on macOS).
 		Tmp bool `yaml:"tmp"`
 	} `yaml:"filesystem"`
 

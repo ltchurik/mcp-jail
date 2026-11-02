@@ -3,6 +3,9 @@
 //
 // Linux: bubblewrap (bwrap) — user, mount, PID and (optionally) network
 // namespaces, with only the paths from the policy visible.
+// macOS: sandbox-exec with a generated profile — home directory hidden
+// except for the policy's paths, writes only where allowed, network per
+// network.mode (allowlist = loopback proxy port only).
 // Other platforms: no isolation; mcp-jail still enforces tool policy, the
 // rug-pull lock and audit logging, and prints a warning.
 package sandbox
@@ -24,6 +27,12 @@ type Spec struct {
 	Command []string          // server command and args
 	Env     map[string]string // extra env (e.g. HTTP_PROXY)
 	Egress  *Egress           // hard egress allowlist (Linux, network.mode allowlist)
+	// WorkDir is a private, per-run directory for generated files (macOS
+	// profile, private tmp). The caller removes it after the server exits.
+	WorkDir string
+	// ProxyPort is the loopback port of the cooperative HTTP proxy; macOS
+	// lets the jail reach only that port in allowlist mode.
+	ProxyPort int
 }
 
 // Egress describes the relay the in-jail shim connects to. See package egress.
@@ -69,14 +78,20 @@ func build(p *policy.Policy, s Spec) ([]string, string, error) {
 		env = append(env, k+"="+v)
 	}
 
-	if p.Sandbox.Disabled || runtime.GOOS != "linux" {
-		why := "sandbox disabled by policy"
-		if runtime.GOOS != "linux" {
-			why = "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
-		}
-		return append([]string{"env", "-i"}, append(env, s.Command...)...), why, nil
+	if p.Sandbox.Disabled {
+		return append([]string{"env", "-i"}, append(env, s.Command...)...), "sandbox disabled by policy", nil
 	}
+	switch runtime.GOOS {
+	case "linux":
+		return buildLinux(p, s, env)
+	case "darwin":
+		return buildDarwin(p, s, env)
+	}
+	why := "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
+	return append([]string{"env", "-i"}, append(env, s.Command...)...), why, nil
+}
 
+func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, error) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
 		return nil, "", fmt.Errorf("bwrap not found; install bubblewrap or set sandbox.disabled: true")
@@ -167,6 +182,159 @@ func build(p *policy.Policy, s Spec) ([]string, string, error) {
 		why += ", net ns (no network)"
 	}
 	return append([]string{bwrap}, args...), why, nil
+}
+
+// buildDarwin wraps the server in sandbox-exec with a profile generated from
+// the policy. The profile is written into s.WorkDir.
+func buildDarwin(p *policy.Policy, s Spec, env []string) ([]string, string, error) {
+	sbx, err := exec.LookPath("sandbox-exec")
+	if err != nil {
+		return nil, "", fmt.Errorf("sandbox-exec not found; set sandbox.disabled: true")
+	}
+	if s.WorkDir == "" {
+		return nil, "", fmt.Errorf("sandbox: WorkDir is required on macOS")
+	}
+	if p.Network.Mode == policy.NetAllowlist && s.ProxyPort == 0 {
+		// Fail closed: without a proxy port the profile would have to allow
+		// the whole network or none; neither is what the policy asked for.
+		return nil, "", fmt.Errorf("network.mode=allowlist needs the filtering proxy; refusing to start without it")
+	}
+	var tmp string
+	if p.Filesystem.Tmp {
+		tmp = filepath.Join(s.WorkDir, "tmp")
+		if err := os.Mkdir(tmp, 0o700); err != nil && !os.IsExist(err) {
+			return nil, "", err
+		}
+		for _, k := range []string{"TMPDIR", "TMP", "TEMP"} {
+			env = append(env, k+"="+tmp)
+		}
+	}
+	home, _ := os.UserHomeDir()
+	prof := darwinProfile(p, s, profilePaths{home: home, userTmp: os.TempDir(), privateTmp: tmp,
+		toolchain: toolchainPrefix(s.Command[0]), cwd: cwdOr("")})
+	profPath := filepath.Join(s.WorkDir, "profile.sb")
+	if err := os.WriteFile(profPath, []byte(prof), 0o600); err != nil {
+		return nil, "", err
+	}
+	args := []string{sbx, "-f", profPath, "env", "-i"}
+	args = append(args, env...)
+	args = append(args, s.Command...)
+
+	why := "sandbox-exec: home hidden, writes scoped"
+	switch p.Network.Mode {
+	case policy.NetNone:
+		why += ", no network"
+	case policy.NetAllowlist:
+		why += ", net via proxy only (hard, HTTP_PROXY)"
+	}
+	return args, why, nil
+}
+
+// profilePaths are the host facts the macOS profile is built from.
+type profilePaths struct {
+	home       string // $HOME: hidden unless listed
+	userTmp    string // the per-user temp dir (os.TempDir): hidden
+	privateTmp string // our private tmp, or "" when filesystem.tmp is false
+	toolchain  string // toolchainPrefix of the server binary, may be ""
+	cwd        string // working directory, may be ""
+}
+
+// darwinProfile renders the sandbox-exec (SBPL) profile. Later rules win, so
+// the shape is: allow everything, hide the sensitive trees, deny all writes,
+// then re-allow exactly what the policy lists. Paths are resolved through
+// symlinks because the sandbox matches on real paths (/tmp -> /private/tmp).
+func darwinProfile(p *policy.Policy, s Spec, h profilePaths) string {
+	var b strings.Builder
+	b.WriteString("(version 1)\n;; generated by mcp-jail from policy " + sbQuote(p.Name) + "\n(allow default)\n")
+
+	// Hide: the home directory, every other user's, and the per-user temp.
+	hide := uniq(realPaths("/Users", h.home, h.userTmp))
+	b.WriteString(";; hidden unless listed below\n(deny file* " + subpaths(hide) + ")\n")
+	if h.privateTmp != "" {
+		b.WriteString("(deny file* " + subpaths(realPaths("/tmp")) + ")\n")
+	}
+	// No writes anywhere by default.
+	b.WriteString("(deny file-write*)\n(allow file-write-data (literal \"/dev/null\"))\n")
+
+	// Re-allow what the policy and the server binary need.
+	if ro := realPaths(p.Filesystem.ReadOnly...); len(ro) > 0 {
+		b.WriteString(";; filesystem.read_only\n(allow file-read* " + subpaths(ro) + ")\n")
+	}
+	if rw := realPaths(p.Filesystem.ReadWrite...); len(rw) > 0 {
+		b.WriteString(";; filesystem.read_write\n(allow file* " + subpaths(rw) + ")\n")
+	}
+	if h.privateTmp != "" {
+		b.WriteString(";; private tmp\n(allow file* " + subpaths(realPaths(h.privateTmp)) + ")\n")
+	}
+	var extra []string
+	if h.toolchain != "" && !covered(h.toolchain, p) {
+		extra = append(extra, h.toolchain)
+	}
+	if h.cwd != "" && !covered(h.cwd, p) {
+		extra = append(extra, h.cwd)
+	}
+	if ex := realPaths(extra...); len(ex) > 0 {
+		b.WriteString(";; toolchain and working directory\n(allow file-read* " + subpaths(ex) + ")\n")
+	}
+
+	switch p.Network.Mode {
+	case policy.NetNone:
+		b.WriteString(";; network.mode none\n(deny network*)\n")
+	case policy.NetAllowlist:
+		b.WriteString(";; network.mode allowlist: only the filtering proxy on the host loopback\n(deny network*)\n")
+		fmt.Fprintf(&b, "(allow network-outbound (remote tcp \"localhost:%d\"))\n", s.ProxyPort)
+	}
+	return b.String()
+}
+
+func subpaths(paths []string) string {
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, "(subpath "+sbQuote(p)+")")
+	}
+	return strings.Join(parts, " ")
+}
+
+// sbQuote renders an SBPL string literal.
+func sbQuote(s string) string {
+	s = strings.ReplaceAll(s, "\\", "\\\\")
+	s = strings.ReplaceAll(s, "\"", "\\\"")
+	return "\"" + s + "\""
+}
+
+// realPaths resolves symlinks where possible and drops empty entries.
+func realPaths(in ...string) []string {
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		if p == "" {
+			continue
+		}
+		p = filepath.Clean(p)
+		if r, err := filepath.EvalSymlinks(p); err == nil {
+			p = r
+		}
+		out = append(out, p)
+	}
+	return out
+}
+
+func uniq(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if !seen[s] {
+			seen[s] = true
+			out = append(out, s)
+		}
+	}
+	return out
+}
+
+func cwdOr(def string) string {
+	if d, err := os.Getwd(); err == nil {
+		return d
+	}
+	return def
 }
 
 // toolchainPrefix resolves argv[0] through PATH and symlinks and returns the

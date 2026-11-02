@@ -116,7 +116,12 @@ func cmdRun(args []string) error {
 	}
 	defer func() { _ = al.Close() }()
 
-	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}}
+	work, err := os.MkdirTemp("", "mcp-jail-")
+	if err != nil {
+		return err
+	}
+	defer func() { _ = os.RemoveAll(work) }()
+	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work}
 	netObserve := func(kind, host string, ok bool) {
 		dec := "allow"
 		if !ok {
@@ -151,12 +156,14 @@ func cmdRun(args []string) error {
 			spec.Env[k] = v
 		}
 	case p.Network.Mode == policy.NetAllowlist:
-		// No sandbox: cooperative HTTP_PROXY filtering is all we can offer.
+		// HTTP_PROXY filtering. Cooperative without a sandbox; on macOS the
+		// sandbox-exec profile lets the server reach only this port.
 		np, err := netproxy.Listen(p, func(host string, ok bool) { netObserve("net", host, ok) })
 		if err != nil {
 			return fmt.Errorf("netproxy: %w", err)
 		}
 		defer func() { _ = np.Close() }()
+		spec.ProxyPort = np.Port()
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
 			spec.Env[k] = np.Addr()
 		}
