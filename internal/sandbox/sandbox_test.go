@@ -110,3 +110,52 @@ func contains(xs []string, s string) bool {
 	}
 	return false
 }
+
+func TestBuildHardEgress(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+	bin := t.TempDir()
+	writeExec(t, filepath.Join(bin, "bwrap"))
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+
+	p := policy.Default()
+	p.Network.Mode = policy.NetAllowlist
+	p.Network.Allow = []string{"api.github.com", "*.githubusercontent.com"}
+
+	// Fail closed: allowlist mode without a relay must not start at all.
+	if _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}}); err == nil {
+		t.Fatal("allowlist without egress relay must fail")
+	}
+
+	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, UID: 1001, GID: 1002, ResolvConf: "/tmp/relay/resolv.conf"}
+	argv, how, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, Egress: eg, Env: map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	for _, want := range []string{
+		"--unshare-user --uid 0 --gid 0 --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP", "--unshare-net",
+		"--ro-bind /tmp/relay/resolv.conf /etc/resolv.conf",
+		"--bind /tmp/relay /run/mcp-jail", "--ro-bind /x/mcp-jail /opt/mcp-jail/mcp-jail",
+		"--setenv HTTPS_PROXY http://127.0.0.1:3128",
+		"-- /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.github.com,*.githubusercontent.com --uid 1001 --gid 1002 -- /usr/bin/true -x",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("missing %q in %s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "--unshare-user-try") || strings.Contains(joined, "--ro-bind-try /etc/resolv.conf") {
+		t.Errorf("hard egress must not use the soft variants: %s", joined)
+	}
+	if !strings.Contains(how, "egress allowlist (hard)") {
+		t.Errorf("how = %q", how)
+	}
+	if HardEgress(p) != true {
+		t.Error("HardEgress should be true on linux with sandbox enabled")
+	}
+	p.Sandbox.Disabled = true
+	if HardEgress(p) {
+		t.Error("HardEgress must be false when the sandbox is disabled")
+	}
+}

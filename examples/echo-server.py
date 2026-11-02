@@ -16,13 +16,29 @@ def probe(args):
     except OSError as e:
         net = "blocked:" + type(e).__name__
     sentinel = args.get("sentinel")
-    return {
+    out = {
         "home": home,
         "home_visible": os.path.isdir(home),
         "sentinel_visible": bool(sentinel) and os.path.exists(sentinel),
         "cwd": os.getcwd(),
         "net": net,
     }
+    if args.get("dns"):  # name resolution as the server sees it
+        try:
+            out["dns"] = socket.gethostbyname(args["dns"])
+        except OSError as e:
+            out["dns"] = "error:" + type(e).__name__
+    if args.get("url"):  # HTTP as the server sees it; proxy=false ignores HTTP_PROXY
+        import urllib.request, urllib.error
+        handlers = [] if args.get("proxy", True) else [urllib.request.ProxyHandler({})]
+        try:
+            with urllib.request.build_opener(*handlers).open(args["url"], timeout=5) as r:
+                out["http"] = "status:%d" % r.status
+        except urllib.error.HTTPError as e:
+            out["http"] = "status:%d" % e.code
+        except Exception as e:
+            out["http"] = "error:" + type(e).__name__
+    return out
 for line in sys.stdin:
     try:
         m = json.loads(line)

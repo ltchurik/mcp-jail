@@ -94,7 +94,8 @@ sandbox:
 | Layer | Mechanism | Hard or cooperative |
 |---|---|---|
 | `network.mode: none` | Separate network namespace, no interfaces | **Hard** |
-| `network.mode: allowlist` | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy; non-listed hosts get 403 | Cooperative (honoured by every mainstream HTTP client; a malicious server could bypass — see roadmap) |
+| `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail — see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
+| `network.mode: allowlist` (macOS, `sandbox.disabled`) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy; non-listed hosts get 403 | Cooperative (honoured by every mainstream HTTP client; a server that ignores the proxy variables is not stopped) |
 | `filesystem.*` | bubblewrap bind-mounts; nothing else from `$HOME` is visible | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
@@ -102,6 +103,28 @@ sandbox:
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
 Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax.
+
+## Hard egress allowlist
+
+On Linux with the sandbox on, `network.mode: allowlist` is enforced by the kernel, not by the server's good manners:
+
+```
+jail (netns: lo only)                          host (mcp-jail process)
+┌───────────────────────────────────────┐      ┌──────────────────────────┐
+│ server ──DNS──▶ shim :53  (allow→127.0.0.1, else NXDOMAIN)              │
+│        ──HTTP─▶ shim :80  (Host)   ──┐ │      │                          │
+│        ──TLS──▶ shim :443 (SNI)    ──┼─┼─unix─┼─▶ relay: network.allow? ─▶ internet
+│        ──PROXY▶ shim :3128 (CONNECT)─┘ │      │         audit log       │
+└───────────────────────────────────────┘      └──────────────────────────┘
+```
+
+- The jail is created with `--unshare-net`, so there is no route anywhere. The only way out is the Unix socket the shim talks to.
+- The shim is `mcp-jail` itself, re-executed inside the jail. It resolves every allowed name to `127.0.0.1` and sniffs the real destination from the `Host` header or the TLS SNI; the host-side relay re-checks it against `network.allow` and is the one that dials. Both decisions are audited (`kind: net`, `kind: dns`).
+- Servers that honour `HTTP_PROXY` use the proxy on :3128 (set automatically, including `NODE_USE_ENV_PROXY=1` for Node's `fetch`). Servers that don't still work for plain HTTP and HTTPS through the transparent listeners.
+- Anything else — raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed — fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
+- Needs unprivileged user namespaces (same requirement as bubblewrap itself) and bubblewrap ≥ 0.5 for `--cap-add`. No `CAP_NET_ADMIN`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
+
+Inside the jail the shim briefly runs as the user namespace's root so it can bind the privileged ports; the server itself is started in a nested user namespace under your normal uid/gid with no capabilities.
 
 ## Rug-pull lock
 
@@ -181,13 +204,14 @@ Paste JSON-RPC lines on stdin; `delete_file` is refused, `read_file` passes, `pr
 make lint   # go vet + golangci-lint
 make test   # unit tests (-race)
 make e2e    # build + scripts/e2e.sh
+scripts/e2e-docker.sh   # the Linux e2e (bubblewrap + hard egress) from macOS, in a privileged container
 ```
 
 See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md).
 
 ## Roadmap
 
-- [ ] Hard egress allowlist: netns + veth + nftables, so a server that ignores `HTTP_PROXY` still can't reach anything (Linux, needs CAP_NET_ADMIN or a setuid helper)
+- [x] Hard egress allowlist on Linux (v0.2)
 - [ ] macOS sandbox via `sandbox-exec` profiles
 - [ ] `ask` via webhook/approval inbox for headless use
 - [ ] Streamable HTTP transport (wrap remote servers the same way)

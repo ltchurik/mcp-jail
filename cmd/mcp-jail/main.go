@@ -15,6 +15,7 @@ import (
 	"syscall"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/egress"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
 	"github.com/ltchurik/mcp-jail/internal/policy"
@@ -61,6 +62,12 @@ func main() {
 		err = cmdReset(os.Args[2:])
 	case "locks":
 		err = cmdLocks()
+	case sandbox.ShimCommand: // internal: mcp-jail re-executed inside the jail
+		code, err := cmdShim(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mcp-jail:", err)
+		}
+		os.Exit(code)
 	case "version", "--version", "-v":
 		fmt.Println("mcp-jail", version)
 	case "help", "-h", "--help":
@@ -110,15 +117,42 @@ func cmdRun(args []string) error {
 	defer func() { _ = al.Close() }()
 
 	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}}
-	if p.Network.Mode == policy.NetAllowlist {
-		np, err := netproxy.Listen(p, func(host string, ok bool) {
-			dec := "allow"
-			if !ok {
-				dec = "blocked"
-				logf("net: blocked %s", host)
-			}
-			al.Log(audit.Event{Kind: "net", Host: host, Decision: dec})
-		})
+	netObserve := func(kind, host string, ok bool) {
+		dec := "allow"
+		if !ok {
+			dec = "blocked"
+			logf("%s: blocked %s", kind, host)
+		}
+		al.Log(audit.Event{Kind: kind, Host: host, Decision: dec})
+	}
+	switch {
+	case sandbox.HardEgress(p):
+		// Linux: the jail has no network; the shim inside it reaches the host
+		// only through this relay, which enforces network.allow.
+		relay, err := egress.ListenRelay(p, netObserve)
+		if err != nil {
+			return fmt.Errorf("egress relay: %w", err)
+		}
+		defer func() { _ = relay.Close() }()
+		resolv := filepath.Join(relay.Dir(), "resolv.conf")
+		if err := os.WriteFile(resolv, []byte(egress.ResolvConf), 0o600); err != nil {
+			return fmt.Errorf("egress relay: %w", err)
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return fmt.Errorf("egress relay: locate mcp-jail binary: %w", err)
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow,
+			UID: os.Getuid(), GID: os.Getgid(), ResolvConf: resolv}
+		for k, v := range egress.ProxyEnv() {
+			spec.Env[k] = v
+		}
+	case p.Network.Mode == policy.NetAllowlist:
+		// No sandbox: cooperative HTTP_PROXY filtering is all we can offer.
+		np, err := netproxy.Listen(p, func(host string, ok bool) { netObserve("net", host, ok) })
 		if err != nil {
 			return fmt.Errorf("netproxy: %w", err)
 		}
@@ -128,6 +162,7 @@ func cmdRun(args []string) error {
 		}
 		spec.Env["NO_PROXY"] = ""
 		spec.Env["no_proxy"] = ""
+		spec.Env["NODE_USE_ENV_PROXY"] = "1"
 	}
 
 	cmd, how, err := sandbox.Build(p, spec)
@@ -176,6 +211,28 @@ func cmdRun(args []string) error {
 		os.Exit(code)
 	}
 	return nil
+}
+
+// cmdShim runs inside the jail: see package egress.
+func cmdShim(args []string) (int, error) {
+	fs := flag.NewFlagSet(sandbox.ShimCommand, flag.ContinueOnError)
+	sock := fs.String("socket", "", "relay socket")
+	allow := fs.String("allow", "", "comma-separated network.allow")
+	uid := fs.Int("uid", os.Getuid(), "uid for the server")
+	gid := fs.Int("gid", os.Getgid(), "gid for the server")
+	if err := fs.Parse(args); err != nil {
+		return 2, err
+	}
+	if *sock == "" {
+		return 2, errors.New("egress shim: --socket is required")
+	}
+	var hosts []string
+	for _, h := range strings.Split(*allow, ",") {
+		if h = strings.TrimSpace(h); h != "" {
+			hosts = append(hosts, h)
+		}
+	}
+	return egress.RunShim(*sock, hosts, *uid, *gid, fs.Args(), logf)
 }
 
 func cmdInit(args []string) error {

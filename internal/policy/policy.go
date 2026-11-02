@@ -25,8 +25,9 @@ type NetMode string
 const (
 	// NetNone removes network access entirely (network namespace, no interfaces).
 	NetNone NetMode = "none"
-	// NetAllowlist keeps the network but routes HTTP(S) through a filtering proxy
-	// that only permits listed hosts. Cooperative: honours HTTP_PROXY/HTTPS_PROXY.
+	// NetAllowlist permits only the listed hosts. On Linux with the sandbox
+	// on this is enforced by an empty network namespace plus an in-jail
+	// relay (hard); elsewhere it is a filtering HTTP_PROXY (cooperative).
 	NetAllowlist NetMode = "allowlist"
 	// NetAll leaves the network untouched.
 	NetAll NetMode = "all"
@@ -190,7 +191,7 @@ name: my-server
 
 network:
   # none      – no network at all (hard: network namespace)
-  # allowlist – only hosts below, via a filtering proxy (cooperative: HTTP_PROXY)
+  # allowlist – only hosts below (hard on Linux; HTTP_PROXY-based elsewhere)
   # all       – unrestricted
   mode: none
   allow:

@@ -25,8 +25,11 @@ In scope — anything that lets a jailed server do what the policy says it can't
 
 Known limitations, documented in the README and **not** vulnerabilities:
 
-- `network.mode: allowlist` is cooperative (it relies on `HTTP_PROXY`); use
-  `mode: none` for a hard guarantee until the netns+pasta backend lands
+- `network.mode: allowlist` is only hard on Linux with the sandbox on. With
+  `sandbox.disabled: true`, or on macOS/Windows, it relies on `HTTP_PROXY`
+  and a server that ignores it is not stopped; use `mode: none` there
+- in the hard allowlist the relay dials whatever an allowed name resolves to
+  on the host, including private addresses; choose `network.allow` accordingly
 - no sandbox on macOS/Windows yet; policy, lock and audit still apply
 - a hostile MCP *client* is out of scope
 
