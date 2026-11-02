@@ -20,7 +20,7 @@ In scope — anything that lets a jailed server do what the policy says it can't
 
 - escaping the filesystem scope or the network namespace
 - a `tools/call` reaching the server despite a `deny` / unanswered `ask`
-- a changed tool set passing the rug-pull lock
+- a changed tool, prompt or resource set passing the rug-pull lock
 - tampering with or suppressing the audit log from inside the jail
 
 Known limitations, documented in the README and **not** vulnerabilities:

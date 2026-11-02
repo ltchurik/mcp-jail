@@ -35,17 +35,22 @@ type Proxy struct {
 	pmu     sync.Mutex
 	pending map[string]pendingReq
 
-	// Lock state. verified: this session's tool set matched the lock.
-	// listInflight: tools/list requests awaiting a response. tainted: a
-	// mismatch was seen. Guarded by lmu; lcond wakes callers parked in
-	// waitVerified.
-	lmu          sync.Mutex
-	lcond        *sync.Cond
-	verified     bool
-	tainted      bool
-	listInflight int
+	// Lock state per list kind (tools, prompts, resources, templates).
+	// Guarded by lmu; lcond wakes callers parked in waitVerified.
+	lmu      sync.Mutex
+	lcond    *sync.Cond
+	sections map[lock.Kind]*lockState
 
 	tty *os.File
+}
+
+// lockState tracks one locked list within a session. verified: this
+// session's list matched the lock. inflight: list requests awaiting a
+// response. tainted: a mismatch was seen.
+type lockState struct {
+	verified bool
+	tainted  bool
+	inflight int
 }
 
 type pendingReq struct {
@@ -54,21 +59,42 @@ type pendingReq struct {
 	start  time.Time
 }
 
+// gate maps a "use" method to the list it depends on and to the list method
+// a client must have called first. resources/read is also refused while the
+// resource templates are tainted (see waitVerified).
+var gate = map[string]lock.Kind{
+	"tools/call":     lock.Tools,
+	"prompts/get":    lock.Prompts,
+	"resources/read": lock.Resources,
+}
+
+func listMethod(k lock.Kind) string {
+	for _, m := range []string{"tools/list", "prompts/list", "resources/list", "resources/templates/list"} {
+		if lock.KindOf(m) == k {
+			return m
+		}
+	}
+	return string(k)
+}
+
 // Run brokers until either side closes. clientIn is our stdin, clientOut our
 // stdout; serverIn/serverOut are the jailed server's stdin/stdout.
 func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer, serverOut io.Reader) error {
 	p.client, p.server = clientOut, serverIn
 	p.pending = map[string]pendingReq{}
 	p.lcond = sync.NewCond(&p.lmu)
-	if !p.Policy.Lock.Enabled {
-		p.verified = true
+	p.sections = map[lock.Kind]*lockState{}
+	for _, k := range lock.Kinds {
+		p.sections[k] = &lockState{verified: !p.Policy.Lock.Enabled}
 	}
 	errc := make(chan error, 2)
 	go func() { errc <- p.pump(clientIn, p.fromClient) }()
 	go func() { errc <- p.pump(serverOut, p.fromServer) }()
 	err := <-errc
 	p.lmu.Lock()
-	p.tainted = true // release anyone parked in waitVerified with a deny
+	for _, st := range p.sections {
+		st.tainted = true // release anyone parked in waitVerified with a deny
+	}
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 	if p.tty != nil {
@@ -113,16 +139,21 @@ func (p *Proxy) fromClient(line []byte) {
 	}
 	if m.IsRequest() {
 		pr := pendingReq{method: m.Method, start: time.Now()}
-		if m.Method == "tools/list" {
+		if k := lock.KindOf(m.Method); k != "" {
 			p.lmu.Lock()
-			p.listInflight++
+			p.sections[k].inflight++
 			p.lmu.Unlock()
 		}
-		if m.Method == "tools/call" {
+		switch m.Method {
+		case "tools/call":
 			var tc jsonrpc.ToolCallParams
 			_ = json.Unmarshal(m.Params, &tc)
 			pr.tool = tc.Name
 			if !p.allowCall(m, tc) {
+				return
+			}
+		case "prompts/get", "resources/read":
+			if !p.allowUse(m) {
 				return
 			}
 		}
@@ -133,6 +164,29 @@ func (p *Proxy) fromClient(line []byte) {
 	p.toServer(line)
 }
 
+// allowUse gates prompts/get and resources/read on their lock section.
+// Returns false if the request was answered with an error.
+func (p *Proxy) allowUse(m *jsonrpc.Message) bool {
+	var params struct {
+		Name string `json:"name"`
+		URI  string `json:"uri"`
+	}
+	_ = json.Unmarshal(m.Params, &params)
+	what := params.Name + params.URI
+	kind := "prompt"
+	if m.Method == "resources/read" {
+		kind = "resource"
+	}
+	if why := p.waitVerified(gate[m.Method]); why != "" {
+		p.Audit.Log(audit.Event{Kind: kind, Tool: what, Decision: "deny", Reason: why})
+		p.Logf("deny %s %s (%s)", m.Method, what, why)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
+		return false
+	}
+	p.Audit.Log(audit.Event{Kind: kind, Tool: what, Decision: "allow"})
+	return true
+}
+
 // allowCall applies tools policy. Returns false if the call was answered
 // with an error and must not be forwarded.
 func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
@@ -140,7 +194,7 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 	if p.Policy.Audit.Args {
 		args = tc.Arguments
 	}
-	if why := p.waitVerified(); why != "" {
+	if why := p.waitVerified(lock.Tools); why != "" {
 		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
 		p.Logf("deny tools/call %s (%s)", tc.Name, why)
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
@@ -169,30 +223,43 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 	}
 }
 
-// waitVerified blocks a tools/call until the tool set has been checked
-// against the lock. Returns "" when the call may proceed, otherwise the
-// reason it must be denied. A call that arrives while tools/list is in
-// flight waits for that response; a call before any tools/list is refused,
-// so a client cannot race the lock by calling before listing.
-func (p *Proxy) waitVerified() string {
+// waitVerified blocks a use of list k (tools/call, prompts/get,
+// resources/read) until that list has been checked against the lock.
+// Returns "" when the call may proceed, otherwise the reason it must be
+// denied. A call that arrives while the list is in flight waits for that
+// response; a call before any list is refused, so a client cannot race the
+// lock by calling before listing.
+func (p *Proxy) waitVerified(k lock.Kind) string {
 	p.lmu.Lock()
 	defer p.lmu.Unlock()
+	st := p.sections[k]
 	for {
 		switch {
-		case p.tainted:
-			return "tool definitions changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
-		case p.verified:
+		case st.tainted:
+			return string(k) + " changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
+		case k == lock.Resources && p.sections[lock.ResourceTemplates].tainted:
+			return "resource templates changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
+		case st.verified:
 			return ""
-		case p.listInflight == 0:
-			return "tools/call before tools/list was verified against the lock"
+		case st.inflight == 0:
+			return gateMethod(k) + " before " + listMethod(k) + " was verified against the lock"
 		}
 		p.lcond.Wait()
 	}
 }
 
-func (p *Proxy) setLock(verified, tainted bool) {
+func gateMethod(k lock.Kind) string {
+	for m, gk := range gate {
+		if gk == k {
+			return m
+		}
+	}
+	return string(k)
+}
+
+func (p *Proxy) setLock(k lock.Kind, verified, tainted bool) {
 	p.lmu.Lock()
-	p.verified, p.tainted = verified, tainted
+	p.sections[k].verified, p.sections[k].tainted = verified, tainted
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -237,10 +304,11 @@ func (p *Proxy) fromServer(line []byte) {
 		p.pmu.Unlock()
 		if ok {
 			switch pr.method {
-			case "tools/list":
-				ok := p.checkLock(m)
+			case "tools/list", "prompts/list", "resources/list", "resources/templates/list":
+				k := lock.KindOf(pr.method)
+				ok := p.checkLock(k, m)
 				p.lmu.Lock()
-				p.listInflight--
+				p.sections[k].inflight--
 				p.lcond.Broadcast()
 				p.lmu.Unlock()
 				if !ok {
@@ -258,53 +326,54 @@ func (p *Proxy) fromServer(line []byte) {
 	p.toClient(line)
 }
 
-// checkLock enforces rug-pull protection on a tools/list response. Returns
-// false when the response was replaced with an error.
-func (p *Proxy) checkLock(m *jsonrpc.Message) bool {
+// checkLock enforces rug-pull protection on a list response of kind k.
+// Returns false when the response was replaced with an error.
+func (p *Proxy) checkLock(k lock.Kind, m *jsonrpc.Message) bool {
 	if !p.Policy.Lock.Enabled {
 		return true
 	}
 	if m.Error != nil {
-		return true // server refused to list; nothing to verify, nothing to call
+		return true // server refused to list; nothing to verify, nothing to use
 	}
-	var res jsonrpc.ToolsListResult
-	if err := json.Unmarshal(m.Result, &res); err != nil {
-		p.Logf("tools/list: cannot parse result: %v", err)
-		return true
-	}
-	hash, per, err := lock.Compute(res.Tools)
+	sec, err := lock.ComputeResult(k, m.Result)
 	if err != nil {
-		p.Logf("tools/list: cannot hash: %v", err)
-		return true
+		// Fail closed: a list we cannot hash is a list we cannot trust.
+		p.Logf("%s: cannot hash result: %v", listMethod(k), err)
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: string(k) + ": " + err.Error()})
+		p.setLock(k, false, true)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: cannot verify "+string(k)+" against the lock: "+err.Error()))
+		return false
 	}
 	cur, err := lock.Load(p.Policy.Name)
 	if err != nil {
 		p.Logf("lock: %v", err)
-		return true
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: err.Error()})
+		p.setLock(k, false, true)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: cannot read lock: "+err.Error()))
+		return false
 	}
-	now := time.Now().UTC()
-	if cur == nil {
-		f := &lock.File{Name: p.Policy.Name, Hash: hash, Tools: per, CreatedAt: now, UpdatedAt: now}
-		if err := lock.Save(f); err != nil {
+	old := cur.Section(k)
+	if old == nil {
+		if _, err := lock.Record(p.Policy.Name, k, sec); err != nil {
 			p.Logf("lock: save: %v", err)
 		}
-		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: hash[:12]})
-		p.Logf("lock: recorded %d tools (%s)", len(per), hash[:12])
-		p.setLock(true, false)
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: string(k) + " " + lock.Short(sec.Hash)})
+		p.Logf("lock: recorded %d %s (%s)", len(sec.Items), k, lock.Short(sec.Hash))
+		p.setLock(k, true, false)
 		return true
 	}
-	if cur.Hash == hash {
-		p.setLock(true, false)
+	if old.Hash == sec.Hash {
+		p.setLock(k, true, false)
 		return true
 	}
-	d := lock.Compare(cur.Tools, per)
-	_ = lock.SavePending(&lock.Pending{Name: p.Policy.Name, Hash: hash, Tools: per, SeenAt: now})
-	p.setLock(false, true)
-	reason := fmt.Sprintf("added=%v removed=%v changed=%v", d.Added, d.Removed, d.Changed)
+	d := lock.Compare(old.Items, sec.Items)
+	_ = lock.SavePending(p.Policy.Name, k, sec)
+	p.setLock(k, false, true)
+	reason := string(k) + " " + d.String()
 	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: reason})
-	p.Logf("RUG-PULL: tool definitions changed: %s", reason)
+	p.Logf("RUG-PULL: %s changed: %s", k, d)
 	p.Logf("          inspect with `mcp-jail diff %s`, accept with `mcp-jail approve %s`", p.Policy.Name, p.Policy.Name)
 	p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull,
-		"mcp-jail: tool definitions changed since last approval ("+reason+"); run `mcp-jail approve "+p.Policy.Name+"`"))
+		"mcp-jail: "+string(k)+" changed since last approval ("+d.String()+"); run `mcp-jail approve "+p.Policy.Name+"`"))
 	return false
 }

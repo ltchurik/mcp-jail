@@ -7,6 +7,9 @@ TOOLS = [
     {"name": "probe", "description": "Report what the server can see (home dir, network)", "inputSchema": {"type": "object"}},
 ]
 
+PROMPTS = [{"name": "summarize", "description": "Summarize a document", "arguments": []}]
+RESOURCES = [{"uri": "file:///readme", "name": "readme", "mimeType": "text/plain"}]
+
 def probe(args):
     import os, socket
     home = os.path.expanduser("~")
@@ -50,6 +53,14 @@ for line in sys.stdin:
         r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "echo", "version": "0"}}
     elif m.get("method") == "tools/list":
         r = {"tools": TOOLS}
+    elif m.get("method") == "prompts/list":
+        r = {"prompts": PROMPTS}
+    elif m.get("method") == "prompts/get":
+        r = {"messages": [{"role": "user", "content": {"type": "text", "text": "prompt " + m["params"]["name"]}}]}
+    elif m.get("method") == "resources/list":
+        r = {"resources": RESOURCES}
+    elif m.get("method") == "resources/read":
+        r = {"contents": [{"uri": m["params"]["uri"], "text": "resource body"}]}
     elif m.get("method") == "tools/call":
         name = m["params"]["name"]
         text = json.dumps(probe(m["params"].get("arguments") or {})) if name == "probe" else "called " + name

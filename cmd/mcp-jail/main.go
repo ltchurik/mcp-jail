@@ -278,24 +278,31 @@ func cmdDiff(args []string) error {
 	if err != nil {
 		return err
 	}
-	if pend == nil {
+	if pend == nil || len(pend.Sections) == 0 {
 		fmt.Println("nothing pending for", name)
 		return nil
 	}
-	var old map[string]string
-	if cur != nil {
-		old = cur.Tools
-	}
-	d := lock.Compare(old, pend.Tools)
 	fmt.Printf("pending change for %s (seen %s)\n", name, pend.SeenAt.Format("2006-01-02 15:04:05 UTC"))
-	for _, n := range d.Added {
-		fmt.Println("  + added  ", n)
-	}
-	for _, n := range d.Removed {
-		fmt.Println("  - removed", n)
-	}
-	for _, n := range d.Changed {
-		fmt.Println("  ~ changed", n)
+	for _, k := range lock.Kinds {
+		sec, ok := pend.Sections[k]
+		if !ok {
+			continue
+		}
+		var old map[string]string
+		if o := cur.Section(k); o != nil {
+			old = o.Items
+		}
+		d := lock.Compare(old, sec.Items)
+		fmt.Printf("%s:\n", k)
+		for _, n := range d.Added {
+			fmt.Println("  + added  ", n)
+		}
+		for _, n := range d.Removed {
+			fmt.Println("  - removed", n)
+		}
+		for _, n := range d.Changed {
+			fmt.Println("  ~ changed", n)
+		}
 	}
 	fmt.Println("\nreview the server, then: mcp-jail approve", name)
 	return nil
@@ -310,8 +317,22 @@ func cmdApprove(args []string) error {
 	if err != nil {
 		return err
 	}
-	fmt.Printf("approved %s: %d tools, %s\n", name, len(f.Tools), f.Hash[:12])
+	fmt.Printf("approved %s: %s\n", name, summarize(f))
 	return nil
+}
+
+// summarize renders "11 tools 5dc4bc0b04d6, 2 prompts 1a2b..." for a lock.
+func summarize(f *lock.File) string {
+	var parts []string
+	for _, k := range lock.Kinds {
+		if sec := f.Section(k); sec != nil {
+			parts = append(parts, fmt.Sprintf("%d %s %s", len(sec.Items), strings.ReplaceAll(string(k), "_", " "), lock.Short(sec.Hash)))
+		}
+	}
+	if len(parts) == 0 {
+		return "empty"
+	}
+	return strings.Join(parts, ", ")
 }
 
 func cmdReset(args []string) error {
@@ -349,10 +370,10 @@ func cmdLocks() error {
 		}
 		pend, _ := lock.LoadPending(f.Name)
 		flag := ""
-		if pend != nil {
+		if pend != nil && len(pend.Sections) > 0 {
 			flag = "  [PENDING CHANGE]"
 		}
-		fmt.Printf("%-24s %3d tools  %s  %s%s\n", f.Name, len(f.Tools), f.Hash[:12], f.UpdatedAt.Format("2006-01-02"), flag)
+		fmt.Printf("%-24s %s  %s%s\n", f.Name, f.UpdatedAt.Format("2006-01-02"), summarize(&f), flag)
 	}
 	return nil
 }

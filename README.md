@@ -100,7 +100,7 @@ sandbox:
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
-| `lock` | SHA-256 of canonical `tools/list`; mismatch ⇒ `tools/list` and all `tools/call` fail until approved. A `tools/call` sent before (or racing) `tools/list` is held until the list is verified, or refused | **Hard** |
+| `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
 Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax.
@@ -129,20 +129,21 @@ Inside the jail the shim briefly runs as the user namespace's root so it can bin
 
 ## Rug-pull lock
 
-First run records the tool set:
+First run records each list the client asks for — tools, prompts, resources and resource templates are locked independently, so a server that only has tools never trips over the others:
 
 ```
 [mcp-jail] lock: recorded 11 tools (5dc4bc0b04d6)
+[mcp-jail] lock: recorded 2 prompts (9f1c0a7e3b44)
 ```
 
-If the server later changes any tool name, description or schema:
+If the server later changes any name, description, schema, prompt text or resource URI:
 
 ```
-[mcp-jail] RUG-PULL: tool definitions changed: added=[] removed=[] changed=[read_file]
+[mcp-jail] RUG-PULL: tools changed: added=[] removed=[] changed=[read_file]
 [mcp-jail]           inspect with `mcp-jail diff filesystem`, accept with `mcp-jail approve filesystem`
 ```
 
-The client sees an error instead of a tool list, and every `tools/call` is refused until you look:
+The client sees an error instead of that list, and every use of it (`tools/call`, `prompts/get`, `resources/read`) is refused until you look — the other lists keep working if they are unchanged:
 
 ```sh
 mcp-jail diff filesystem      # which tools changed
@@ -218,6 +219,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] macOS sandbox via `sandbox-exec` profiles (v0.2)
 - [ ] `ask` via webhook/approval inbox for headless use
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
+- [x] Prompts and resources in the rug-pull lock (v0.2)
 - [ ] Per-tool argument constraints (`path` must be under X, `url` host must be in allowlist)
 - [ ] `mcp-jail wrap` — rewrite an existing client config in place
 
