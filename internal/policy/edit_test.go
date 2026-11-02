@@ -1,6 +1,7 @@
 package policy
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -164,5 +165,30 @@ func TestSetRuleFollowsSymlink(t *testing.T) {
 	b, _ := os.ReadFile(target)
 	if !strings.Contains(string(b), "x: allow") {
 		t.Fatalf("target not updated:\n%s", b)
+	}
+}
+
+func TestSetRuleConcurrentEditsAllLand(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.yml")
+	if err := os.WriteFile(path, []byte("name: t\ntools:\n  default: ask\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const n = 16
+	errs := make(chan error, n)
+	for i := 0; i < n; i++ {
+		go func(i int) { errs <- SetRule(path, fmt.Sprintf("tool_%d", i), Allow) }(i)
+	}
+	for i := 0; i < n; i++ {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(p.Tools.Rules) != n {
+		t.Fatalf("got %d rules, want %d: %v", len(p.Tools.Rules), n, p.Tools.Rules)
 	}
 }

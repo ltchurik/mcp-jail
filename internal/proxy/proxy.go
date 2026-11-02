@@ -24,6 +24,7 @@ import (
 const (
 	maxLine      = 64 << 20 // 64 MiB per JSON-RPC line
 	maxListItems = 10000    // items a paged list may accumulate before it is refused
+	maxPending   = 1024     // default MaxPending
 )
 
 // Proxy holds the broker state.
@@ -40,6 +41,10 @@ type Proxy struct {
 	// Asks, when set, lets an attached dashboard answer `ask` decisions that
 	// have no terminal (see package control). nil: terminal or webhook only.
 	Asks *control.Broker
+	// MaxPending bounds the requests awaiting a server response; past it
+	// the oldest is dropped and answered with CodeNoResponse, so a server
+	// that stops answering cannot grow the proxy without bound. 0: 1024.
+	MaxPending int
 
 	// live is the policy in force: Policy with the tools/ask sections of
 	// the latest successful Reload. nil until the first Reload.
@@ -81,6 +86,7 @@ type lockState struct {
 }
 
 type pendingReq struct {
+	id     json.RawMessage // as the client sent it
 	method string
 	tool   string
 	cursor string // params.cursor of a list request
@@ -180,7 +186,7 @@ func (p *Proxy) fromClient(line []byte) {
 		}
 	}
 	if m.IsRequest() {
-		pr := pendingReq{method: m.Method, start: time.Now()}
+		pr := pendingReq{id: m.ID, method: m.Method, start: time.Now()}
 		if k := lock.KindOf(m.Method); k != "" {
 			var lp struct {
 				Cursor string `json:"cursor"`
@@ -210,10 +216,55 @@ func (p *Proxy) fromClient(line []byte) {
 			}
 		}
 		p.pmu.Lock()
+		evicted := p.evictOldest()
 		p.pending[m.IDKey()] = pr
 		p.pmu.Unlock()
+		for _, e := range evicted {
+			p.expire(e.key, e.req)
+		}
 	}
 	p.toServer(line)
+}
+
+type evictedReq struct {
+	key string
+	req pendingReq
+}
+
+// evictOldest makes room for one more pending request. Called with pmu
+// held; the returned requests have been removed and must be expired.
+func (p *Proxy) evictOldest() []evictedReq {
+	limit := p.MaxPending
+	if limit <= 0 {
+		limit = maxPending
+	}
+	var out []evictedReq
+	for len(p.pending) >= limit {
+		var oldest evictedReq
+		for k, r := range p.pending {
+			if oldest.key == "" || r.start.Before(oldest.req.start) {
+				oldest = evictedReq{k, r}
+			}
+		}
+		delete(p.pending, oldest.key)
+		out = append(out, oldest)
+	}
+	return out
+}
+
+// expire answers a request the server never responded to. A list request
+// that expires no longer holds its section's uses waiting.
+func (p *Proxy) expire(key string, pr pendingReq) {
+	why := "server did not answer " + pr.method + " (request " + key + "); dropped at the in-flight limit"
+	p.Audit.Log(audit.Event{Kind: "protocol", Tool: pr.tool, Decision: "blocked", Reason: why, Duration: time.Since(pr.start)})
+	p.Logf("%s", why)
+	if k := lock.KindOf(pr.method); k != "" {
+		p.lmu.Lock()
+		p.sections[k].inflight--
+		p.lcond.Broadcast()
+		p.lmu.Unlock()
+	}
+	p.toClient(jsonrpc.NewErrorResponse(pr.id, jsonrpc.CodeNoResponse, "mcp-jail: "+why))
 }
 
 // allowUse gates prompts/get and resources/read on their lock section.

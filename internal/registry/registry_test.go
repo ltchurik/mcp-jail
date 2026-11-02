@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -23,7 +24,7 @@ func TestRegisterListPrune(t *testing.T) {
 	if e.PID != os.Getpid() || e.Name != "fs server" || e.How != "bwrap" || !e.Lock || e.StartedAt.IsZero() {
 		t.Fatalf("entry: %+v", e)
 	}
-	if got := filepath.Base(e.path); got != "fs_server."+strconv.Itoa(e.PID)+".json" {
+	if got := filepath.Base(e.path); !strings.HasPrefix(got, "fs_server-") || !strings.HasSuffix(got, "."+strconv.Itoa(e.PID)+".json") {
 		t.Fatalf("file name %q", got)
 	}
 
@@ -92,9 +93,17 @@ func TestEmptyDir(t *testing.T) {
 }
 
 func TestSafeName(t *testing.T) {
-	for in, want := range map[string]string{"a b/c": "a_b_c", "": "server", "ok-1.2_x": "ok-1.2_x", "../x": ".._x"} {
+	for in, want := range map[string]string{"": "server", "ok-1.2_x": "ok-1.2_x"} {
 		if got := safe(in); got != want {
 			t.Errorf("safe(%q) = %q, want %q", in, got, want)
 		}
+	}
+	// names that sanitise alike get distinct files
+	a, b := safe("a b"), safe("a/b")
+	if a == b || !strings.HasPrefix(a, "a_b-") || len(a) != len("a_b-")+8 {
+		t.Errorf("safe(\"a b\") = %q, safe(\"a/b\") = %q", a, b)
+	}
+	if got := safe("../x"); strings.ContainsAny(got, "/\\") || got == ".._x" {
+		t.Errorf("safe(\"../x\") = %q", got)
 	}
 }
