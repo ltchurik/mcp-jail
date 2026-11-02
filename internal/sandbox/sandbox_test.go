@@ -37,7 +37,7 @@ func TestToolchainPrefix(t *testing.T) {
 func TestBuildDisabled(t *testing.T) {
 	p := policy.Default()
 	p.Sandbox.Disabled = true
-	argv, how, err := build(p, Spec{Command: []string{"srv", "--flag"}, Env: map[string]string{"HTTP_PROXY": "http://127.0.0.1:1"}})
+	argv, how, _, err := build(p, Spec{Command: []string{"srv", "--flag"}, Env: map[string]string{"HTTP_PROXY": "http://127.0.0.1:1"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,7 +66,7 @@ func TestBuildBwrapArgs(t *testing.T) {
 	p.Filesystem.ReadOnly = []string{"/opt/ro"}
 	p.Filesystem.ReadWrite = []string{"/opt/rw"}
 	p.Sandbox.Env = []string{"PATH"}
-	argv, how, err := build(p, Spec{Command: []string{"/usr/bin/true"}})
+	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -88,7 +88,7 @@ func TestBuildBwrapArgs(t *testing.T) {
 	}
 
 	p.Network.Mode = policy.NetAll
-	argv, _, _ = build(p, Spec{Command: []string{"/usr/bin/true"}})
+	argv, _, _, _ = build(p, Spec{Command: []string{"/usr/bin/true"}})
 	if contains(argv, "--unshare-net") {
 		t.Error("mode all must not unshare net")
 	}
@@ -124,12 +124,12 @@ func TestBuildHardEgress(t *testing.T) {
 	p.Network.Allow = []string{"api.github.com", "*.githubusercontent.com"}
 
 	// Fail closed: allowlist mode without a relay must not start at all.
-	if _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}}); err == nil {
+	if _, _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}}); err == nil {
 		t.Fatal("allowlist without egress relay must fail")
 	}
 
 	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, UID: 1001, GID: 1002, ResolvConf: "/tmp/relay/resolv.conf"}
-	argv, how, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, Egress: eg, Env: map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}})
+	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, Egress: eg, Env: map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -241,10 +241,10 @@ func TestBuildDarwin(t *testing.T) {
 	p.Network.Mode = policy.NetAllowlist
 	p.Network.Allow = []string{"example.com"}
 	work := t.TempDir()
-	if _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, WorkDir: work}); err == nil {
+	if _, _, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, WorkDir: work}); err == nil {
 		t.Fatal("allowlist without a proxy port must fail closed")
 	}
-	argv, how, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, WorkDir: work, ProxyPort: 9})
+	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, WorkDir: work, ProxyPort: 9})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -263,5 +263,171 @@ func TestBuildDarwin(t *testing.T) {
 	}
 	if !strings.Contains(how, "proxy only") {
 		t.Fatalf("how = %q", how)
+	}
+}
+
+func TestTooBroadAndToolchainBind(t *testing.T) {
+	root := t.TempDir()
+	root, _ = filepath.EvalSymlinks(root)
+	home := filepath.Join(root, "home")
+	t.Setenv("HOME", home)
+	for _, d := range []string{"home/bin", "home/.local/bin", "home/.config/mcp-jail/run", "home/projects/x", "opt/tool/bin"} {
+		if err := os.MkdirAll(filepath.Join(root, d), 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	protect := []string{filepath.Join(home, ".config/mcp-jail/locks"), filepath.Join(home, ".config/mcp-jail/run"), filepath.Join(home, "projects/x/policy.yml")}
+	cases := map[string]string{
+		"/":                                     "root",
+		home:                                    "home",
+		root:                                    "home", // a parent of home
+		filepath.Join(home, ".config"):          "contains mcp-jail state",
+		filepath.Join(home, "projects/x"):       "contains mcp-jail state",
+		filepath.Join(home, "projects/x/sub"):   "",
+		filepath.Join(home, "projects"):         "contains mcp-jail state",
+		filepath.Join(root, "opt/tool"):         "",
+		filepath.Join(home, ".local/bin"):       "",
+		filepath.Join(home, ".config/mcp-jail"): "contains mcp-jail state",
+	}
+	for dir, want := range cases {
+		if got := tooBroad(dir, protect); got != want {
+			t.Errorf("tooBroad(%s) = %q, want %q", dir, got, want)
+		}
+	}
+
+	// ~/bin/foo: the prefix would be ~ itself; fall back to ~/bin
+	exe := filepath.Join(home, "bin", "foo")
+	writeExec(t, exe)
+	if dir, note := toolchainBind(exe, protect); dir != filepath.Join(home, "bin") || note != "" {
+		t.Errorf("~/bin/foo: %q %q", dir, note)
+	}
+	// ~/.local/bin/uvx: prefix ~/.local is fine (no state under it here)
+	exe = filepath.Join(home, ".local", "bin", "uvx")
+	writeExec(t, exe)
+	if dir, note := toolchainBind(exe, protect); dir != filepath.Join(home, ".local") || note != "" {
+		t.Errorf("~/.local/bin/uvx: %q %q", dir, note)
+	}
+	// a binary directly in $HOME: nothing safe to share
+	exe = filepath.Join(home, "server")
+	writeExec(t, exe)
+	if dir, note := toolchainBind(exe, protect); dir != "" || !strings.Contains(note, "home") {
+		t.Errorf("~/server: %q %q", dir, note)
+	}
+	// /opt/tool/bin/x: unchanged behaviour
+	exe = filepath.Join(root, "opt/tool/bin/x")
+	writeExec(t, exe)
+	if dir, note := toolchainBind(exe, protect); dir != filepath.Join(root, "opt/tool") || note != "" {
+		t.Errorf("/opt/tool/bin/x: %q %q", dir, note)
+	}
+}
+
+func TestMasks(t *testing.T) {
+	root := t.TempDir()
+	root, _ = filepath.EvalSymlinks(root)
+	mk := func(rel string) string {
+		p := filepath.Join(root, rel)
+		if err := os.MkdirAll(filepath.Dir(p), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if strings.HasSuffix(rel, "/") {
+			if err := os.MkdirAll(p, 0o750); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.WriteFile(p, []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return p
+	}
+	pol := mk("proj/policy.yml")
+	audit := mk("proj/logs/a.jsonl")
+	locks := mk("home/.config/mcp-jail/locks/")
+	run := mk("home/.config/mcp-jail/run/")
+	missing := filepath.Join(root, "nope")
+	got := masks([]string{pol, audit, locks, run, missing, ""}, []string{filepath.Join(root, "proj"), filepath.Join(root, "home/.config")})
+	want := []mask{{pol, false}, {audit, false}, {locks, true}, {run, true}}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("mask %d: %+v, want %+v", i, got[i], want[i])
+		}
+	}
+	if m := masks([]string{pol, locks}, []string{filepath.Join(root, "elsewhere")}); len(m) != 0 {
+		t.Errorf("nothing bound, nothing to mask: %+v", m)
+	}
+}
+
+func TestDarwinProfileProtectsState(t *testing.T) {
+	root := t.TempDir()
+	root, _ = filepath.EvalSymlinks(root)
+	home := filepath.Join(root, "home")
+	run := filepath.Join(home, ".config/mcp-jail/run")
+	if err := os.MkdirAll(run, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	pol := filepath.Join(home, "policy.yml")
+	p := policy.Default()
+	p.Name = "evil\n(allow default)"
+	p.Network.Mode = policy.NetAll
+	p.Filesystem.ReadWrite = []string{home}
+	prof := darwinProfile(p, Spec{}, profilePaths{home: home, protect: []string{pol, run, ""}})
+	tail := prof[strings.LastIndex(prof, "(allow "):]
+	for _, want := range []string{`(deny file* (subpath "` + pol + `") (subpath "` + run + `"))`, `(deny network* (subpath "` + pol + `") (subpath "` + run + `"))`} {
+		if !strings.Contains(tail, want) {
+			t.Errorf("state deny must come after every allow:\n%s", prof)
+		}
+	}
+	if n := strings.Count("\n"+prof, "\n(allow default)\n"); n != 1 {
+		t.Errorf("name injected a rule (%d allow default lines):\n%s", n, prof)
+	}
+	if !strings.Contains(prof, `policy "evil?(allow default)"`) {
+		t.Errorf("control character not neutralised:\n%s", prof)
+	}
+}
+
+func TestBuildLinuxDoesNotShareHomeAsCwd(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux only")
+	}
+	bin := t.TempDir()
+	writeExec(t, filepath.Join(bin, "bwrap"))
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Chdir(home)
+	pol := filepath.Join(home, "p.yml")
+	if err := os.WriteFile(pol, []byte("name: x\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	protect := []string{pol, filepath.Join(home, ".config/mcp-jail/locks")}
+
+	// cwd is $HOME and the policy does not list it: not shared
+	p := policy.Default()
+	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, Protect: protect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined := strings.Join(argv, " ")
+	if strings.Contains(joined, "--ro-bind "+home+" "+home) || !strings.Contains(joined, "--chdir /") {
+		t.Errorf("home shared as cwd: %s", joined)
+	}
+	if !strings.Contains(how, "cwd not shared (home)") {
+		t.Errorf("how = %q", how)
+	}
+
+	// the policy lists $HOME read-only on purpose: shared, but the policy
+	// file inside it is masked
+	p.Filesystem.ReadOnly = []string{home}
+	argv, how, _, err = build(p, Spec{Command: []string{"/usr/bin/true"}, Protect: protect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind "+home+" "+home) || !strings.Contains(joined, "--ro-bind /dev/null "+pol) {
+		t.Errorf("explicit read_only home must be bound with the policy file masked: %s", joined)
+	}
+	if strings.Contains(how, "cwd not shared") {
+		t.Errorf("how = %q", how)
 	}
 }
