@@ -180,6 +180,7 @@ const (
 	CodePolicyDenied = -32001
 	CodeRugPull      = -32002
 	CodeAskRejected  = -32003
+	CodeNoResponse   = -32004 // the server never answered and the request was dropped
 )
 
 // ToolCallParams is the params shape of a tools/call request.
