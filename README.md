@@ -126,7 +126,7 @@ mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, -
 
 `mcp-jail ui` is a local page over everything the other commands know.
 
-**Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
+**Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, a **Stop** button on a running jail (confirmed in place; the jail sends its server SIGTERM and exits, with a `stop` event in the audit log), and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
 
 **Waiting for your decision.** Headless `ask` calls (Claude Desktop and Cursor have no terminal) appear at the top of the page with their arguments and a countdown. **Allow** sends the call on, **Deny** refuses it, the deadline refuses it. **Always allow** / **Always deny** first write the rule into the policy file, then answer. See [Headless approvals](#headless-approvals).
 
@@ -352,8 +352,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap`: rewrite an existing client config in place (v0.2)
 - [x] Dashboard: monitor, reports, lock approval and `ask` answers (v0.3)
-- [x] Promote a rule to allow/deny from the dashboard (v0.4)
-- [ ] Stop a jail from the dashboard
+- [x] Promote a rule to allow/deny and stop a jail from the dashboard (v0.4)
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [ ] Windows sandbox
 

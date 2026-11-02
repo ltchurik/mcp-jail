@@ -149,6 +149,7 @@ button.btn { font: inherit; font-size: 12.5px; cursor: pointer; }
 .ask .buttons { flex-wrap: wrap; justify-content: flex-end; }
 .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border); }
 .drawer-actions:empty { display: none; }
+.card > .actions { display: flex; gap: 8px; margin: 8px 0 0; }
 .pending .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--gap); margin-top: 10px; }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow); border-top: 3px solid var(--border); }

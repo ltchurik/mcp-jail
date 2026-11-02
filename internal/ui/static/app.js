@@ -165,6 +165,23 @@
           });
         });
       }
+      if (s.running && s.control) {
+        const act = el("div", "actions");
+        const stop = el("button", "btn", "Stop");
+        stop.type = "button";
+        stop.title = `ask the jail to exit: the server gets SIGTERM (pid ${s.pid})`;
+        arm(stop, `Confirm: stop ${s.name}`, async () => {
+          try {
+            await mutate(`/api/servers/${encodeURIComponent(s.name)}/stop`);
+            toast(`${s.name}: stop requested (pid ${s.pid})`, "ask");
+          } catch (err) {
+            toast(`${s.name}: stop failed · ${err.message}`, "deny");
+          }
+          setTimeout(refreshState, 1500);
+        });
+        act.append(stop);
+        f("paths").before(act);
+      }
       const paths = f("paths");
       if (s.policy) { const d = el("div"); d.title = s.policy; d.textContent = "policy " + tilde(s.policy); paths.append(d); }
       if (s.audit) { const d = el("div"); d.title = s.audit; d.textContent = "audit " + tilde(s.audit); paths.append(d); }
