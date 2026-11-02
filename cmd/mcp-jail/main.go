@@ -8,6 +8,8 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
+	"net/url"
 	"os"
 	"os/exec"
 	"os/signal"
@@ -25,6 +27,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/proxy"
 	"github.com/ltchurik/mcp-jail/internal/registry"
+	"github.com/ltchurik/mcp-jail/internal/remote"
 	"github.com/ltchurik/mcp-jail/internal/sandbox"
 	"github.com/ltchurik/mcp-jail/internal/ui"
 	"github.com/ltchurik/mcp-jail/internal/wrap"
@@ -37,6 +40,7 @@ func usage() {
 
 Usage:
   mcp-jail run  --policy FILE -- <server command> [args...]
+  mcp-jail run  --policy FILE          remote server: the policy sets server.url
   mcp-jail init [--policy FILE]        write a starter policy
   mcp-jail wrap <client-config.json>   route every server in a client config through mcp-jail
   mcp-jail diff    <name>              show pending tool changes
@@ -137,16 +141,23 @@ func cmdRun(args []string) error {
 	if *pol == "" {
 		return errors.New("--policy is required")
 	}
-	if len(cmdline) == 0 {
-		return errors.New("server command missing after --")
-	}
-
 	p, err := policy.Load(*pol)
 	if err != nil {
 		return err
 	}
+	switch {
+	case p.Remote() && len(cmdline) > 0:
+		return errors.New("the policy names a remote server (server.url); a command after -- is not allowed")
+	case !p.Remote() && len(cmdline) == 0:
+		return errors.New("server command missing after -- (or set server.url in the policy)")
+	}
 	if p.Name == "" {
-		p.Name = filepath.Base(cmdline[0])
+		if p.Remote() {
+			u, _ := url.Parse(p.Server.URL)
+			p.Name = u.Hostname()
+		} else {
+			p.Name = filepath.Base(cmdline[0])
+		}
 	}
 
 	al, err := audit.Open(p.Audit.Path, p.Name)
@@ -155,79 +166,24 @@ func cmdRun(args []string) error {
 	}
 	defer func() { _ = al.Close() }()
 
-	work, err := os.MkdirTemp("", "mcp-jail-")
+	var (
+		sin  io.WriteCloser
+		sout io.Reader
+		how  string
+		stop func()     // ask the server to end
+		wait func() int // exit code once the proxy is done
+	)
+	if p.Remote() {
+		sin, sout, how, stop, wait, err = startRemote(p, al)
+	} else {
+		var cleanup func()
+		sin, sout, how, stop, wait, cleanup, err = startLocal(p, *pol, cmdline, al)
+		if cleanup != nil {
+			defer cleanup()
+		}
+	}
 	if err != nil {
 		return err
-	}
-	defer func() { _ = os.RemoveAll(work) }()
-	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work,
-		Protect: []string{absPath(*pol), p.Audit.Path, lock.Dir(), registry.Dir(),
-			filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}}
-	netObserve := func(kind, host string, ok bool) {
-		dec := "allow"
-		if !ok {
-			dec = "blocked"
-			logf("%s: blocked %s", kind, host)
-		}
-		al.Log(audit.Event{Kind: kind, Host: host, Decision: dec})
-	}
-	switch {
-	case sandbox.HardEgress(p):
-		// Linux: the jail has no network; the shim inside it reaches the host
-		// only through this relay, which enforces network.allow.
-		relay, err := egress.ListenRelay(p, netObserve)
-		if err != nil {
-			return fmt.Errorf("egress relay: %w", err)
-		}
-		defer func() { _ = relay.Close() }()
-		resolv := filepath.Join(relay.Dir(), "resolv.conf")
-		if err := os.WriteFile(resolv, []byte(egress.ResolvConf), 0o600); err != nil {
-			return fmt.Errorf("egress relay: %w", err)
-		}
-		exe, err := os.Executable()
-		if err != nil {
-			return fmt.Errorf("egress relay: locate mcp-jail binary: %w", err)
-		}
-		if real, err := filepath.EvalSymlinks(exe); err == nil {
-			exe = real
-		}
-		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow,
-			UID: os.Getuid(), GID: os.Getgid(), ResolvConf: resolv}
-		for k, v := range egress.ProxyEnv() {
-			spec.Env[k] = v
-		}
-	case p.Network.Mode == policy.NetAllowlist:
-		// HTTP_PROXY filtering. Cooperative without a sandbox; on macOS the
-		// sandbox-exec profile lets the server reach only this port.
-		np, err := netproxy.Listen(p, func(host string, ok bool) { netObserve("net", host, ok) })
-		if err != nil {
-			return fmt.Errorf("netproxy: %w", err)
-		}
-		defer func() { _ = np.Close() }()
-		spec.ProxyPort = np.Port()
-		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
-			spec.Env[k] = np.Addr()
-		}
-		spec.Env["NO_PROXY"] = ""
-		spec.Env["no_proxy"] = ""
-		spec.Env["NODE_USE_ENV_PROXY"] = "1"
-	}
-
-	cmd, how, err := sandbox.Build(p, spec)
-	if err != nil {
-		return err
-	}
-	cmd.Stderr = os.Stderr
-	sin, err := cmd.StdinPipe()
-	if err != nil {
-		return err
-	}
-	sout, err := cmd.StdoutPipe()
-	if err != nil {
-		return err
-	}
-	if err := cmd.Start(); err != nil {
-		return fmt.Errorf("start server: %w", err)
 	}
 	if !*quiet {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
@@ -261,8 +217,12 @@ func cmdRun(args []string) error {
 		controlPath = cs.Path()
 		defer func() { _ = cs.Close() }()
 	}
+	shown := cmdline
+	if p.Remote() {
+		shown = []string{p.Server.URL}
+	}
 	if unregister, err := registry.Register(registry.Entry{
-		Name: p.Name, Policy: absPath(*pol), Audit: p.Audit.Path, Command: cmdline, How: how,
+		Name: p.Name, Policy: absPath(*pol), Audit: p.Audit.Path, Command: shown, How: how,
 		Network: string(p.Network.Mode), Default: string(p.Tools.Default), Lock: p.Lock.Enabled,
 		Control: controlPath,
 	}); err != nil {
@@ -280,23 +240,13 @@ func cmdRun(args []string) error {
 			al.Log(audit.Event{Kind: "stop", Reason: by})
 			logf("%s: stop requested (%s)", p.Name, by)
 		}
-		_ = cmd.Process.Signal(syscall.SIGTERM)
-		// a server that ignores SIGTERM is killed; the proxy ends when its
-		// stdout closes either way
-		time.Sleep(5 * time.Second)
-		_ = cmd.Process.Kill()
+		stop()
 	}()
 
 	px.Asks = asks
 	runErr := px.Run(os.Stdin, os.Stdout, sin, sout)
 	_ = sin.Close()
-	waitErr := cmd.Wait()
-
-	code := 0
-	var ee *exec.ExitError
-	if errors.As(waitErr, &ee) {
-		code = ee.ExitCode()
-	}
+	code := wait()
 	al.Log(audit.Event{Kind: "exit", Reason: fmt.Sprint(code)})
 	if runErr != nil && !errors.Is(runErr, os.ErrClosed) {
 		return runErr
@@ -305,6 +255,124 @@ func cmdRun(args []string) error {
 		return exitCode(code)
 	}
 	return nil
+}
+
+// startLocal starts the server command in its sandbox. cleanup releases
+// the relay, proxy and work directory and must run after the proxy ends.
+func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, cleanup func(), err error) {
+	var cleanups []func()
+	cleanup = func() {
+		for i := len(cleanups) - 1; i >= 0; i-- {
+			cleanups[i]()
+		}
+	}
+	fail := func(err error) (io.WriteCloser, io.Reader, string, func(), func() int, func(), error) {
+		cleanup()
+		return nil, nil, "", nil, nil, nil, err
+	}
+	work, err := os.MkdirTemp("", "mcp-jail-")
+	if err != nil {
+		return fail(err)
+	}
+	cleanups = append(cleanups, func() { _ = os.RemoveAll(work) })
+	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work,
+		Protect: []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(),
+			filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}}
+	netObserve := func(kind, host string, ok bool) {
+		dec := "allow"
+		if !ok {
+			dec = "blocked"
+			logf("%s: blocked %s", kind, host)
+		}
+		al.Log(audit.Event{Kind: kind, Host: host, Decision: dec})
+	}
+	switch {
+	case sandbox.HardEgress(p):
+		// Linux: the jail has no network; the shim inside it reaches the host
+		// only through this relay, which enforces network.allow.
+		relay, err := egress.ListenRelay(p, netObserve)
+		if err != nil {
+			return fail(fmt.Errorf("egress relay: %w", err))
+		}
+		cleanups = append(cleanups, func() { _ = relay.Close() })
+		resolv := filepath.Join(relay.Dir(), "resolv.conf")
+		if err := os.WriteFile(resolv, []byte(egress.ResolvConf), 0o600); err != nil {
+			return fail(fmt.Errorf("egress relay: %w", err))
+		}
+		exe, err := os.Executable()
+		if err != nil {
+			return fail(fmt.Errorf("egress relay: locate mcp-jail binary: %w", err))
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow,
+			UID: os.Getuid(), GID: os.Getgid(), ResolvConf: resolv}
+		for k, v := range egress.ProxyEnv() {
+			spec.Env[k] = v
+		}
+	case p.Network.Mode == policy.NetAllowlist:
+		// HTTP_PROXY filtering. Cooperative without a sandbox; on macOS the
+		// sandbox-exec profile lets the server reach only this port.
+		np, err := netproxy.Listen(p, func(host string, ok bool) { netObserve("net", host, ok) })
+		if err != nil {
+			return fail(fmt.Errorf("netproxy: %w", err))
+		}
+		cleanups = append(cleanups, func() { _ = np.Close() })
+		spec.ProxyPort = np.Port()
+		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
+			spec.Env[k] = np.Addr()
+		}
+		spec.Env["NO_PROXY"] = ""
+		spec.Env["no_proxy"] = ""
+		spec.Env["NODE_USE_ENV_PROXY"] = "1"
+	}
+
+	var cmd *exec.Cmd
+	cmd, how, err = sandbox.Build(p, spec)
+	if err != nil {
+		return fail(err)
+	}
+	cmd.Stderr = os.Stderr
+	if sin, err = cmd.StdinPipe(); err != nil {
+		return fail(err)
+	}
+	if sout, err = cmd.StdoutPipe(); err != nil {
+		return fail(err)
+	}
+	if err := cmd.Start(); err != nil {
+		return fail(fmt.Errorf("start server: %w", err))
+	}
+	stop = func() {
+		_ = cmd.Process.Signal(syscall.SIGTERM)
+		// a server that ignores SIGTERM is killed; the proxy ends when its
+		// stdout closes either way
+		time.Sleep(5 * time.Second)
+		_ = cmd.Process.Kill()
+	}
+	wait = func() int {
+		var ee *exec.ExitError
+		if err := cmd.Wait(); errors.As(err, &ee) {
+			return ee.ExitCode()
+		}
+		return 0
+	}
+	return sin, sout, how, stop, wait, cleanup, nil
+}
+
+// startRemote connects to a Streamable HTTP server named by server.url.
+// There is nothing to sandbox: the jail itself is the only thing talking to
+// the server, over a guarded dialer, with the policy's headers.
+func startRemote(p *policy.Policy, al *audit.Logger) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, err error) {
+	if p.Network.Mode != policy.NetNone || len(p.Filesystem.ReadOnly)+len(p.Filesystem.ReadWrite) > 0 || p.Sandbox.Disabled {
+		logf("server.url is set: the sandbox, filesystem and network sections do not apply to a remote server")
+	}
+	conn, err := remote.Dial(remote.Options{URL: p.Server.URL, Headers: p.Server.Headers, Logf: logf,
+		Observe: func(reason string) { al.Log(audit.Event{Kind: "protocol", Decision: "blocked", Reason: reason}) }})
+	if err != nil {
+		return nil, nil, "", nil, nil, err
+	}
+	return conn, conn.ServerOut(), "remote (streamable http)", func() { _ = conn.Close() }, func() int { return 0 }, nil
 }
 
 // cmdShim runs inside the jail: see package egress.

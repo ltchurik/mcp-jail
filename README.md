@@ -111,7 +111,7 @@ mcp-jail wrap ~/.cursor/mcp.json                                                
 mcp-jail wrap .mcp.json                                                           # Claude Code (project)
 ```
 
-Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml`: network `none`, the directories named on the command line writable, npx/uvx caches, the server's `env` keys passed through, `ask` for unknown tools. The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
+Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml`: network `none`, the directories named on the command line writable, npx/uvx caches, the server's `env` keys passed through, `ask` for unknown tools. Remote (`url`) servers get a policy with `server.url` and their credential headers moved to the entry's `env` (see [Remote servers](#remote-servers-streamable-http)). The original file is kept as `.bak`; legacy SSE servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
 
 **3. Watch it.**
 
@@ -209,6 +209,7 @@ Exact tool names beat globs; among globs the longest pattern wins. Globs use `fi
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
+| `server.url` | Remote server over Streamable HTTP: guarded dialer (special address ranges refused), `https` outside localhost, no redirects, strict parsing of every answer; policy, lock, `ask` and audit as above | **Hard** (there is no server process to sandbox) |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
 ## Hard egress allowlist
@@ -277,6 +278,33 @@ mcp-jail reset filesystem     # forget everything
 
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
 
+## Remote servers (Streamable HTTP)
+
+A server you reach over HTTP instead of starting locally gets the same policy, lock, `ask` and audit; only the sandbox has nothing to do, because the jail itself is the only thing talking to the server. Put the URL in the policy instead of a command:
+
+```yaml
+name: linear
+server:
+  url: https://mcp.linear.app/mcp
+  headers: { Authorization: "Bearer ${LINEAR_TOKEN}" }   # ${VAR} comes from the environment
+tools: { default: ask, rules: { "list_*": allow, "get_*": allow } }
+lock: { enabled: true }
+```
+
+```json
+{ "mcpServers": { "linear": { "command": "mcp-jail", "args": ["run", "--policy", "/home/me/mcp/linear.yml"],
+                              "env": { "LINEAR_TOKEN": "lin_api_…" } } } }
+```
+
+The client keeps talking stdio to `mcp-jail`; the jail speaks [Streamable HTTP](https://modelcontextprotocol.io/specification/2025-06-18/basic/transports) to the server: one `POST` per message, JSON or SSE answers, the `Mcp-Session-Id` and `MCP-Protocol-Version` headers, a standing `GET` stream for server-initiated messages, `DELETE` on exit. What is enforced on top:
+
+- `https` only, except for `localhost`; redirects are refused, so the headers never travel to another host; names that resolve into loopback, link-local or private ranges are refused unless you typed that address
+- every server message goes through the same strict JSON-RPC parser, lock and policy as a local server's; a `tools/call` the policy denies never leaves your machine
+- an HTTP error, an unusable body or an expired session is answered to the client as JSON-RPC error `-32005` and audited; the jail never re-initializes a session on its own
+- `mcp-jail wrap` converts `{"type": "http", "url": …, "headers": …}` entries: headers that look like credentials move to the entry's `env` and the policy references them as `${NAME}`, so the token stays where the client already kept it
+
+Not covered yet: OAuth flows (use a token), the legacy SSE transport, and resuming a `POST` stream that broke mid-answer (the request gets `-32005`).
+
 ## Servers started with npx / uvx
 
 The jail only shows the paths in `filesystem.*`, plus the toolchain the server binary lives in (resolved through `PATH` and symlinks: `/usr/local`, `~/.nvm/versions/node/vX`, a venv). Package *caches* are not included by default: `npx -y` writes to `~/.npm/_npx` and `uvx` to `~/.cache/uv`, so add them:
@@ -310,6 +338,7 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 | Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist | ✓ |
 | macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
 | Windows | not yet | ✓ (WSL recommended) |
+| Remote server (`server.url`) | none needed: the jail is the only process talking to the server, over a guarded HTTPS client | ✓ |
 
 `sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
 
@@ -327,6 +356,7 @@ Worked scenarios with a complete policy each, in [`use-cases/`](use-cases/README
 - [Approve dangerous calls from Slack or a web form](use-cases/approvals-without-a-terminal.md)
 - [Wrap every server your client already has](use-cases/wrap-an-existing-client-config.md)
 - [Watch, report and hand over](use-cases/monitor-report-and-hand-over.md)
+- [Jail a remote server over Streamable HTTP](use-cases/remote-server-over-streamable-http.md)
 
 ## Development
 
@@ -360,7 +390,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] `mcp-jail wrap`: rewrite an existing client config in place (v0.2)
 - [x] Dashboard: monitor, reports, lock approval and `ask` answers (v0.3)
 - [x] Promote a rule to allow/deny and stop a jail from the dashboard (v0.4)
-- [ ] Streamable HTTP transport (wrap remote servers the same way)
+- [x] Streamable HTTP transport: jail remote servers the same way (v0.5)
 - [ ] Windows sandbox
 
 ## Non-goals

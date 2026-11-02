@@ -12,7 +12,8 @@ const sample = `{
   "mcpServers": {
     "filesystem": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "%s"]},
     "github": {"command": "uvx", "args": ["mcp-server-github"], "env": {"GITHUB_TOKEN": "ghp_x", "HOME_DIR": "/x"}},
-    "remote": {"url": "https://example.com/mcp"},
+    "remote": {"type": "http", "url": "https://example.com/mcp", "headers": {"Authorization": "Bearer abc", "X-Trace": "1"}},
+    "legacy": {"type": "sse", "url": "https://example.com/sse"},
     "done": {"command": "/usr/local/bin/mcp-jail", "args": ["run", "--policy", "/p.yml", "--", "x"]},
     "bad/name": {"command": "x"}
   },
@@ -30,7 +31,7 @@ func TestRewrite(t *testing.T) {
 	for _, c := range res.Changes {
 		actions[c.Name] = c.Action
 	}
-	want := map[string]string{"filesystem": "wrapped", "github": "wrapped", "remote": "remote", "done": "already-wrapped", "bad/name": "invalid"}
+	want := map[string]string{"filesystem": "wrapped", "github": "wrapped", "remote": "wrapped", "legacy": "remote", "done": "already-wrapped", "bad/name": "invalid"}
 	for n, a := range want {
 		if actions[n] != a {
 			t.Errorf("%s: %s, want %s", n, actions[n], a)
@@ -61,8 +62,25 @@ func TestRewrite(t *testing.T) {
 	if gh.Env["GITHUB_TOKEN"] != "ghp_x" || gh.Args[0] != "run" {
 		t.Errorf("github: env must be untouched, args wrapped: %+v", gh)
 	}
-	if servers["remote"].URL != "https://example.com/mcp" || servers["done"].Command != "/usr/local/bin/mcp-jail" {
-		t.Errorf("remote/already-wrapped must be untouched: %+v %+v", servers["remote"], servers["done"])
+	if servers["legacy"].URL != "https://example.com/sse" || servers["done"].Command != "/usr/local/bin/mcp-jail" {
+		t.Errorf("legacy sse/already-wrapped must be untouched: %+v %+v", servers["legacy"], servers["done"])
+	}
+	rm := servers["remote"]
+	if rm.URL != "" || rm.Command != "/opt/mcp-jail" || strings.Join(rm.Args, " ") != "run --policy /pol/remote.yml" || rm.Env["REMOTE_AUTHORIZATION"] != "Bearer abc" || len(rm.Env) != 1 {
+		t.Errorf("remote rewritten wrong: %+v", rm)
+	}
+	rp := res.PolicyText("remote")
+	for _, want := range []string{"name: remote", `url: "https://example.com/mcp"`, `Authorization: "${REMOTE_AUTHORIZATION}"`, `X-Trace: "1"`, "default: ask", "enabled: true"} {
+		if !strings.Contains(rp, want) {
+			t.Errorf("remote policy missing %q:\n%s", want, rp)
+		}
+	}
+	if strings.Contains(rp, "Bearer abc") || strings.Contains(rp, "sandbox:") || strings.Contains(rp, "network:") {
+		t.Errorf("remote policy must not carry the token or sandbox sections:\n%s", rp)
+	}
+	t.Setenv("REMOTE_AUTHORIZATION", "Bearer abc")
+	if err := Validate(rp); err != nil {
+		t.Errorf("remote policy does not load: %v", err)
 	}
 
 	pol := res.PolicyText("filesystem")

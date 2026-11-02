@@ -181,6 +181,7 @@ const (
 	CodeRugPull      = -32002
 	CodeAskRejected  = -32003
 	CodeNoResponse   = -32004 // the server never answered and the request was dropped
+	CodeRemote       = -32005 // a remote server could not be reached or answered with an HTTP error
 )
 
 // ToolCallParams is the params shape of a tools/call request.
