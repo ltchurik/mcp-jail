@@ -207,11 +207,16 @@ func Listen(path string, b *Broker, h Hooks) (*Server, error) {
 // Path is the socket path.
 func (s *Server) Path() string { return s.path }
 
-// Close stops serving and removes the socket file.
+// Close stops serving and removes the socket file. Requests in flight get
+// a moment to finish (they are all short); a connection still busy after
+// that is cut, so a jail never hangs on exit because of its dashboard.
 func (s *Server) Close() error {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	err := s.srv.Shutdown(ctx)
+	if err != nil {
+		err = s.srv.Close()
+	}
 	_ = os.Remove(s.path)
 	return err
 }
