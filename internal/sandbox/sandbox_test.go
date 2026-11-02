@@ -192,7 +192,7 @@ func TestDarwinProfile(t *testing.T) {
 	for _, want := range []string{
 		"(version 1)", "(allow default)",
 		`(deny file* (subpath "/Users") (subpath "` + home + `") (subpath "` + userTmp + `"))`,
-		`(deny file* (subpath "/private/tmp"))`,
+		`(deny file* ` + subpaths(realPaths("/tmp")) + `)`, // /private/tmp on macOS, /tmp elsewhere
 		"(deny file-write*)", `(allow file-write-data (literal "/dev/null"))`,
 		`(allow file-read* (subpath "` + ro + `"))`,
 		`(allow file* (subpath "` + rw + `"))`, // symlink resolved
@@ -223,7 +223,7 @@ func TestDarwinProfile(t *testing.T) {
 	if !strings.Contains(prof, "(deny network*)") || strings.Contains(prof, "network-outbound") {
 		t.Errorf("mode none: %s", prof)
 	}
-	if strings.Contains(prof, "/private/tmp") {
+	if strings.Contains(prof, `(deny file* `+subpaths(realPaths("/tmp"))+`)`) {
 		t.Errorf("tmp:false must not hide the shared /tmp: %s", prof)
 	}
 	p.Network.Mode = policy.NetAll
