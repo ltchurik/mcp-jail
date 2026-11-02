@@ -115,6 +115,7 @@ td.time { color: var(--text-muted); font-family: var(--mono); font-size: 12px; }
 .dec.created, .dec.approved { color: var(--lock); background: var(--lock-bg); }
 .kind { font-family: var(--mono); font-size: 12px; }
 .kind.lock { color: var(--lock); }
+.kind.protocol { color: var(--deny); }
 .kind.net, .kind.dns { color: var(--info); }
 .empty { padding: 24px; text-align: center; }
 

@@ -176,12 +176,17 @@ const maxSocketPath = 100
 // a per-user directory under the temp dir; Path reports what was used.
 func Listen(path string, b *Broker, h Hooks) (*Server, error) {
 	if len(path) > maxSocketPath {
-		path = filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()), filepath.Base(path))
+		dir := filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))
+		path = filepath.Join(dir, filepath.Base(path))
 		if len(path) > maxSocketPath {
 			return nil, fmt.Errorf("control: socket path too long even under %s", os.TempDir())
 		}
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		// A shared temp dir: the directory must be ours, private and not a
+		// symlink, or anyone could plant a socket the dashboard would trust.
+		if err := ownedDir(dir); err != nil {
+			return nil, fmt.Errorf("control: %w", err)
+		}
+	} else if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, fmt.Errorf("control: %w", err)
 	}
 	_ = os.Remove(path)

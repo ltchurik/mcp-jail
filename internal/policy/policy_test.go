@@ -221,3 +221,44 @@ func TestAskWebhookValidate(t *testing.T) {
 		t.Fatalf("load: %v %+v", err, lp)
 	}
 }
+
+func TestRuleTieBreakIsStrict(t *testing.T) {
+	p := Default()
+	p.Tools.Default = Allow
+	p.Tools.Rules = map[string]Rule{"read_*": {Decision: Allow}, "*_file": {Decision: Deny}}
+	for i := 0; i < 50; i++ {
+		if d := p.Decide("read_file"); d != Deny {
+			t.Fatalf("iteration %d: %s", i, d)
+		}
+	}
+	p.Tools.Rules = map[string]Rule{"read_*": {Decision: Ask}, "*_file": {Decision: Allow}}
+	if d := p.Decide("read_file"); d != Ask {
+		t.Fatal(d)
+	}
+	p.Tools.Rules["read_file"] = Rule{Decision: Allow} // exact still wins
+	if d := p.Decide("read_file"); d != Allow {
+		t.Fatal(d)
+	}
+}
+
+func TestValidateName(t *testing.T) {
+	for _, bad := range []string{"..", ".", "a/b", `a\b`, "a\nb", "x\x00", strings.Repeat("n", 129)} {
+		p := Default()
+		p.Name = bad
+		if err := p.Validate(); err == nil {
+			t.Errorf("name %q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"", "github", "my server", "@scope-server", "a.b-c_d"} {
+		p := Default()
+		p.Name = ok
+		if err := p.Validate(); err != nil {
+			t.Errorf("name %q: %v", ok, err)
+		}
+	}
+	p := Default()
+	p.Filesystem.ReadOnly = []string{"/tmp/a\nb"}
+	if err := p.Validate(); err == nil {
+		t.Error("control character in a path accepted")
+	}
+}

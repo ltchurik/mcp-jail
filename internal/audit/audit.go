@@ -3,10 +3,12 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Event is one audit record.
@@ -38,11 +40,40 @@ func Open(path, server string) (*Logger, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return nil, err
 	}
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	// Never follow a symlink: a server that can write where the log lives
+	// must not be able to point it at another file.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY|noFollow, 0o600)
 	if err != nil {
 		return nil, err
 	}
+	st, err := f.Stat()
+	if err != nil || !st.Mode().IsRegular() {
+		_ = f.Close()
+		if err == nil {
+			err = fmt.Errorf("%s: not a regular file", path)
+		}
+		return nil, err
+	}
 	return &Logger{f: f, server: server}, nil
+}
+
+// Limits on fields a server or client chooses: a log line stays readable
+// and one oversized message cannot push the file past what readers scan.
+const (
+	maxField = 2048
+	maxArgs  = 64 << 10
+)
+
+// clip shortens s to at most n bytes on a rune boundary, marking the cut.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s…[+%d bytes]", s[:cut], len(s)-cut)
 }
 
 // Log writes one event.
@@ -52,6 +83,11 @@ func (l *Logger) Log(e Event) {
 	}
 	e.Time = time.Now().UTC()
 	e.Server = l.server
+	e.Tool, e.Reason, e.Error, e.Host = clip(e.Tool, maxField), clip(e.Reason, maxField), clip(e.Error, maxField), clip(e.Host, maxField)
+	if len(e.Args) > maxArgs {
+		head := clip(string(e.Args), 1024)
+		e.Args, _ = json.Marshal(map[string]any{"truncated": true, "bytes": len(e.Args), "head": head})
+	}
 	if e.Duration != 0 {
 		e.Duration = e.Duration / time.Millisecond
 	}
