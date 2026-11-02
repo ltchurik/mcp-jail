@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.6.0 — 2026-11-02
+
+Two gaps raised by early readers: trust on first contact, and what a launcher may exec. Existing policies keep working unchanged.
 
 ### Added
 
