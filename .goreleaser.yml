@@ -15,6 +15,7 @@ checksum:
   name_template: checksums.txt
 changelog:
   use: github
+  format: "{{ .SHA }}: {{ .Message }}"
   groups:
     - title: Features
       regexp: '^feat'

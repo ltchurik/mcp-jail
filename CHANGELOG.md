@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- README rewritten with dashboard screenshots, a feature table and a table
+  of contents.
+- Dashboard: paths under the home directory are shown as `~/…` on server
+  cards; a long sandbox badge no longer pushes the server name out of view;
+  the pending-ask arguments box is taller.
+- Release notes no longer list commit authors.
+
 ## v0.3.0 — 2026-11-02
 
 The dashboard release: see what your jails do, approve what they ask for,
