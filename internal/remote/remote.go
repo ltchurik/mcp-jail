@@ -327,13 +327,19 @@ func (c *Conn) deliver(body []byte, m *jsonrpc.Message) (answered bool) {
 			continue
 		}
 		line := compact.Bytes()
+		var initResp *jsonrpc.Message
 		if r, err := jsonrpc.Parse(line); err == nil && m != nil && r.IsResponse() && r.IDKey() == m.IDKey() {
 			answered = true
 			if m.Method == "initialize" {
-				c.initialized(r)
+				initResp = r
 			}
 		}
 		c.push(line)
+		if initResp != nil {
+			// only after the answer is on its way: a notification from the
+			// server stream must not reach the client before it
+			c.initialized(initResp)
+		}
 	}
 	return answered
 }

@@ -14,6 +14,9 @@
 - The `tool_result` audit event records a result with `isError: true` (its
   first text line), not only JSON-RPC errors, so a call that failed inside
   the jail no longer looks like a clean `allow`.
+- Remote servers: the `initialize` answer is handed to the client before the
+  server-initiated stream is opened, so a notification from that stream can
+  no longer arrive ahead of it.
 
 ## v0.6.0 — 2026-11-02
 
