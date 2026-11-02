@@ -221,3 +221,25 @@ func TestAskWebhookValidate(t *testing.T) {
 		t.Fatalf("load: %v %+v", err, lp)
 	}
 }
+
+func TestValidateName(t *testing.T) {
+	for _, bad := range []string{"..", ".", "a/b", `a\b`, "a\nb", "x\x00", strings.Repeat("n", 129)} {
+		p := Default()
+		p.Name = bad
+		if err := p.Validate(); err == nil {
+			t.Errorf("name %q accepted", bad)
+		}
+	}
+	for _, ok := range []string{"", "github", "my server", "@scope-server", "a.b-c_d"} {
+		p := Default()
+		p.Name = ok
+		if err := p.Validate(); err != nil {
+			t.Errorf("name %q: %v", ok, err)
+		}
+	}
+	p := Default()
+	p.Filesystem.ReadOnly = []string{"/tmp/a\nb"}
+	if err := p.Validate(); err == nil {
+		t.Error("control character in a path accepted")
+	}
+}

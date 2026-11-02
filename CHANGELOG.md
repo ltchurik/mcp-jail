@@ -19,6 +19,31 @@
   page never signals a pid itself. `mcp-jail run` now also escalates to
   SIGKILL when a server ignores the SIGTERM relayed from Ctrl-C.
 
+### Security
+
+Findings of an internal review of the sandbox and the jail's own state, all
+fixed:
+
+- The convenience binds for the working directory and the server's
+  toolchain could expose the whole home directory or `/` read-only (a jail
+  started from `~`, or by a GUI client with cwd `/`; a binary in `~/bin`),
+  which on macOS also cancelled the home-hiding rules. Such a directory is
+  no longer shared: the server starts in `/` and the sandbox description
+  (`ps`, dashboard, `start` event) says `cwd not shared (home)`; the
+  toolchain bind falls back to the binary's own directory.
+- mcp-jail's own state (policy file, audit log, lock and registry
+  directories, the control socket) is now masked inside the jail even when
+  a `read_write`/`read_only` path or a convenience bind would cover it:
+  `--tmpfs` / `/dev/null` binds on Linux, trailing `deny file*` and `deny
+  network*` rules on macOS (a server could otherwise approve its own asks
+  or rewrite its policy and ask for a reload).
+- The audit log is opened with `O_NOFOLLOW` and must be a regular file.
+- The control-socket fallback directory under `$TMPDIR` must be a private
+  directory owned by the user, never a symlink or someone else's.
+- `name` in a policy may not contain path separators or control
+  characters (it names lock, registry and socket files); control characters
+  are rejected in paths and hosts and neutralised in the macOS profile.
+
 ### Changed
 
 - Toolchain: Go 1.27 (`go.mod`, CI, release builds), golangci-lint v2.15 in
