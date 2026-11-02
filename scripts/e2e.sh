@@ -32,8 +32,11 @@ class Q(h.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 s=h.HTTPServer(("127.0.0.1",0),Q); print(s.server_address[1],flush=True); s.serve_forever()' >"$WORK/port" &
 LISTENER=$!
-for _ in $(seq 50); do [[ -s "$WORK/port" ]] && break; sleep 0.1; done
-PORT=$(cat "$WORK/port"); [[ -n "$PORT" ]] || { echo "FAIL: host http server did not start"; exit 1; }
+# waitport <file> <what>: a helper server prints its port into <file>; CI
+# runners can take seconds to start an interpreter, so wait generously.
+waitport() { for _ in $(seq 300); do [[ -s "$1" ]] && return 0; sleep 0.1; done; echo "FAIL: $2 did not start"; exit 1; }
+waitport "$WORK/port" "host http server"
+PORT=$(cat "$WORK/port")
 # a file in $HOME that the jail must not see (bwrap may create empty parent dirs for bound paths)
 SENTINEL="$HOME/.mcp-jail-e2e-$$"
 echo secret >"$SENTINEL"
@@ -116,7 +119,7 @@ class Q(h.BaseHTTPRequestHandler):
     def log_message(self,*a): pass
 s=h.HTTPServer(("127.0.0.1",0),Q); print(s.server_address[1],flush=True); s.serve_forever()' >"$WORK/aport" 2>"$WORK/approver.log" &
 APPROVER=$!
-for _ in $(seq 50); do [[ -s "$WORK/aport" ]] && break; sleep 0.1; done
+waitport "$WORK/aport" "webhook approver" || { cat "$WORK/approver.log"; exit 1; }
 APORT=$(cat "$WORK/aport")
 cat >"$WORK/w.yml" <<YML
 name: e2e-webhook

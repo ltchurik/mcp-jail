@@ -24,6 +24,17 @@ func SetRule(path, tool string, d Decision) error {
 	if err := checkDecision(d); err != nil {
 		return err
 	}
+	// A symlinked policy file is edited at its target, not turned into a
+	// file. Edits of one directory are serialised, so two dashboards
+	// promoting rules at once cannot lose each other's change.
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
+	unlock, err := lockDir(filepath.Dir(path))
+	if err != nil {
+		return fmt.Errorf("lock %s: %w", filepath.Dir(path), err)
+	}
+	defer unlock()
 	src, err := os.ReadFile(path)
 	if err != nil {
 		return err
@@ -143,12 +154,8 @@ func setScalar(n *yaml.Node, value string) {
 	n.Tag, n.Value, n.Style = "!!str", value, 0
 }
 
-// replaceFile writes b over path atomically, keeping the file mode. A
-// symlinked policy file is replaced at its target, not turned into a file.
+// replaceFile writes b over path atomically, keeping the file mode.
 func replaceFile(path string, b []byte) error {
-	if real, err := filepath.EvalSymlinks(path); err == nil {
-		path = real
-	}
 	mode := os.FileMode(0o600)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()

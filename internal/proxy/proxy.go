@@ -22,8 +22,9 @@ import (
 )
 
 const (
-	maxLine    = 64 << 20 // 64 MiB per JSON-RPC line
-	maxPending = 1024     // default MaxPending
+	maxLine      = 64 << 20 // 64 MiB per JSON-RPC line
+	maxListItems = 10000    // items a paged list may accumulate before it is refused
+	maxPending   = 1024     // default MaxPending
 )
 
 // Proxy holds the broker state.
@@ -68,18 +69,27 @@ type Proxy struct {
 
 // lockState tracks one locked list within a session. verified: this
 // session's list matched the lock. inflight: list requests awaiting a
-// response. tainted: a mismatch was seen.
+// response. tainted: a mismatch was seen. items: the per-item hashes of
+// the verified list, so a use of a name that was never listed can be
+// refused (nil when the lock is off). paging/acc/next: a listing that
+// spans several pages is collected here and verified whole on the last
+// page, so pagination cannot split the list and dodge the lock.
 type lockState struct {
 	verified bool
 	tainted  bool
 	inflight int
 	why      string // reason for the taint when it was not a hash mismatch
+	items    map[string]string
+	paging   bool
+	acc      []json.RawMessage
+	next     string
 }
 
 type pendingReq struct {
 	id     json.RawMessage // as the client sent it
 	method string
 	tool   string
+	cursor string // params.cursor of a list request
 	start  time.Time
 }
 
@@ -178,6 +188,11 @@ func (p *Proxy) fromClient(line []byte) {
 	if m.IsRequest() {
 		pr := pendingReq{id: m.ID, method: m.Method, start: time.Now()}
 		if k := lock.KindOf(m.Method); k != "" {
+			var lp struct {
+				Cursor string `json:"cursor"`
+			}
+			_ = json.Unmarshal(m.Params, &lp)
+			pr.cursor = lp.Cursor
 			p.lmu.Lock()
 			p.sections[k].inflight++
 			p.lmu.Unlock()
@@ -265,7 +280,11 @@ func (p *Proxy) allowUse(m *jsonrpc.Message) bool {
 	if m.Method == "resources/read" {
 		kind = "resource"
 	}
-	if why := p.waitVerified(gate[m.Method]); why != "" {
+	why := p.waitVerified(gate[m.Method])
+	if why == "" && m.Method == "prompts/get" {
+		why = p.listed(lock.Prompts, params.Name)
+	}
+	if why != "" {
 		p.Audit.Log(audit.Event{Kind: kind, Tool: what, Decision: "deny", Reason: why})
 		p.Logf("deny %s %s (%s)", m.Method, what, why)
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
@@ -311,7 +330,11 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 	if pol.Audit.Args {
 		args = tc.Arguments
 	}
-	if why := p.waitVerified(lock.Tools); why != "" {
+	why := p.waitVerified(lock.Tools)
+	if why == "" {
+		why = p.listed(lock.Tools, tc.Name)
+	}
+	if why != "" {
 		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
 		p.Logf("deny tools/call %s (%s)", tc.Name, why)
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
@@ -368,11 +391,60 @@ func (p *Proxy) waitVerified(k lock.Kind) string {
 			return "resource templates changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
 		case st.verified:
 			return ""
+		case st.inflight == 0 && st.paging:
+			// The client stopped between two pages; do not park the call
+			// on a page that may never be requested.
+			return gateMethod(k) + " while " + listMethod(k) + " is still being paged"
 		case st.inflight == 0:
 			return gateMethod(k) + " before " + listMethod(k) + " was verified against the lock"
 		}
 		p.lcond.Wait()
 	}
+}
+
+// listed refuses a use of name that the verified list of kind k does not
+// contain: a server cannot act on a tool or prompt the client never saw
+// through the lock. "" when the lock is off or the name was listed.
+func (p *Proxy) listed(k lock.Kind, name string) string {
+	p.lmu.Lock()
+	defer p.lmu.Unlock()
+	st := p.sections[k]
+	if st.items == nil {
+		return ""
+	}
+	if _, ok := st.items[name]; ok {
+		return ""
+	}
+	return strings.TrimSuffix(string(k), "s") + " " + fmt.Sprintf("%q", name) + " is not in the " + listMethod(k) + " verified against the lock"
+}
+
+// collect adds one page of list k to the listing in progress and reports
+// whether the listing is complete. A request without a cursor starts a
+// fresh listing; a continuation must carry the cursor the previous page
+// issued, otherwise the list cannot be trusted and why says so.
+func (p *Proxy) collect(k lock.Kind, cursor string, page lock.Page) (items []json.RawMessage, done bool, why string) {
+	p.lmu.Lock()
+	defer p.lmu.Unlock()
+	st := p.sections[k]
+	switch {
+	case cursor == "":
+		st.acc = nil
+	case !st.paging || cursor != st.next:
+		st.acc, st.paging, st.next = nil, false, ""
+		return nil, false, listMethod(k) + " continued with a cursor the server never issued"
+	}
+	st.acc = append(st.acc, page.Items...)
+	if len(st.acc) > maxListItems {
+		st.acc, st.paging, st.next = nil, false, ""
+		return nil, false, fmt.Sprintf("%s has more than %d items", listMethod(k), maxListItems)
+	}
+	if page.Next != "" {
+		st.paging, st.next = true, page.Next
+		return nil, false, ""
+	}
+	items = st.acc
+	st.acc, st.paging, st.next = nil, false, ""
+	return items, true, ""
 }
 
 func gateMethod(k lock.Kind) string {
@@ -384,9 +456,12 @@ func gateMethod(k lock.Kind) string {
 	return string(k)
 }
 
-func (p *Proxy) setLock(k lock.Kind, verified, tainted bool) {
+// setLock records the outcome of a lock check; items is the verified
+// list (nil when the check failed).
+func (p *Proxy) setLock(k lock.Kind, verified, tainted bool, items map[string]string) {
 	p.lmu.Lock()
-	p.sections[k].verified, p.sections[k].tainted, p.sections[k].why = verified, tainted, ""
+	st := p.sections[k]
+	st.verified, st.tainted, st.why, st.items = verified, tainted, "", items
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -459,7 +534,7 @@ func (p *Proxy) fromServer(line []byte) {
 			switch pr.method {
 			case "tools/list", "prompts/list", "resources/list", "resources/templates/list":
 				k := lock.KindOf(pr.method)
-				ok := p.checkLock(k, m)
+				ok := p.checkLock(k, pr, m)
 				p.lmu.Lock()
 				p.sections[k].inflight--
 				p.lcond.Broadcast()
@@ -479,29 +554,44 @@ func (p *Proxy) fromServer(line []byte) {
 	p.toClient(line)
 }
 
-// checkLock enforces rug-pull protection on a list response of kind k.
-// Returns false when the response was replaced with an error.
-func (p *Proxy) checkLock(k lock.Kind, m *jsonrpc.Message) bool {
+// checkLock enforces rug-pull protection on a list response of kind k. A
+// paged list is forwarded page by page and verified whole once the last
+// page is in. Returns false when the response was replaced with an error.
+func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	if !p.Policy.Lock.Enabled {
 		return true
 	}
 	if m.Error != nil {
 		return true // server refused to list; nothing to verify, nothing to use
 	}
-	sec, err := lock.ComputeResult(k, m.Result)
-	if err != nil {
+	fail := func(reason, msg string) bool {
 		// Fail closed: a list we cannot hash is a list we cannot trust.
-		p.Logf("%s: cannot hash result: %v", listMethod(k), err)
-		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: string(k) + ": " + err.Error()})
-		p.setLock(k, false, true)
-		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: cannot verify "+string(k)+" against the lock: "+err.Error()))
+		p.Logf("%s: %s", listMethod(k), reason)
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: string(k) + ": " + reason})
+		p.setLock(k, false, true, nil)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+msg))
 		return false
+	}
+	page, err := lock.ParsePage(k, m.Result)
+	if err != nil {
+		return fail("cannot hash result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
+	}
+	items, done, why := p.collect(k, pr.cursor, page)
+	if why != "" {
+		return fail(why, why)
+	}
+	if !done {
+		return true // more pages to come; the uses wait or are refused meanwhile
+	}
+	sec, err := lock.Compute(k, items)
+	if err != nil {
+		return fail("cannot hash result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
 	}
 	cur, err := lock.Load(p.Policy.Name)
 	if err != nil {
 		p.Logf("lock: %v", err)
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: err.Error()})
-		p.setLock(k, false, true)
+		p.setLock(k, false, true, nil)
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: cannot read lock: "+err.Error()))
 		return false
 	}
@@ -512,16 +602,16 @@ func (p *Proxy) checkLock(k lock.Kind, m *jsonrpc.Message) bool {
 		}
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: string(k) + " " + lock.Short(sec.Hash)})
 		p.Logf("lock: recorded %d %s (%s)", len(sec.Items), k, lock.Short(sec.Hash))
-		p.setLock(k, true, false)
+		p.setLock(k, true, false, sec.Items)
 		return true
 	}
 	if old.Hash == sec.Hash {
-		p.setLock(k, true, false)
+		p.setLock(k, true, false, sec.Items)
 		return true
 	}
 	d := lock.Compare(old.Items, sec.Items)
 	_ = lock.SavePending(p.Policy.Name, k, sec)
-	p.setLock(k, false, true)
+	p.setLock(k, false, true, nil)
 	reason := string(k) + " " + d.String()
 	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: reason})
 	p.Logf("RUG-PULL: %s changed: %s", k, d)
