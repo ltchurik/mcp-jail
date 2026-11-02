@@ -100,6 +100,30 @@ $BIN approve e2e >/dev/null
 OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?6, ?"result"'
 
+echo "== wrap"
+cat >"$WORK/client.json" <<JSON
+{"mcpServers":{"echo":{"command":"$PY","args":["$WORK/echo-server.py","$WORK"],"env":{"FOO":"bar"}},
+               "remote":{"url":"https://example.com/mcp"}},"theme":"dark"}
+JSON
+$BIN wrap --policy-dir "$WORK/policies" "$WORK/client.json" 2>"$WORK/wrap.err" || { cat "$WORK/wrap.err"; exit 1; }
+assert "$(cat "$WORK/wrap.err")" 'wrapped +echo'
+assert "$(cat "$WORK/wrap.err")" 'skipped +remote'
+assert "$(cat "$WORK/client.json")" '^ *"'"$WORK"'/policies/echo.yml",$'
+assert "$(cat "$WORK/client.json")" '"theme": "dark"'
+assert "$(cat "$WORK/client.json")" '"url": "https://example.com/mcp"'
+[[ -f "$WORK/client.json.bak" ]] || { echo "FAIL: no backup"; exit 1; }
+assert "$(cat "$WORK/policies/echo.yml")" 'name: echo'
+assert "$(cat "$WORK/policies/echo.yml")" 'env: \[PATH, HOME, LANG, FOO\]'
+# second run is a no-op
+$BIN wrap --policy-dir "$WORK/policies" "$WORK/client.json" 2>"$WORK/wrap.err"
+assert "$(cat "$WORK/wrap.err")" 'nothing to do'
+# start the server exactly as the client would, from the rewritten config
+ARGV=()  # macOS ships bash 3.2 without mapfile
+while IFS= read -r line; do ARGV+=("$line"); done < <($PY -c 'import json,sys;s=json.load(open(sys.argv[1]))["mcpServers"]["echo"];print("\n".join([s["command"]]+s["args"]))' "$WORK/client.json")
+OUT=$(req "$INIT" "$LIST" | "${ARGV[@]}" 2>"$WORK/stderr") || { echo "FAIL: wrapped server exited non-zero"; cat "$WORK/stderr"; exit 1; }
+assert "$OUT" '"id": ?2, ?"result"'
+assert "$($BIN locks)" '^echo .*3 tools'
+
 if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then
   echo "== bubblewrap: no home, no network"
   cat >"$WORK/s.yml" <<YML

@@ -21,6 +21,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/proxy"
 	"github.com/ltchurik/mcp-jail/internal/sandbox"
+	"github.com/ltchurik/mcp-jail/internal/wrap"
 )
 
 var version = "dev"
@@ -31,6 +32,7 @@ func usage() {
 Usage:
   mcp-jail run  --policy FILE -- <server command> [args...]
   mcp-jail init [--policy FILE]        write a starter policy
+  mcp-jail wrap <client-config.json>   route every server in a client config through mcp-jail
   mcp-jail diff    <name>              show pending tool changes
   mcp-jail approve <name>              accept pending tool changes
   mcp-jail reset   <name>              forget the lock
@@ -54,6 +56,8 @@ func main() {
 		err = cmdRun(os.Args[2:])
 	case "init":
 		err = cmdInit(os.Args[2:])
+	case "wrap":
+		err = cmdWrap(os.Args[2:])
 	case "diff":
 		err = cmdDiff(os.Args[2:])
 	case "approve":
@@ -255,6 +259,67 @@ func cmdInit(args []string) error {
 		return err
 	}
 	fmt.Println("wrote", *out)
+	return nil
+}
+
+// cmdWrap rewrites a client configuration so each stdio server starts
+// through mcp-jail and writes one starter policy per server.
+func cmdWrap(args []string) error {
+	fs := flag.NewFlagSet("wrap", flag.ContinueOnError)
+	polDir := fs.String("policy-dir", filepath.Join(filepath.Dir(lock.Dir()), "policies"), "where to write <server>.yml policies")
+	bin := fs.String("bin", "", "mcp-jail binary to reference (default: this executable's absolute path)")
+	network := fs.String("network", "none", "network.mode for new policies: none | all")
+	force := fs.Bool("force", false, "overwrite existing policy files")
+	dry := fs.Bool("dry-run", false, "print the rewritten config, write nothing")
+	fs.Usage = usage
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("expected exactly one client config file (Claude Desktop, Cursor, .mcp.json, ...)")
+	}
+	if *bin == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			return err
+		}
+		if real, err := filepath.EvalSymlinks(exe); err == nil {
+			exe = real
+		}
+		*bin = exe
+	}
+	res, err := wrap.Run(fs.Arg(0), wrap.Options{Bin: *bin, PolicyDir: *polDir, Network: *network, Force: *force, DryRun: *dry})
+	if err != nil {
+		return err
+	}
+	if *dry {
+		_, _ = os.Stdout.Write(res.Config)
+	}
+	wrapped := 0
+	for _, c := range res.Changes {
+		switch c.Action {
+		case "wrapped":
+			wrapped++
+			note := ""
+			if c.Note != "" {
+				note = " (" + c.Note + ")"
+			}
+			fmt.Fprintf(os.Stderr, "  wrapped  %-24s policy %s%s\n", c.Name, c.Policy, note)
+		case "already-wrapped":
+			fmt.Fprintf(os.Stderr, "  skipped  %-24s already runs through mcp-jail\n", c.Name)
+		default:
+			fmt.Fprintf(os.Stderr, "  skipped  %-24s %s\n", c.Name, c.Note)
+		}
+	}
+	switch {
+	case *dry:
+		fmt.Fprintf(os.Stderr, "dry run: %d server(s) would be wrapped; nothing written\n", wrapped)
+	case res.Backup != "":
+		fmt.Fprintf(os.Stderr, "wrote %s (backup: %s)\n", fs.Arg(0), res.Backup)
+		fmt.Fprintf(os.Stderr, "review the policies in %s, then restart the client\n", *polDir)
+	default:
+		fmt.Fprintln(os.Stderr, "nothing to do")
+	}
 	return nil
 }
 

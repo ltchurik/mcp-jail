@@ -54,6 +54,16 @@ Then wrap the server in your client config. Claude Desktop / Cursor / Claude Cod
 
 That's it. The client talks to `mcp-jail`; the server never sees your real machine.
 
+Or let `mcp-jail` rewrite an existing client config for you:
+
+```sh
+mcp-jail wrap ~/Library/Application\ Support/Claude/claude_desktop_config.json   # Claude Desktop
+mcp-jail wrap ~/.cursor/mcp.json                                                  # Cursor
+mcp-jail wrap .mcp.json                                                           # Claude Code (project)
+```
+
+Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml` (network `none`, directories from the command line writable, npx/uvx caches, `env` keys passed through, `ask` for unknown tools). The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
+
 ## Policy
 
 ```yaml
@@ -230,7 +240,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
-- [ ] `mcp-jail wrap` — rewrite an existing client config in place
+- [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
 
 ## Non-goals
 
