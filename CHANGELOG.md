@@ -76,6 +76,15 @@ Findings of an internal security review, all fixed:
 - `ask.webhook.url` must be `https` unless it names localhost; the webhook
   client no longer follows redirects, so the configured headers go to the
   configured URL only and a 3xx is a deny.
+- Dashboard: a tool name promoted to a rule is escaped so a server that
+  names a tool `*` cannot turn *Always allow* into a rule for every tool;
+  `Origin` is parsed instead of prefix-matched; ask ids in URLs are
+  validated; a symlinked policy file is edited at its target.
+- CSV export prefixes cells starting with `=`, `+`, `-`, `@` with an
+  apostrophe (spreadsheet formula injection from server-chosen names).
+- `mcp-jail wrap` no longer puts `/` or the home directory into
+  `read_write`; an already-wrapped entry's note shows the command.
+- The dashboard counts as attached for 12s after its last poll (was 5s).
 
 ### Changed
 

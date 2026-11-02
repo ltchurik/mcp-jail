@@ -45,7 +45,7 @@ type Decision struct {
 
 // attachedWindow is how recent a poll must be for a dashboard to count as
 // attached; while one is, the proxy waits for it instead of denying at once.
-const attachedWindow = 5 * time.Second
+const attachedWindow = 12 * time.Second // the page polls every 1s, every 5s when hidden
 
 // Broker holds the pending asks of one jail.
 type Broker struct {

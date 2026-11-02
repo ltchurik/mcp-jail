@@ -129,3 +129,40 @@ func TestSetRuleRefusesBadInput(t *testing.T) {
 		t.Error("temp file left behind")
 	}
 }
+
+func TestLiteralTool(t *testing.T) {
+	cases := map[string]string{"read_file": "read_file", "*": "[*]", "a?b": "a[?]b", "[x]": "[[]x]", `a\b`: `a[\]b`}
+	for in, want := range cases {
+		if got := LiteralTool(in); got != want {
+			t.Errorf("LiteralTool(%q) = %q, want %q", in, got, want)
+		}
+	}
+	p := Default()
+	p.Tools.Default = Deny
+	p.Tools.Rules = map[string]Rule{LiteralTool("*"): {Decision: Allow}, LiteralTool("a?b"): {Decision: Allow}}
+	if p.Decide("*") != Allow || p.Decide("a?b") != Allow || p.Decide("anything") != Deny || p.Decide("axb") != Deny {
+		t.Fatalf("escaped rules: %+v", p.Tools.Rules)
+	}
+}
+
+func TestSetRuleFollowsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "real.yml")
+	if err := os.WriteFile(target, []byte("name: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "policy.yml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := SetRule(link, "x", Allow); err != nil {
+		t.Fatal(err)
+	}
+	if st, err := os.Lstat(link); err != nil || st.Mode()&os.ModeSymlink == 0 {
+		t.Fatal("symlink was replaced by a regular file")
+	}
+	b, _ := os.ReadFile(target)
+	if !strings.Contains(string(b), "x: allow") {
+		t.Fatalf("target not updated:\n%s", b)
+	}
+}

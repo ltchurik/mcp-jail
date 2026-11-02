@@ -22,6 +22,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"sort"
@@ -208,8 +209,27 @@ func (s *Server) requireMutation(next http.Handler) http.Handler {
 	}))
 }
 
+// sameOrigin accepts an Origin that names this very server: same host and
+// port, or a loopback name with the same port (the browser may say
+// localhost where we say 127.0.0.1). The origin is parsed, not
+// prefix-matched: "http://localhost.evil.example" is not localhost.
 func sameOrigin(origin, host string) bool {
-	return origin == "http://"+host || (strings.HasPrefix(origin, "http://localhost") && loopbackHost(host))
+	if origin == "http://"+host {
+		return true
+	}
+	u, err := url.Parse(origin)
+	if err != nil || u.Scheme != "http" || u.User != nil || u.Path != "" || u.RawQuery != "" {
+		return false
+	}
+	_, port, err := net.SplitHostPort(host)
+	if err != nil {
+		port = "80"
+	}
+	oport := u.Port()
+	if oport == "" {
+		oport = "80"
+	}
+	return loopbackHost(u.Host) && loopbackHost(host) && oport == port
 }
 
 // ApproveResponse is the result of approving a pending lock change.
@@ -287,6 +307,9 @@ func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no policy file known for "+name, http.StatusNotFound)
 		return
 	}
+	// The tool name comes from a server's own listing; a glob in it would
+	// become a rule over every tool. Promote the literal name only.
+	body.Tool = policy.LiteralTool(body.Tool)
 	if err := policy.SetRule(path, body.Tool, d); err != nil {
 		code := http.StatusBadRequest
 		if !errors.Is(err, os.ErrNotExist) && !strings.HasPrefix(err.Error(), "tool") {
@@ -410,6 +433,10 @@ func (s *Server) handleAsks(w http.ResponseWriter, _ *http.Request) {
 // socket. The proxy audits the decision as ask_allow/ask_deny "dashboard".
 func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
 	name, id := r.PathValue("name"), r.PathValue("id")
+	if !digits(id) {
+		http.Error(w, "bad ask id", http.StatusBadRequest)
+		return
+	}
 	var body struct {
 		Decision string `json:"decision"`
 	}
@@ -836,4 +863,17 @@ func (s *Server) Serve(ctx context.Context, l net.Listener) error {
 		}
 		return err
 	}
+}
+
+// digits reports whether s is a non-empty decimal number (ask ids are).
+func digits(s string) bool {
+	if s == "" || len(s) > 20 {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
