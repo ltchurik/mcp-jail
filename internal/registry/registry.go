@@ -8,6 +8,8 @@
 package registry
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -198,18 +200,28 @@ func read() ([]Entry, error) {
 	return out, nil
 }
 
+// safe turns a server name into a file name. A name made of letters,
+// digits, "-", "_" and "." is used as is; anything else is replaced by "_"
+// and a short hash of the original is appended, so two names that
+// sanitise alike ("a b", "a/b") cannot share a file.
 func safe(name string) string {
 	var b strings.Builder
+	clean := true
 	for _, r := range name {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
 			b.WriteRune(r)
 		default:
 			b.WriteRune('_')
+			clean = false
 		}
 	}
 	if b.Len() == 0 {
 		return "server"
 	}
-	return b.String()
+	if clean {
+		return b.String()
+	}
+	sum := sha256.Sum256([]byte(name))
+	return b.String() + "-" + hex.EncodeToString(sum[:4])
 }
