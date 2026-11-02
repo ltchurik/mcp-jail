@@ -238,6 +238,10 @@ func (p *Policy) Validate() error {
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
 			return fmt.Errorf("ask.webhook.url must be an http(s) URL, got %q", w.URL)
 		}
+		if u.Scheme == "http" && !loopbackName(u.Hostname()) {
+			// an allow over plain HTTP is one on-path attacker away
+			return fmt.Errorf("ask.webhook.url: plain http is only allowed for localhost, got %q", w.URL)
+		}
 		switch {
 		case w.Timeout == 0:
 			w.Timeout = 60 * time.Second
@@ -251,6 +255,15 @@ func (p *Policy) Validate() error {
 		}
 	}
 	return nil
+}
+
+// loopbackName reports whether host names the local machine.
+func loopbackName(host string) bool {
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.Trim(host, "[]"))
+	return ip != nil && ip.IsLoopback()
 }
 
 func checkDecision(d Decision) error {

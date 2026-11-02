@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/ltchurik/mcp-jail/internal/netguard"
 )
 
 // Allower decides whether a host may be reached.
@@ -44,7 +46,9 @@ func ListenRelay(allow Allower, observe Observer) (*Relay, error) {
 		return nil, err
 	}
 	r := &Relay{allow: allow, observe: observe, ln: ln, dir: dir}
-	d := &net.Dialer{Timeout: 15 * time.Second}
+	// The allowlist is checked on the name; the guard checks what the name
+	// resolved to, so a hostname cannot be pointed at the host's own services.
+	d := netguard.Dialer(15*time.Second, allow.HostAllowed)
 	r.dial = d.DialContext
 	r.wg.Add(1)
 	go r.serve()

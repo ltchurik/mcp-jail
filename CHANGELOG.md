@@ -19,6 +19,18 @@
   page never signals a pid itself. `mcp-jail run` now also escalates to
   SIGKILL when a server ignores the SIGTERM relayed from Ctrl-C.
 
+### Security
+
+- The egress relay (Linux) and the `HTTP_PROXY` filter now check what an
+  allowed name resolves to: a loopback, private, link-local, CGNAT,
+  multicast or unspecified address is refused unless that literal address
+  is in `network.allow`. Before, whoever ran the DNS of an allowed host could
+  point the jail at the host's own loopback or LAN services. The filter's
+  upstream transport no longer honours the host's `HTTP_PROXY`.
+- `ask.webhook.url` must be `https` unless it names localhost; the webhook
+  client no longer follows redirects, so the configured headers go to the
+  configured URL only and a 3xx is a deny.
+
 ### Changed
 
 - Toolchain: Go 1.27 (`go.mod`, CI, release builds), golangci-lint v2.15 in
