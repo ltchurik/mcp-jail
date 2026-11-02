@@ -19,6 +19,35 @@
   page never signals a pid itself. `mcp-jail run` now also escalates to
   SIGKILL when a server ignores the SIGTERM relayed from Ctrl-C.
 
+### Security
+
+Findings of an internal review of the proxy's message handling, all fixed:
+
+- **Case-variant and duplicate JSON keys** (`Method`, `NAME`, `Arguments`,
+  `paramſ`…) could carry a second value past the policy: Go's JSON decoder
+  matched them case-insensitively while servers read the exact key. The
+  proxy now parses the envelope and `tools/call` params strictly (single
+  object, exact keys, each at most once, no trailing data) and answers
+  anything else with `-32600` / `-32602` instead of forwarding it. Batches
+  (arrays) are refused the same way.
+- **Non-canonical response ids** (`7.0`, `7e0` for request `7`) let a server's
+  list response slip past the rug-pull lock. Ids are now correlated by
+  canonical value; a response to an id the proxy never forwarded is dropped
+  and audited (`kind: protocol`), and a list that was in flight at that
+  moment is refused rather than left pending.
+- A `tools/call`, `prompts/get` or `resources/read` sent as a notification
+  (no id) was forwarded unchecked; it is now dropped and audited. Lines the
+  proxy cannot parse are no longer forwarded in either direction.
+- Two tool (prompt, resource) definitions under one name now fail the lock
+  instead of hashing as one.
+- Two glob rules of equal length matching the same tool no longer pick a
+  winner by map order: the stricter decision wins (deny > ask > allow).
+- Audit fields chosen by a server or client (`tool`, `reason`, `error`,
+  `host`) are clipped to 2 KiB and `args` to 64 KiB, and the dashboard /
+  `report` reader skips an oversized line instead of stopping at it, so one
+  huge error message cannot hide the events after it. The terminal `ask`
+  prompt strips control characters from the tool name and arguments.
+
 ### Changed
 
 - Toolchain: Go 1.27 (`go.mod`, CI, release builds), golangci-lint v2.15 in

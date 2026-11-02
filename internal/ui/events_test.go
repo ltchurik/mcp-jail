@@ -3,6 +3,7 @@ package ui
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -117,5 +118,19 @@ func TestTailer(t *testing.T) {
 	writeLog(t, p, "s", 1, time.Now())
 	if got := tl.Poll(); len(got) != 1 {
 		t.Fatalf("after truncate: %d", len(got))
+	}
+}
+
+func TestScanSkipsOversizedLineAndContinues(t *testing.T) {
+	long := `{"ts":"2026-11-02T10:00:00Z","server":"s","kind":"tool_result","error":"` + strings.Repeat("x", maxLine+10) + `"}`
+	data := `{"ts":"2026-11-02T10:00:00Z","server":"s","kind":"start"}` + "\n" + long + "\n" +
+		`{"ts":"2026-11-02T10:00:01Z","server":"s","kind":"exit"}` + "\n" + "garbage\n" +
+		`{"ts":"2026-11-02T10:00:02Z","server":"s","kind":"stop"}`
+	evs, skipped := scan(strings.NewReader(data), Filter{})
+	if len(evs) != 3 || skipped != 2 {
+		t.Fatalf("got %d events, %d skipped", len(evs), skipped)
+	}
+	if evs[0].Kind != "start" || evs[1].Kind != "exit" || evs[2].Kind != "stop" {
+		t.Fatalf("%+v", evs)
 	}
 }

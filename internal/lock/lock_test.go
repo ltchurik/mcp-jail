@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -149,5 +150,15 @@ func TestLegacyFiles(t *testing.T) {
 	_ = json.Unmarshal(b, &m)
 	if m["hash"] != "def" || m["tools"] == nil {
 		t.Fatalf("top-level tools must be kept: %s", b)
+	}
+}
+
+func TestComputeRefusesDuplicateNames(t *testing.T) {
+	_, err := Compute(Tools, []json.RawMessage{
+		json.RawMessage(`{"name":"read_file","description":"a"}`),
+		json.RawMessage(`{"name":"read_file","description":"b"}`),
+	})
+	if err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("err = %v", err)
 	}
 }

@@ -262,18 +262,34 @@ func checkDecision(d Decision) error {
 }
 
 // Rule returns the rule for a tool name. Exact match wins over glob; among
-// globs, the longest pattern wins; otherwise the default decision applies.
+// globs, the longest pattern wins, and between patterns of the same length
+// the stricter decision (deny over ask over allow) so that the outcome
+// does not depend on map order; otherwise the default decision applies.
 func (p *Policy) Rule(tool string) Rule {
 	if r, ok := p.Tools.Rules[tool]; ok {
 		return r
 	}
 	best, bestLen := Rule{Decision: p.Tools.Default}, -1
 	for pat, r := range p.Tools.Rules {
-		if ok, _ := filepath.Match(pat, tool); ok && len(pat) > bestLen {
+		ok, _ := filepath.Match(pat, tool)
+		if !ok {
+			continue
+		}
+		if len(pat) > bestLen || (len(pat) == bestLen && strictness(r.Decision) > strictness(best.Decision)) {
 			best, bestLen = r, len(pat)
 		}
 	}
 	return best
+}
+
+func strictness(d Decision) int {
+	switch d {
+	case Deny:
+		return 2
+	case Ask:
+		return 1
+	}
+	return 0
 }
 
 // Decide returns the decision for a tool name.

@@ -221,3 +221,22 @@ func TestAskWebhookValidate(t *testing.T) {
 		t.Fatalf("load: %v %+v", err, lp)
 	}
 }
+
+func TestRuleTieBreakIsStrict(t *testing.T) {
+	p := Default()
+	p.Tools.Default = Allow
+	p.Tools.Rules = map[string]Rule{"read_*": {Decision: Allow}, "*_file": {Decision: Deny}}
+	for i := 0; i < 50; i++ {
+		if d := p.Decide("read_file"); d != Deny {
+			t.Fatalf("iteration %d: %s", i, d)
+		}
+	}
+	p.Tools.Rules = map[string]Rule{"read_*": {Decision: Ask}, "*_file": {Decision: Allow}}
+	if d := p.Decide("read_file"); d != Ask {
+		t.Fatal(d)
+	}
+	p.Tools.Rules["read_file"] = Rule{Decision: Allow} // exact still wins
+	if d := p.Decide("read_file"); d != Allow {
+		t.Fatal(d)
+	}
+}

@@ -66,6 +66,7 @@ type lockState struct {
 	verified bool
 	tainted  bool
 	inflight int
+	why      string // reason for the taint when it was not a hash mismatch
 }
 
 type pendingReq struct {
@@ -145,12 +146,26 @@ func (p *Proxy) toServer(b []byte) {
 	_, _ = p.server.Write(append(b, '\n'))
 }
 
-// fromClient handles one message coming from the MCP client.
+// fromClient handles one message coming from the MCP client. Only what
+// the proxy could parse and judge is forwarded: a line that is not a single
+// well-formed object (a batch, trailing data, a key that would read
+// differently here and in the server) is answered with an error and
+// dropped, and a notification that names a gated method is dropped, since
+// a server may act on it and the proxy could not have checked it.
 func (p *Proxy) fromClient(line []byte) {
 	m, err := jsonrpc.Parse(line)
 	if err != nil {
-		p.toServer(line) // not ours to judge
+		p.Audit.Log(audit.Event{Kind: "protocol", Decision: "deny", Reason: "client: " + err.Error()})
+		p.Logf("refused client message: %v", err)
+		p.toClient(jsonrpc.NewErrorResponse(nil, jsonrpc.CodeInvalidRequest, "mcp-jail: "+err.Error()))
 		return
+	}
+	if m.IsNotification() {
+		if _, gated := gate[m.Method]; gated {
+			p.Audit.Log(audit.Event{Kind: "protocol", Decision: "deny", Reason: "client: " + m.Method + " as a notification"})
+			p.Logf("dropped %s notification: a gated method needs an id", m.Method)
+			return
+		}
 	}
 	if m.IsRequest() {
 		pr := pendingReq{method: m.Method, start: time.Now()}
@@ -161,8 +176,13 @@ func (p *Proxy) fromClient(line []byte) {
 		}
 		switch m.Method {
 		case "tools/call":
-			var tc jsonrpc.ToolCallParams
-			_ = json.Unmarshal(m.Params, &tc)
+			tc, err := jsonrpc.ParseToolCall(m.Params)
+			if err != nil {
+				p.Audit.Log(audit.Event{Kind: "tool_call", Decision: "deny", Reason: "params: " + err.Error()})
+				p.Logf("deny tools/call (%v)", err)
+				p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeInvalidParams, "mcp-jail: "+err.Error()))
+				return
+			}
 			pr.tool = tc.Name
 			if !p.allowCall(m, tc) {
 				return
@@ -287,6 +307,8 @@ func (p *Proxy) waitVerified(k lock.Kind) string {
 	st := p.sections[k]
 	for {
 		switch {
+		case st.tainted && st.why != "":
+			return st.why
 		case st.tainted:
 			return string(k) + " changed since last approval; run `mcp-jail approve " + p.Policy.Name + "`"
 		case k == lock.Resources && p.sections[lock.ResourceTemplates].tainted:
@@ -311,7 +333,7 @@ func gateMethod(k lock.Kind) string {
 
 func (p *Proxy) setLock(k lock.Kind, verified, tainted bool) {
 	p.lmu.Lock()
-	p.sections[k].verified, p.sections[k].tainted = verified, tainted
+	p.sections[k].verified, p.sections[k].tainted, p.sections[k].why = verified, tainted, ""
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -332,9 +354,9 @@ func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 	}
 	args := string(tc.Arguments)
 	if len(args) > 400 {
-		args = args[:400] + "…"
+		args = fmt.Sprintf("%s… (+%d bytes)", args[:400], len(args)-400)
 	}
-	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n  allow? [y/N] ", p.Policy.Name, tc.Name, args)
+	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n  allow? [y/N] ", p.Policy.Name, printable(tc.Name), printable(args))
 	rd := bufio.NewReader(p.tty)
 	ans, err := rd.ReadString('\n')
 	if err != nil {
@@ -347,11 +369,16 @@ func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 	return false, "user"
 }
 
-// fromServer handles one message coming from the jailed server.
+// fromServer handles one message coming from the jailed server. A line the
+// proxy cannot parse is dropped, and so is a response to a request the
+// proxy never forwarded: the only responses a server has any business
+// sending are answers to what came through here, and an unmatched id is
+// how a list response would dodge the lock.
 func (p *Proxy) fromServer(line []byte) {
 	m, err := jsonrpc.Parse(line)
 	if err != nil {
-		p.toClient(line)
+		p.Audit.Log(audit.Event{Kind: "protocol", Decision: "blocked", Reason: "server: " + err.Error()})
+		p.Logf("dropped server message: %v", err)
 		return
 	}
 	if m.IsResponse() {
@@ -359,7 +386,23 @@ func (p *Proxy) fromServer(line []byte) {
 		pr, ok := p.pending[m.IDKey()]
 		delete(p.pending, m.IDKey())
 		p.pmu.Unlock()
-		if ok {
+		if !ok {
+			p.Audit.Log(audit.Event{Kind: "protocol", Decision: "blocked", Reason: "server: response to unknown request id " + m.IDKey()})
+			p.Logf("dropped server response to unknown request id %s", m.IDKey())
+			// A list in flight will not get a usable answer from a server
+			// that answers under the wrong id: refuse its uses instead of
+			// parking them until the session ends.
+			p.lmu.Lock()
+			for k, st := range p.sections {
+				if st.inflight > 0 && !st.verified {
+					st.tainted, st.why = true, listMethod(k)+" answered under an unknown id; the server is not trusted"
+				}
+			}
+			p.lcond.Broadcast()
+			p.lmu.Unlock()
+			return
+		}
+		{
 			switch pr.method {
 			case "tools/list", "prompts/list", "resources/list", "resources/templates/list":
 				k := lock.KindOf(pr.method)
@@ -433,4 +476,16 @@ func (p *Proxy) checkLock(k lock.Kind, m *jsonrpc.Message) bool {
 	p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull,
 		"mcp-jail: "+string(k)+" changed since last approval ("+d.String()+"); run `mcp-jail approve "+p.Policy.Name+"`"))
 	return false
+}
+
+// printable replaces control characters (terminal escapes among them)
+// with '?', so a tool name or argument chosen by a server or a client
+// cannot redraw the ask prompt.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == 0x2028 || r == 0x2029 || (r >= 0x80 && r < 0xa0) {
+			return '?'
+		}
+		return r
+	}, s)
 }

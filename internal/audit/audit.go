@@ -3,10 +3,12 @@ package audit
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
 	"time"
+	"unicode/utf8"
 )
 
 // Event is one audit record.
@@ -45,6 +47,25 @@ func Open(path, server string) (*Logger, error) {
 	return &Logger{f: f, server: server}, nil
 }
 
+// Limits on fields a server or client chooses: a log line stays readable
+// and one oversized message cannot push the file past what readers scan.
+const (
+	maxField = 2048
+	maxArgs  = 64 << 10
+)
+
+// clip shortens s to at most n bytes on a rune boundary, marking the cut.
+func clip(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	cut := n
+	for cut > 0 && !utf8.RuneStart(s[cut]) {
+		cut--
+	}
+	return fmt.Sprintf("%s…[+%d bytes]", s[:cut], len(s)-cut)
+}
+
 // Log writes one event.
 func (l *Logger) Log(e Event) {
 	if l == nil {
@@ -52,6 +73,11 @@ func (l *Logger) Log(e Event) {
 	}
 	e.Time = time.Now().UTC()
 	e.Server = l.server
+	e.Tool, e.Reason, e.Error, e.Host = clip(e.Tool, maxField), clip(e.Reason, maxField), clip(e.Error, maxField), clip(e.Host, maxField)
+	if len(e.Args) > maxArgs {
+		head := clip(string(e.Args), 1024)
+		e.Args, _ = json.Marshal(map[string]any{"truncated": true, "bytes": len(e.Args), "head": head})
+	}
 	if e.Duration != 0 {
 		e.Duration = e.Duration / time.Millisecond
 	}

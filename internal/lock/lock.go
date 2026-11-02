@@ -151,6 +151,11 @@ func Compute(k Kind, items []json.RawMessage) (Section, error) {
 		if key == "" {
 			return Section{}, fmt.Errorf("%s item without %s", k, keyField(k))
 		}
+		if _, dup := per[key]; dup {
+			// two definitions under one name: a client may use either, so
+			// neither can be trusted
+			return Section{}, fmt.Errorf("%s: duplicate %s %q", k, keyField(k), key)
+		}
 		canon, err := json.Marshal(v) // map keys are sorted by encoding/json
 		if err != nil {
 			return Section{}, err
