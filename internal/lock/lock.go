@@ -178,19 +178,41 @@ func Compute(k Kind, items []json.RawMessage) (Section, error) {
 	return Section{Hash: hex.EncodeToString(h.Sum(nil)), Items: per}, nil
 }
 
-// ComputeResult hashes the list found in a raw list result of kind k.
-func ComputeResult(k Kind, result json.RawMessage) (Section, error) {
+// Page is one page of a list result: its items and the cursor for the
+// next page ("" on the last one).
+type Page struct {
+	Items []json.RawMessage
+	Next  string
+}
+
+// ParsePage reads the items and nextCursor of a raw list result of kind k.
+func ParsePage(k Kind, result json.RawMessage) (Page, error) {
 	var res map[string]json.RawMessage
 	if err := json.Unmarshal(result, &res); err != nil {
-		return Section{}, err
+		return Page{}, err
 	}
-	var items []json.RawMessage
+	var pg Page
 	if raw, ok := res[listField(k)]; ok {
-		if err := json.Unmarshal(raw, &items); err != nil {
-			return Section{}, err
+		if err := json.Unmarshal(raw, &pg.Items); err != nil {
+			return Page{}, err
 		}
 	}
-	return Compute(k, items)
+	if raw, ok := res["nextCursor"]; ok && string(raw) != "null" {
+		if err := json.Unmarshal(raw, &pg.Next); err != nil {
+			return Page{}, fmt.Errorf("nextCursor: %w", err)
+		}
+	}
+	return pg, nil
+}
+
+// ComputeResult hashes the list found in a raw list result of kind k,
+// treating it as the whole list (see ParsePage for paged results).
+func ComputeResult(k Kind, result json.RawMessage) (Section, error) {
+	pg, err := ParsePage(k, result)
+	if err != nil {
+		return Section{}, err
+	}
+	return Compute(k, pg.Items)
 }
 
 // Load reads the lock for name. Returns (nil, nil) when none exists.
