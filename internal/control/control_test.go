@@ -228,3 +228,69 @@ func TestClientReload(t *testing.T) {
 		t.Fatalf("error not relayed: %v", err)
 	}
 }
+
+func TestStopHook(t *testing.T) {
+	var got []string
+	h := Hooks{Stop: func(by string) { got = append(got, by) }}
+	ts := httptest.NewServer(Handler(NewBroker("srv"), h))
+	defer ts.Close()
+	post := func(url, body string) int {
+		r, err := http.Post(url, "application/json", strings.NewReader(body)) //nolint:gosec // test server URL
+		if err != nil {
+			t.Fatal(err)
+		}
+		_ = r.Body.Close()
+		return r.StatusCode
+	}
+	if c := post(ts.URL+"/stop", `{"by":"dashboard"}`); c != http.StatusOK {
+		t.Fatalf("stop: %d", c)
+	}
+	if c := post(ts.URL+"/stop", ``); c != http.StatusOK { // empty body: default name
+		t.Fatalf("stop without body: %d", c)
+	}
+	if c := post(ts.URL+"/stop", `{"by":"bad\nname"}`); c != http.StatusOK {
+		t.Fatalf("stop: %d", c)
+	}
+	if len(got) != 3 || got[0] != "dashboard" || got[1] != "control" || got[2] != "control" {
+		t.Fatalf("hook calls: %v", got)
+	}
+	none := httptest.NewServer(Handler(NewBroker("srv"), Hooks{}))
+	defer none.Close()
+	if c := post(none.URL+"/stop", `{}`); c != http.StatusNotImplemented {
+		t.Fatalf("no hook: %d", c)
+	}
+	if r, err := http.Get(ts.URL + "/stop"); err == nil {
+		_ = r.Body.Close()
+		if r.StatusCode == http.StatusOK || len(got) != 3 {
+			t.Fatal("GET /stop must not stop")
+		}
+	}
+}
+
+func TestClientStop(t *testing.T) {
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	by := make(chan string, 1)
+	s, err := Listen(filepath.Join(dir, "s.sock"), NewBroker("srv"), Hooks{Stop: func(b string) { by <- b }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	if err := Dial(s.Path()).Stop(context.Background(), "dashboard"); err != nil {
+		t.Fatal(err)
+	}
+	if b := <-by; b != "dashboard" {
+		t.Fatalf("by: %s", b)
+	}
+	none, err := Listen(filepath.Join(dir, "n.sock"), NewBroker("srv"), Hooks{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = none.Close() }()
+	if err := Dial(none.Path()).Stop(context.Background(), "dashboard"); err == nil || !strings.Contains(err.Error(), "not supported") {
+		t.Fatalf("unsupported: %v", err)
+	}
+}

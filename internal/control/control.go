@@ -132,6 +132,9 @@ type Hooks struct {
 	// Reload re-reads the policy file and takes its tools/ask sections
 	// into use. An error leaves the running policy as it was.
 	Reload func() error
+	// Stop ends the jail: the server gets SIGTERM, the proxy exits with it.
+	// by says who asked (audited).
+	Stop func(by string)
 }
 
 // Server serves a Broker over a Unix socket.
@@ -215,9 +218,26 @@ func (s *Server) handler() http.Handler {
 
 // Handler serves a broker: GET /asks lists, POST /asks/{id} answers with a
 // JSON body {"decision":"allow"|"deny","by":"…"}; POST /reload runs the
-// Reload hook.
+// Reload hook; POST /stop with {"by":"…"} runs the Stop hook.
 func Handler(b *Broker, h Hooks) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /stop", func(w http.ResponseWriter, r *http.Request) {
+		if h.Stop == nil {
+			http.Error(w, "stop not supported by this jail", http.StatusNotImplemented)
+			return
+		}
+		var body struct {
+			By string `json:"by"`
+		}
+		_ = json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body) // an empty body is fine
+		by := oneWord(body.By)
+		if by == "" {
+			by = "control"
+		}
+		h.Stop(by)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+	})
 	mux.HandleFunc("POST /reload", func(w http.ResponseWriter, _ *http.Request) {
 		if h.Reload == nil {
 			http.Error(w, "reload not supported by this jail", http.StatusNotImplemented)
@@ -352,6 +372,29 @@ func (c *Client) Reload(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if m := strings.TrimSpace(string(msg)); m != "" {
+		return fmt.Errorf("control: %s", m)
+	}
+	return fmt.Errorf("control: status %d", resp.StatusCode)
+}
+
+// Stop asks the jail to shut down; by is recorded in the audit log.
+func (c *Client) Stop(ctx context.Context, by string) error {
+	body, _ := json.Marshal(map[string]string{"by": by})
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://jail/stop", strings.NewReader(string(body)))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
 	resp, err := c.hc.Do(req)
 	if err != nil {
 		return err

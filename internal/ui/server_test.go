@@ -599,3 +599,48 @@ func TestRule(t *testing.T) {
 		t.Fatalf("old.yml:\n%s", b)
 	}
 }
+
+func TestStop(t *testing.T) {
+	ts := newTestServer(t)
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	stopped := make(chan string, 1)
+	cs, err := control.Listen(filepath.Join(dir, "demo.sock"), control.NewBroker("demo"), control.Hooks{Stop: func(by string) { stopped <- by }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+	unreg, err := registry.Register(registry.Entry{Name: "demo", Control: cs.Path()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unreg()
+	unreg2, _ := registry.Register(registry.Entry{Name: "old", PID: os.Getpid()}) // no control socket
+	defer unreg2()
+
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+	if code, _ := postBody(t, ts.URL+"/api/servers/demo/stop", map[string]string{"Authorization": "Bearer " + tok}, ``); code != http.StatusForbidden {
+		t.Errorf("no header: %d", code)
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/nobody/stop", ok, ``); code != http.StatusNotFound {
+		t.Errorf("unknown: %d", code)
+	}
+	if code, body := postBody(t, ts.URL+"/api/servers/old/stop", ok, ``); code != http.StatusConflict || !strings.Contains(body, "stop pid") {
+		t.Errorf("no socket: %d %s", code, body)
+	}
+	select {
+	case by := <-stopped:
+		t.Fatalf("refused requests must not stop: %s", by)
+	case <-time.After(20 * time.Millisecond):
+	}
+	code, body := postBody(t, ts.URL+"/api/servers/demo/stop", ok, ``)
+	if code != http.StatusOK || !strings.Contains(body, `"ok":true`) || !strings.Contains(body, `"pid":`) {
+		t.Fatalf("stop: %d %s", code, body)
+	}
+	if by := <-stopped; by != "dashboard" {
+		t.Fatalf("by: %s", by)
+	}
+}

@@ -208,15 +208,6 @@ assert "$("$BIN" report --json --server e2e-ui)" '"hosts": \[\]'
 assert "$(cat "$WORK/rep.err")" '\-\-since'
 "$BIN" ui --listen 0.0.0.0:0 2>"$WORK/ui-bad.err" && { echo "FAIL: ui bound a non-loopback address"; exit 1; }
 assert "$(cat "$WORK/ui-bad.err")" 'localhost only'
-kill $JAIL; wait $JAIL 2>/dev/null || true; JAIL=
-for _ in $(seq 50); do "$BIN" ps | grep -q 'no running jails' && break; sleep 0.1; done
-assert "$("$BIN" ps)" 'no running jails'
-assert "$(http "$BASE/api/state" "$TOKEN")" '"name":"e2e-ui","running":false,"last_seen"'  # history survives exit
-# approve a rug-pull from the dashboard: change a tool description, run again, approve over the API
-edit 's/Report what the server can see/Report what the server sees/'
-OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
-assert "$OUT" '"id":2,"error":\{"code":-32002'
-assert "$(http "$BASE/api/state" "$TOKEN")" '"pending":\{"seen_at":"[^"]*","sections":\{"tools":\{"added":\[\],"removed":\[\],"changed":\["probe"\]\}\}\}'
 post() { # $1 = url, $2 = bearer token, $3... = extra "Header: value"; prints status then body
   "$PY" -c 'import sys,urllib.request as u
 h={"Authorization":"Bearer "+sys.argv[2]}
@@ -226,6 +217,22 @@ req=u.Request(sys.argv[1],data=b"{}",headers=h,method="POST")
 try:
     r=u.urlopen(req,timeout=5); print(r.status); print(r.read().decode())
 except u.HTTPError as e: print(e.code); print(e.read().decode())' "$@"; }
+# stop the jail from the dashboard: the jail signals its own server, the page never touches a pid
+assert "$(post "$BASE/api/servers/e2e-ui/stop" "$TOKEN")" '^403'                                      # no same-origin proof
+assert "$(post "$BASE/api/servers/nobody/stop" "$TOKEN" "X-Mcp-Jail: 1")" '^404'
+assert "$(post "$BASE/api/servers/e2e-ui/stop" "$TOKEN" "X-Mcp-Jail: 1")" '^200
+\{"ok":true,"name":"e2e-ui","pid":[0-9]+\}'
+wait $JAIL 2>/dev/null || true; JAIL=
+for _ in $(seq 50); do "$BIN" ps | grep -q 'no running jails' && break; sleep 0.1; done
+assert "$("$BIN" ps)" 'no running jails'
+assert "$(cat "$WORK/ui-audit.jsonl")" '"kind":"stop","reason":"dashboard"'
+assert "$(cat "$WORK/ui-audit.jsonl")" '"kind":"exit"'
+assert "$(http "$BASE/api/state" "$TOKEN")" '"name":"e2e-ui","running":false,"last_seen"'  # history survives exit
+# approve a rug-pull from the dashboard: change a tool description, run again, approve over the API
+edit 's/Report what the server can see/Report what the server sees/'
+OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
+assert "$OUT" '"id":2,"error":\{"code":-32002'
+assert "$(http "$BASE/api/state" "$TOKEN")" '"pending":\{"seen_at":"[^"]*","sections":\{"tools":\{"added":\[\],"removed":\[\],"changed":\["probe"\]\}\}\}'
 assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN")" '^403'                                   # no same-origin proof
 assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN" "X-Mcp-Jail: 1" "Sec-Fetch-Site: cross-site")" '^403'
 assert "$("$BIN" diff e2e-ui)" 'changed probe'                                                           # refusals changed nothing

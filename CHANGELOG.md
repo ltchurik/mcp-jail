@@ -12,6 +12,12 @@
   (`POST /reload`), auditing a `reload` event. `POST
   /api/servers/{name}/rules` with `{"tool","decision"}`; the response says
   whether the rule is live or applies on the next start.
+- The dashboard can **stop a jail**: a confirmed *Stop* on a running
+  server's card (`POST /api/servers/{name}/stop`) asks the jail over its
+  control socket to send its server SIGTERM (SIGKILL after 5s if it stays)
+  and exit; the audit log gets a `stop` event with reason `dashboard`. The
+  page never signals a pid itself. `mcp-jail run` now also escalates to
+  SIGKILL when a server ignores the SIGTERM relayed from Ctrl-C.
 
 ### Changed
 

@@ -235,13 +235,22 @@ func cmdRun(args []string) error {
 	// asks for a policy reload after it edited the file
 	asks := control.NewBroker(p.Name)
 	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf}
-	hooks := control.Hooks{Reload: func() error {
-		np, err := policy.Load(*pol)
-		if err != nil {
-			return err
-		}
-		return px.Reload(np)
-	}}
+	stopc := make(chan string, 1)
+	hooks := control.Hooks{
+		Reload: func() error {
+			np, err := policy.Load(*pol)
+			if err != nil {
+				return err
+			}
+			return px.Reload(np)
+		},
+		Stop: func(by string) {
+			select {
+			case stopc <- by:
+			default: // already stopping
+			}
+		},
+	}
 	controlPath := ""
 	if cs, err := control.Listen(control.SocketPath(registry.Dir(), p.Name, os.Getpid()), asks, hooks); err != nil {
 		logf("control socket: %v (the dashboard cannot answer asks for this jail)", err)
@@ -263,8 +272,17 @@ func cmdRun(args []string) error {
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
 	go func() {
-		<-sig
+		select {
+		case <-sig:
+		case by := <-stopc:
+			al.Log(audit.Event{Kind: "stop", Reason: by})
+			logf("%s: stop requested (%s)", p.Name, by)
+		}
 		_ = cmd.Process.Signal(syscall.SIGTERM)
+		// a server that ignores SIGTERM is killed; the proxy ends when its
+		// stdout closes either way
+		time.Sleep(5 * time.Second)
+		_ = cmd.Process.Kill()
 	}()
 
 	px.Asks = asks

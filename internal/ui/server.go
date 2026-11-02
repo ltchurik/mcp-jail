@@ -88,6 +88,7 @@ func New(token, version string, extra []string) (*Server, error) {
 	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
 	s.mux.Handle("POST /api/servers/{name}/approve", s.requireMutation(http.HandlerFunc(s.handleApprove)))
 	s.mux.Handle("POST /api/servers/{name}/rules", s.requireMutation(http.HandlerFunc(s.handleRule)))
+	s.mux.Handle("POST /api/servers/{name}/stop", s.requireMutation(http.HandlerFunc(s.handleStop)))
 	s.mux.Handle("GET /api/asks", s.requireAuth(http.HandlerFunc(s.handleAsks)))
 	s.mux.Handle("POST /api/servers/{name}/asks/{id}", s.requireMutation(http.HandlerFunc(s.handleAnswer)))
 	return s, nil
@@ -308,6 +309,48 @@ func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logf("%s: rule %s=%s written to %s from the dashboard (live=%v)", name, body.Tool, d, path, resp.Live)
 	writeJSON(w, resp)
+}
+
+// StopResponse answers POST /api/servers/{name}/stop.
+type StopResponse struct {
+	OK   bool   `json:"ok"`
+	Name string `json:"name"`
+	PID  int    `json:"pid"`
+}
+
+// handleStop asks a running jail to shut down over its control socket.
+// Only the jail's own process is ever signalled, by itself: the dashboard
+// never sends a signal to a pid from the registry, which could be reused.
+func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	live, err := registry.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var entry *registry.Entry
+	for i := range live {
+		if live[i].Name == name {
+			entry = &live[i]
+			break
+		}
+	}
+	if entry == nil {
+		http.Error(w, "no running jail named "+name, http.StatusNotFound)
+		return
+	}
+	if entry.Control == "" {
+		http.Error(w, fmt.Sprintf("%s has no control socket; stop pid %d yourself", name, entry.PID), http.StatusConflict)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := control.Dial(entry.Control).Stop(ctx, "dashboard"); err != nil {
+		http.Error(w, err.Error(), http.StatusBadGateway)
+		return
+	}
+	s.Logf("%s: stop requested from the dashboard (pid %d)", name, entry.PID)
+	writeJSON(w, StopResponse{OK: true, Name: name, PID: entry.PID})
 }
 
 // policyOf finds the policy file of a server, preferring a running jail
