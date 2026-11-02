@@ -545,11 +545,14 @@ type PendingState struct {
 	Sections map[string]PendingSection `json:"sections"`
 }
 
-// PendingSection lists what changed in one section.
+// PendingSection lists what changed in one section. First marks a list seen
+// for the first time under lock.first: review (nothing recorded yet, so
+// every item is "added").
 type PendingSection struct {
 	Added   []string `json:"added"`
 	Removed []string `json:"removed"`
 	Changed []string `json:"changed"`
+	First   bool     `json:"first,omitempty"`
 }
 
 // State is the /api/state document.
@@ -603,38 +606,43 @@ func (s *Server) state() State {
 			v.Asks = len(s.asksOf(e))
 		}
 	}
-	// locks may exist for servers that never registered (v0.2 runs)
+	// locks (and first-contact reviews) may exist for servers that never
+	// registered (v0.2 runs, a review refused before the registry entry)
 	if ents, err := fs.ReadDir(osDirFS(lock.Dir()), "."); err == nil {
 		for _, d := range ents {
 			if n, ok := strings.CutSuffix(d.Name(), ".lock.json"); ok {
+				get(n)
+			} else if n, ok := strings.CutSuffix(d.Name(), ".pending.json"); ok {
 				get(n)
 			}
 		}
 	}
 	for _, name := range order {
 		v := byName[name]
-		if f, err := lock.Load(name); err != nil {
+		f, err := lock.Load(name)
+		if err != nil {
 			v.Error = err.Error()
-		} else if f != nil {
-			for _, k := range lock.Kinds {
-				if sec := f.Section(k); sec != nil {
-					v.Lock = append(v.Lock, SectionState{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash)})
-				}
+		}
+		for _, k := range lock.Kinds {
+			if sec := f.Section(k); sec != nil { // nil-safe: no lock yet means no sections
+				v.Lock = append(v.Lock, SectionState{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash)})
 			}
-			if p, err := lock.LoadPending(name); err != nil {
-				v.Error = err.Error()
-			} else if p != nil && len(p.Sections) > 0 {
-				ps := &PendingState{SeenAt: p.SeenAt, Sections: map[string]PendingSection{}}
-				for k, sec := range p.Sections {
-					var old map[string]string
-					if o := f.Section(k); o != nil {
-						old = o.Items
-					}
-					d := lock.Compare(old, sec.Items)
-					ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed)}
+		}
+		// pending without a lock is a first contact awaiting review (lock.first: review)
+		if p, err := lock.LoadPending(name); err != nil {
+			v.Error = err.Error()
+		} else if p != nil && len(p.Sections) > 0 {
+			ps := &PendingState{SeenAt: p.SeenAt, Sections: map[string]PendingSection{}}
+			for k, sec := range p.Sections {
+				var old map[string]string
+				first := true
+				if o := f.Section(k); o != nil {
+					old, first = o.Items, false
 				}
-				v.Pending = ps
+				d := lock.Compare(old, sec.Items)
+				ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed), First: first}
 			}
+			v.Pending = ps
 		}
 		if v.Audit != "" {
 			since := st.Now.Add(-24 * time.Hour)

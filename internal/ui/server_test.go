@@ -199,11 +199,20 @@ func TestStateAndEvents(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	// a first-contact review (lock.first: review) has a pending record and no lock yet
+	first, _ := lock.Compute(lock.Tools, []json.RawMessage{json.RawMessage(`{"name":"new_tool"}`)})
+	if err := lock.SavePending("fresh", lock.Tools, first); err != nil {
+		t.Fatal(err)
+	}
+
 	bearer := map[string]string{"Authorization": "Bearer " + tok}
 	var st State
 	getJSON(t, ts.URL+"/api/state", bearer, &st)
-	if len(st.Servers) != 2 || st.Servers[0].Name != "demo" || !st.Servers[0].Running || st.Servers[1].Name != "legacy" || st.Servers[1].Running {
+	if len(st.Servers) != 3 || st.Servers[0].Name != "demo" || !st.Servers[0].Running || st.Servers[1].Name != "fresh" || st.Servers[2].Name != "legacy" || st.Servers[2].Running {
 		t.Fatalf("servers: %+v", st.Servers)
+	}
+	if f := st.Servers[1]; len(f.Lock) != 0 || f.Pending == nil || !f.Pending.Sections["tools"].First || len(f.Pending.Sections["tools"].Added) != 1 {
+		t.Fatalf("first contact: %+v", f.Pending)
 	}
 	d := st.Servers[0]
 	if d.PID != os.Getpid() || d.How != "no sandbox" || !d.LockOn || d.Audit != auditPath || len(d.Command) != 2 {
@@ -219,8 +228,8 @@ func TestStateAndEvents(t *testing.T) {
 	if d.Counts["allow"] != 1 || d.Counts["deny"] != 1 || d.Counts["blocked"] != 1 || d.LastEvent == nil {
 		t.Fatalf("counts: %+v", d.Counts)
 	}
-	if len(st.Servers[1].Lock) != 1 || st.Servers[1].Lock[0].Kind != "prompts" {
-		t.Fatalf("legacy lock: %+v", st.Servers[1].Lock)
+	if len(st.Servers[2].Lock) != 1 || st.Servers[2].Lock[0].Kind != "prompts" {
+		t.Fatalf("legacy lock: %+v", st.Servers[2].Lock)
 	}
 
 	var ev EventsResponse

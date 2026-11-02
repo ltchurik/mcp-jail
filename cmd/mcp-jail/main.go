@@ -48,6 +48,8 @@ Usage:
   mcp-jail reset   <name>              forget the lock
   mcp-jail locks                       list locks
   mcp-jail ps                          list running jails
+  mcp-jail show <name> | --policy FILE [-- <server command>]  [--json]
+                                       the effective jail: mounts, network, env, tools, lock, audit
   mcp-jail ui   [--listen 127.0.0.1:0] [--audit FILE]...
                                        local dashboard: servers, audit events, pending changes
   mcp-jail report [--since 24h] [--server NAME] [--json|--csv] [--audit FILE]...
@@ -83,6 +85,8 @@ func main() {
 		err = cmdLocks()
 	case "ps":
 		err = cmdPS()
+	case "show":
+		err = cmdShow(os.Args[2:])
 	case "ui":
 		err = cmdUI(os.Args[2:])
 	case "report":
@@ -275,9 +279,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		return fail(err)
 	}
 	cleanups = append(cleanups, func() { _ = os.RemoveAll(work) })
-	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work,
-		Protect: []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(),
-			filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}}
+	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work, Protect: protectPaths(p, pol)}
 	netObserve := func(kind, host string, ok bool) {
 		dec := "allow"
 		if !ok {
@@ -358,6 +360,14 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		return 0
 	}
 	return sin, sout, how, stop, wait, cleanup, nil
+}
+
+// protectPaths lists mcp-jail's own state the jailed server must never see:
+// the policy file, the audit log, the lock and registry directories (with
+// the control socket) and the per-user socket directory under the temp dir.
+func protectPaths(p *policy.Policy, pol string) []string {
+	return []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(),
+		filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}
 }
 
 // startRemote connects to a Streamable HTTP server named by server.url.
@@ -507,9 +517,11 @@ func cmdDiff(args []string) error {
 		var old map[string]string
 		if o := cur.Section(k); o != nil {
 			old = o.Items
+			fmt.Printf("%s:\n", k)
+		} else {
+			fmt.Printf("%s (seen for the first time, nothing recorded yet):\n", k)
 		}
 		d := lock.Compare(old, sec.Items)
-		fmt.Printf("%s:\n", k)
 		for _, n := range d.Added {
 			fmt.Println("  + added  ", n)
 		}

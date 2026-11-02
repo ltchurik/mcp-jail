@@ -298,12 +298,30 @@ func LoadPending(name string) (*Pending, error) {
 // Approve promotes every pending section into the lock and removes the
 // pending record.
 func Approve(name string) (*File, error) {
+	return approve(name, "")
+}
+
+// ApproveKind promotes only the pending section k into the lock; other
+// pending sections stay pending.
+func ApproveKind(name string, k Kind) (*File, error) {
+	if k == "" {
+		return nil, errors.New("approve: no kind")
+	}
+	return approve(name, k)
+}
+
+func approve(name string, only Kind) (*File, error) {
 	p, err := LoadPending(name)
 	if err != nil {
 		return nil, err
 	}
 	if p == nil || len(p.Sections) == 0 {
 		return nil, fmt.Errorf("nothing pending for %q", name)
+	}
+	if only != "" {
+		if _, ok := p.Sections[only]; !ok {
+			return nil, fmt.Errorf("nothing pending for %q %s", name, only)
+		}
 	}
 	f, err := Load(name)
 	if err != nil {
@@ -314,14 +332,20 @@ func Approve(name string) (*File, error) {
 		f = &File{Name: name, CreatedAt: now}
 	}
 	for k, s := range p.Sections {
-		f.Set(k, s)
+		if only == "" || k == only {
+			f.Set(k, s)
+			delete(p.Sections, k)
+		}
 	}
 	f.UpdatedAt = now
 	if err := Save(f); err != nil {
 		return nil, err
 	}
-	_ = os.Remove(pending(name))
-	return f, nil
+	if len(p.Sections) == 0 {
+		_ = os.Remove(pending(name))
+		return f, nil
+	}
+	return f, writeAtomic(pending(name), p)
 }
 
 // Reset deletes lock and pending for name.

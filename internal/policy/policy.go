@@ -39,6 +39,18 @@ const (
 	NetAll NetMode = "all"
 )
 
+// FirstContact is lock.first: what the lock does with a list it has never
+// recorded.
+type FirstContact string
+
+const (
+	// FirstRecord trusts the first list and records it (trust on first contact).
+	FirstRecord FirstContact = "record"
+	// FirstReview refuses the first list until someone has looked at it and
+	// approved it; nothing is recorded before that.
+	FirstReview FirstContact = "review"
+)
+
 // Policy is the on-disk policy document.
 type Policy struct {
 	// Name identifies the jailed server; used for lock and audit file names.
@@ -89,6 +101,11 @@ type Policy struct {
 		// Enabled turns on rug-pull protection: tools/list is hashed on first run
 		// and any later change is refused until `mcp-jail approve`.
 		Enabled bool `yaml:"enabled"`
+		// First says what happens to a list seen for the first time: "record"
+		// (default) trusts and records it; "review" shows it and records it
+		// only after an explicit approve (terminal, dashboard or `mcp-jail
+		// approve`); until then the list and its uses are refused.
+		First FirstContact `yaml:"first"`
 	} `yaml:"lock"`
 
 	Audit struct {
@@ -177,6 +194,7 @@ func Default() *Policy {
 	p.Filesystem.Tmp = true
 	p.Tools.Default = Ask
 	p.Lock.Enabled = true
+	p.Lock.First = FirstRecord
 	return p
 }
 
@@ -226,6 +244,13 @@ func (p *Policy) Validate() error {
 	}
 	if err := checkDecision(p.Tools.Default); err != nil {
 		return fmt.Errorf("tools.default: %w", err)
+	}
+	switch p.Lock.First {
+	case "":
+		p.Lock.First = FirstRecord
+	case FirstRecord, FirstReview:
+	default:
+		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
 	}
 	for k, r := range p.Tools.Rules {
 		if err := checkDecision(r.Decision); err != nil {
@@ -577,6 +602,10 @@ tools:
 
 lock:
   enabled: true   # refuse to run if tool definitions change (rug-pull)
+  # record – trust the first tools/prompts/resources list and record it
+  # review – show the first list and record it only after you approve it
+  #          (terminal prompt, Approve in the dashboard, or mcp-jail approve)
+  first: record
 
 audit:
   path: ~/.local/state/mcp-jail/my-server.jsonl
