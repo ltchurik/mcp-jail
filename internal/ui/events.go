@@ -87,27 +87,50 @@ func ReadEvents(paths []string, f Filter, limit int) (events []audit.Event, skip
 	return events, skipped
 }
 
+// scan reads JSONL events. A line longer than maxLine is skipped and
+// counted, and reading continues after it: one oversized line (a server
+// can pick the text of its errors) must not hide everything that follows.
 func scan(r io.Reader, f Filter) (out []audit.Event, skipped int) {
-	sc := bufio.NewScanner(r)
-	sc.Buffer(make([]byte, 64*1024), maxLine)
-	for sc.Scan() {
-		line := sc.Bytes()
-		if len(strings.TrimSpace(string(line))) == 0 {
-			continue
+	br := bufio.NewReaderSize(r, 64*1024)
+	for {
+		line, err := br.ReadSlice('\n')
+		if errors.Is(err, bufio.ErrBufferFull) {
+			// keep collecting until the end of the line or the limit
+			buf := append([]byte(nil), line...)
+			tooLong := false
+			for errors.Is(err, bufio.ErrBufferFull) {
+				line, err = br.ReadSlice('\n')
+				if !tooLong {
+					buf = append(buf, line...)
+					if len(buf) > maxLine {
+						tooLong = true
+						buf = nil
+					}
+				}
+			}
+			if tooLong {
+				skipped++
+				if err != nil {
+					return out, skipped
+				}
+				continue
+			}
+			line = buf
 		}
-		var e audit.Event
-		if err := json.Unmarshal(line, &e); err != nil || e.Time.IsZero() {
-			skipped++
-			continue
+		if len(line) > 0 {
+			if t := strings.TrimSpace(string(line)); t != "" {
+				var e audit.Event
+				if jerr := json.Unmarshal([]byte(t), &e); jerr != nil || e.Time.IsZero() {
+					skipped++
+				} else if f.Match(&e) {
+					out = append(out, e)
+				}
+			}
 		}
-		if f.Match(&e) {
-			out = append(out, e)
+		if err != nil {
+			return out, skipped
 		}
 	}
-	if err := sc.Err(); err != nil && !errors.Is(err, bufio.ErrTooLong) {
-		return out, skipped
-	}
-	return out, skipped
 }
 
 // Tailer follows a set of JSONL files from their current end and delivers

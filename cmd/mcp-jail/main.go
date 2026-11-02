@@ -160,7 +160,9 @@ func cmdRun(args []string) error {
 		return err
 	}
 	defer func() { _ = os.RemoveAll(work) }()
-	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work}
+	spec := sandbox.Spec{Command: cmdline, Env: map[string]string{}, WorkDir: work,
+		Protect: []string{absPath(*pol), p.Audit.Path, lock.Dir(), registry.Dir(),
+			filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}}
 	netObserve := func(kind, host string, ok bool) {
 		dec := "allow"
 		if !ok {

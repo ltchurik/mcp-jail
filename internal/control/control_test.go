@@ -294,3 +294,38 @@ func TestClientStop(t *testing.T) {
 		t.Fatalf("unsupported: %v", err)
 	}
 }
+
+func TestOwnedDir(t *testing.T) {
+	root := t.TempDir()
+	fresh := filepath.Join(root, "fresh")
+	if err := ownedDir(fresh); err != nil {
+		t.Fatal(err)
+	}
+	if st, _ := os.Stat(fresh); st.Mode().Perm() != 0o700 {
+		t.Fatalf("mode %o", st.Mode().Perm())
+	}
+	if err := ownedDir(fresh); err != nil {
+		t.Fatalf("existing private dir: %v", err)
+	}
+	open := filepath.Join(root, "open")
+	if err := os.Mkdir(open, 0o755); err != nil { //nolint:gosec // the point of the test
+		t.Fatal(err)
+	}
+	if err := ownedDir(open); err == nil {
+		t.Error("group/world accessible dir accepted")
+	}
+	link := filepath.Join(root, "link")
+	if err := os.Symlink(fresh, link); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownedDir(link); err == nil {
+		t.Error("symlink accepted")
+	}
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := ownedDir(file); err == nil {
+		t.Error("file accepted")
+	}
+}

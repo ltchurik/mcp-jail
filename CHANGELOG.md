@@ -21,6 +21,52 @@
 
 ### Security
 
+Findings of an internal security review, all fixed:
+
+- **Case-variant and duplicate JSON keys** (`Method`, `NAME`, `Arguments`,
+  `paramſ`…) could carry a second value past the policy: Go's JSON decoder
+  matched them case-insensitively while servers read the exact key. The
+  proxy now parses the envelope and `tools/call` params strictly (single
+  object, exact keys, each at most once, no trailing data) and answers
+  anything else with `-32600` / `-32602` instead of forwarding it. Batches
+  (arrays) are refused the same way.
+- **Non-canonical response ids** (`7.0`, `7e0` for request `7`) let a server's
+  list response slip past the rug-pull lock. Ids are now correlated by
+  canonical value; a response to an id the proxy never forwarded is dropped
+  and audited (`kind: protocol`), and a list that was in flight at that
+  moment is refused rather than left pending.
+- A `tools/call`, `prompts/get` or `resources/read` sent as a notification
+  (no id) was forwarded unchecked; it is now dropped and audited. Lines the
+  proxy cannot parse are no longer forwarded in either direction.
+- Two tool (prompt, resource) definitions under one name now fail the lock
+  instead of hashing as one.
+- Two glob rules of equal length matching the same tool no longer pick a
+  winner by map order: the stricter decision wins (deny > ask > allow).
+- Audit fields chosen by a server or client (`tool`, `reason`, `error`,
+  `host`) are clipped to 2 KiB and `args` to 64 KiB, and the dashboard /
+  `report` reader skips an oversized line instead of stopping at it, so one
+  huge error message cannot hide the events after it. The terminal `ask`
+  prompt strips control characters from the tool name and arguments.
+- The convenience binds for the working directory and the server's
+  toolchain could expose the whole home directory or `/` read-only (a jail
+  started from `~`, or by a GUI client with cwd `/`; a binary in `~/bin`),
+  which on macOS also cancelled the home-hiding rules. Such a directory is
+  no longer shared: the server starts in `/` and the sandbox description
+  (`ps`, dashboard, `start` event) says `cwd not shared (home)`; the
+  toolchain bind falls back to the binary's own directory.
+- mcp-jail's own state (policy file, audit log, lock and registry
+  directories, the control socket) is now masked inside the jail even when
+  a `read_write`/`read_only` path or a convenience bind would cover it:
+  `--tmpfs` / `/dev/null` binds on Linux, trailing `deny file*` and `deny
+  network*` rules on macOS (a server could otherwise approve its own asks
+  or rewrite its policy and ask for a reload).
+- The audit log is opened with `O_NOFOLLOW` and must be a regular file.
+- The control-socket fallback directory under `$TMPDIR` must be a private
+  directory owned by the user, never a symlink or someone else's.
+- `name` in a policy may not contain path separators or control
+  characters (it names lock, registry and socket files); control characters
+  are rejected in paths and hosts and neutralised in the macOS profile.
+
 - The egress relay (Linux) and the `HTTP_PROXY` filter now check what an
   allowed name resolves to: a loopback, private, link-local, CGNAT,
   multicast or unspecified address is refused unless that literal address
