@@ -195,6 +195,10 @@ audit:
 sandbox:
   disabled: false           # true = policy/lock/audit only, no namespaces
   env: [PATH, HOME, LANG]   # env vars passed into the jail
+
+exec:                       # optional: pin what a launcher may exec outside the system paths
+  allow: [~/.local/bin/some-server]
+  sha256: { ~/.local/bin/some-server: "e3b0c442…b855" }   # refuse to start if the file changed
 ```
 
 Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax. Argument constraints apply to the rule that matched; string and list-of-string arguments are checked element by element.
@@ -208,6 +212,7 @@ Exact tool names beat globs; among globs the longest pattern wins. Globs use `fi
 | `network.mode: allowlist` (macOS) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy, and the `sandbox-exec` profile lets the server open **only** that loopback port | **Hard** for the network (HTTP(S) via proxy only); a server that ignores `HTTP_PROXY` has no network at all |
 | `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
+| `exec.allow` / `exec.sha256` | Each listed executable is made visible on its own (Linux: a read-only file bind, so its siblings do not exist in the jail; macOS: `process-exec` denied under the hidden trees, re-allowed for the listed files and the shared directories). A pinned digest is checked before start; a mismatch or a missing file refuses to start | **Hard** (the check is on the host before the jail starts: it catches an update, not someone who already writes to that directory) |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
@@ -330,6 +335,16 @@ filesystem:
 ```
 
 Or install the server once (`npm i -g`) and point `command` at the binary; then nothing beyond the toolchain is needed.
+
+**Launchers that exec a second binary.** Some packages are only a shim: `npx some-server` resolves to a few lines of JavaScript that exec a binary installed elsewhere (`~/.local/bin/some-server`, `~/.cargo/bin/…`). The jail pins the *jail*, not the program: whatever the shim execs runs inside the same namespaces, but it is trusted as whatever is on disk, and a directory you share whole to make it visible makes every neighbour executable too. `exec.allow` lists the files instead: on Linux each one is bound read-only on its own, so its siblings are simply absent; on macOS nothing under the hidden trees may exec except the listed files and the directories the policy shares. `exec.sha256` pins the content, and a changed file refuses to start:
+
+```yaml
+exec:
+  allow: [~/.local/bin/some-server]
+  sha256: { ~/.local/bin/some-server: "<sha256sum of the file>" }
+```
+
+`mcp-jail show <name>` reports each pin as `ok`, `not pinned`, `missing` or `sha256 mismatch`. A pin without a digest is the common form (package managers update binaries); the digest is for the ones you want to notice.
 
 ## Audit log
 

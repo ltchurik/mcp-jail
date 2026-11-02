@@ -258,6 +258,13 @@ func (d *showDoc) write(w io.Writer) error {
 	if s.Kind != "remote" {
 		pr("env", "%s", orNone(s.Env))
 	}
+	for _, e := range s.Exec {
+		status := e.Status
+		if e.Status == "sha256 mismatch" || e.Status == "missing" {
+			status = strings.ToUpper(e.Status) + ": the jail will refuse to start"
+		}
+		pr("  exec", "%s  (%s)", e.Path, status)
+	}
 	for _, n := range s.Notes {
 		pr("  note", "%s", n)
 	}

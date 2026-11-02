@@ -332,3 +332,31 @@ func TestLockFirst(t *testing.T) {
 		t.Errorf("bad lock.first accepted: %v", err)
 	}
 }
+
+func TestExecValidate(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	good := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	p, err := parse([]byte("name: x\nexec:\n  allow: [~/.local/bin/srv, /opt/x/../bin/tool]\n  sha256:\n    ~/.local/bin/srv: "+strings.ToUpper(good)+"\n"), "t.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Exec.Allow[0] != filepath.Join(home, ".local/bin/srv") || p.Exec.Allow[1] != "/opt/bin/tool" {
+		t.Fatalf("allow not expanded/cleaned: %v", p.Exec.Allow)
+	}
+	if p.Exec.SHA256[filepath.Join(home, ".local/bin/srv")] != good {
+		t.Fatalf("sha256 not keyed by the clean path / lowercased: %v", p.Exec.SHA256)
+	}
+	for name, text := range map[string]string{
+		"relative":      "name: x\nexec: { allow: [bin/srv] }\n",
+		"twice":         "name: x\nexec: { allow: [/a/b, /a/./b] }\n",
+		"sha not allow": "name: x\nexec: { allow: [/a/b], sha256: { /a/c: " + good + " } }\n",
+		"sha short":     "name: x\nexec: { allow: [/a/b], sha256: { /a/b: abc } }\n",
+		"sha not hex":   "name: x\nexec: { allow: [/a/b], sha256: { /a/b: " + strings.Repeat("g", 64) + " } }\n",
+		"disabled":      "name: x\nsandbox: { disabled: true }\nexec: { allow: [/a/b] }\n",
+		"remote":        "name: x\nserver: { url: https://h/mcp }\nexec: { allow: [/a/b] }\n",
+	} {
+		if _, err := parse([]byte(text), "t.yml"); err == nil || !strings.Contains(err.Error(), "exec.") {
+			t.Errorf("%s: expected an exec error, got %v", name, err)
+		}
+	}
+}

@@ -17,6 +17,13 @@
 - `mcp-jail diff` labels a section that was never recorded; the dashboard shows
   a first-contact review as "First contact: review before use" with its own
   Approve button, also for a server that has no lock file yet.
+- `exec.allow` / `exec.sha256`: pin the executables a launcher (npx, uvx, a
+  thin npm package) may exec outside the system paths. Linux binds each file
+  read-only on its own, so unlisted siblings do not exist in the jail; macOS
+  denies `process-exec` under the hidden trees and re-allows the listed files
+  and the directories the policy shares. A pinned digest is checked before
+  start; a mismatch, a missing file, `sandbox.disabled` or a platform without
+  a sandbox refuses to start. `mcp-jail show` reports each pin's state.
 
 ## v0.5.0 — 2026-11-02
 
