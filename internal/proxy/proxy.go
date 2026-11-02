@@ -584,6 +584,8 @@ func (p *Proxy) fromServer(line []byte) {
 				ev := audit.Event{Kind: "tool_result", Tool: pr.tool, Duration: time.Since(pr.start)}
 				if m.Error != nil {
 					ev.Error = m.Error.Message
+				} else if msg, failed := resultError(m.Result); failed {
+					ev.Error = msg
 				}
 				p.Audit.Log(ev)
 			}
@@ -672,4 +674,33 @@ func printable(s string) string {
 		}
 		return r
 	}, s)
+}
+
+// resultError reports whether a tools/call result carries isError: true
+// (the MCP way of failing a call without a JSON-RPC error) and returns its
+// first text content, trimmed to one short line, so the audit shows the
+// failure next to the allow that let the call through.
+func resultError(result json.RawMessage) (string, bool) {
+	var r struct {
+		IsError bool `json:"isError"`
+		Content []struct {
+			Type string `json:"type"`
+			Text string `json:"text"`
+		} `json:"content"`
+	}
+	if json.Unmarshal(result, &r) != nil || !r.IsError {
+		return "", false
+	}
+	msg := "isError"
+	for _, c := range r.Content {
+		if c.Type == "text" && strings.TrimSpace(c.Text) != "" {
+			line, _, _ := strings.Cut(strings.TrimSpace(c.Text), "\n")
+			if len(line) > 200 {
+				line = line[:200] + "…"
+			}
+			msg = line
+			break
+		}
+	}
+	return msg, true
 }

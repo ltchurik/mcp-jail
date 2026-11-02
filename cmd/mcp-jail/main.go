@@ -193,6 +193,12 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
+	for _, w := range p.Lint() {
+		if !*quiet {
+			logf("warning: %s", w)
+		}
+		al.Log(audit.Event{Kind: "policy", Decision: "warn", Reason: w})
+	}
 	// control socket: the dashboard answers `ask` decisions through it and
 	// asks for a policy reload after it edited the file
 	asks := control.NewBroker(p.Name)
