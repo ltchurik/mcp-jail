@@ -24,6 +24,7 @@ In scope — anything that lets a jailed server do what the policy says it can't
   but `{"decision":"allow"}`)
 - a changed tool, prompt or resource set passing the rug-pull lock
 - tampering with or suppressing the audit log from inside the jail
+- reading `mcp-jail ui` without its token, or from another machine
 
 Known limitations, documented in the README and **not** vulnerabilities:
 

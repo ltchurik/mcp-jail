@@ -1,6 +1,24 @@
 # Changelog
 
-## v0.2.0 (unreleased)
+## Unreleased
+
+### Added
+
+- **`mcp-jail ui`**: a local dashboard listing every server that ran through
+  `mcp-jail run` (running or not) with its sandbox, network mode, lock
+  sections, pending changes and the last 24h of decisions, plus a live,
+  filterable audit event view streamed over server-sent events. Loopback
+  only, token-protected, no external assets, read-only.
+- **`mcp-jail ps`**: list running jails. `run` now registers itself in
+  `~/.config/mcp-jail/run/` (or `$MCP_JAIL_HOME/run`) for the lifetime of
+  the process.
+
+### Changed
+
+- A non-zero server exit is propagated after the audit log is closed and the
+  registry entry removed (previously `run` exited immediately).
+
+## v0.2.0 — 2026-11-02
 
 Security hardening across every layer; policies written for v0.1 keep working.
 

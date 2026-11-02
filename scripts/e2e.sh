@@ -7,9 +7,11 @@ BIN=${BIN:-./bin/mcp-jail}
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
-trap 'kill $LISTENER $APPROVER 2>/dev/null; wait $LISTENER $APPROVER 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
+trap 'kill $LISTENER $APPROVER $JAIL $UI 2>/dev/null; wait $LISTENER $APPROVER $JAIL $UI 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
 LISTENER=
 APPROVER=
+JAIL=
+UI=
 cp examples/echo-server.py "$WORK/"
 
 req() { printf '%s\n' "$@"; }
@@ -157,6 +159,50 @@ while IFS= read -r line; do ARGV+=("$line"); done < <($PY -c 'import json,sys;s=
 OUT=$(req "$INIT" "$LIST" | "${ARGV[@]}" 2>"$WORK/stderr") || { echo "FAIL: wrapped server exited non-zero"; cat "$WORK/stderr"; exit 1; }
 assert "$OUT" '"id": ?2, ?"result"'
 assert "$($BIN locks)" '^echo .*3 tools'
+
+echo "== ps / ui dashboard"
+cat >"$WORK/ui.yml" <<YML
+name: e2e-ui
+network: { mode: none }
+tools: { default: deny, rules: { "read_*": allow } }
+lock: { enabled: true }
+audit: { path: $WORK/ui-audit.jsonl }
+sandbox: { disabled: true }
+YML
+# a jail that stays up: the feeder keeps stdin open after the requests
+( req "$INIT" "$LIST" "$READ" "$DEL"; sleep 60 ) | "$BIN" run --quiet --policy "$WORK/ui.yml" -- "$PY" "$WORK/echo-server.py" >/dev/null 2>"$WORK/stderr" &
+JAIL=$!
+for _ in $(seq 50); do "$BIN" ps | grep -q '^e2e-ui ' && break; sleep 0.1; done
+assert "$("$BIN" ps)" '^e2e-ui +pid [0-9]+ +up .*net=none +tools.default=deny'
+"$BIN" ui --listen 127.0.0.1:0 >"$WORK/ui.url" 2>"$WORK/ui.err" &
+UI=$!
+for _ in $(seq 50); do [[ -s "$WORK/ui.url" ]] && break; sleep 0.1; done
+URL=$(cat "$WORK/ui.url"); TOKEN=${URL##*token=}; BASE=${URL%%/?token=*}
+assert "$URL" '^http://127\.0\.0\.1:[0-9]+/\?token=[0-9a-f]{40}$'
+http() { # $1 = url, $2 = bearer token or empty; prints status then body
+  "$PY" -c 'import sys,urllib.request as u
+req=u.Request(sys.argv[1],headers={"Authorization":"Bearer "+sys.argv[2]} if sys.argv[2] else {})
+try:
+    r=u.urlopen(req,timeout=5); print(r.status); print(r.read().decode())
+except u.HTTPError as e: print(e.code)' "$1" "${2:-}"; }
+assert "$(http "$BASE/api/state")" '^401$'
+assert "$(http "$BASE/api/state" wrong)" '^401$'
+STATE=$(http "$BASE/api/state" "$TOKEN")
+assert "$STATE" '^200$'
+assert "$STATE" '"name":"e2e-ui","running":true,"pid":[0-9]+'
+assert "$STATE" '"tools_default":"deny","lock_enabled":true,"lock":\[\{"kind":"tools","count":3'
+assert "$STATE" '"counts":\{"allow":1,"created":1,"deny":1\}'
+EV=$(http "$BASE/api/events?server=e2e-ui&decision=deny" "$TOKEN")
+assert "$EV" '"server":"e2e-ui","kind":"tool_call","tool":"delete_file","decision":"deny"'
+refute "$EV" '"tool":"read_file"'
+assert "$(http "$BASE/api/events?since=nonsense" "$TOKEN")" '^400$'
+"$BIN" ui --listen 0.0.0.0:0 2>"$WORK/ui-bad.err" && { echo "FAIL: ui bound a non-loopback address"; exit 1; }
+assert "$(cat "$WORK/ui-bad.err")" 'localhost only'
+kill $JAIL; wait $JAIL 2>/dev/null || true; JAIL=
+for _ in $(seq 50); do "$BIN" ps | grep -q 'no running jails' && break; sleep 0.1; done
+assert "$("$BIN" ps)" 'no running jails'
+assert "$(http "$BASE/api/state" "$TOKEN")" '"name":"e2e-ui","running":false,"last_seen"'  # history survives exit
+kill $UI; wait $UI 2>/dev/null || true; UI=
 
 if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then
   echo "== bubblewrap: no home, no network"

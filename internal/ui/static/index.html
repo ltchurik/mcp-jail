@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>mcp-jail</title>
+<link rel="stylesheet" href="/static/app.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true">▣</span> mcp-jail <span class="version" id="version"></span></div>
+  <div class="status">
+    <span class="dot" id="live-dot" title="live stream"></span>
+    <span id="live-text">connecting…</span>
+    <span class="sep">·</span>
+    <span id="clock"></span>
+  </div>
+</header>
+
+<main>
+  <section class="servers" aria-labelledby="h-servers">
+    <h2 id="h-servers">Servers <span class="muted" id="server-count"></span></h2>
+    <div class="cards" id="servers"></div>
+  </section>
+
+  <section class="events" aria-labelledby="h-events">
+    <div class="toolbar">
+      <h2 id="h-events">Events</h2>
+      <form id="filters" class="filters" autocomplete="off">
+        <select name="server" aria-label="server"><option value="">all servers</option></select>
+        <select name="kind" aria-label="kind">
+          <option value="">all kinds</option>
+          <option>tool_call</option><option>tool_result</option><option>net</option><option>dns</option><option>lock</option><option>start</option><option>exit</option>
+        </select>
+        <select name="decision" aria-label="decision">
+          <option value="">all decisions</option>
+          <option>allow</option><option>deny</option><option>ask_allow</option><option>ask_deny</option><option>blocked</option>
+        </select>
+        <select name="since" aria-label="time range">
+          <option value="1h">last hour</option>
+          <option value="24h" selected>last 24h</option>
+          <option value="168h">last 7 days</option>
+          <option value="">all time</option>
+        </select>
+        <input name="q" type="search" placeholder="tool, host, reason…" aria-label="search">
+        <label class="check"><input type="checkbox" id="follow" checked> follow</label>
+      </form>
+    </div>
+    <div class="table-wrap">
+      <table id="events-table">
+        <thead><tr><th>time</th><th>server</th><th>kind</th><th>decision</th><th>target</th><th>reason</th><th class="num">ms</th></tr></thead>
+        <tbody id="events"></tbody>
+      </table>
+      <p class="empty muted" id="events-empty" hidden>No events match. Run a server through <code>mcp-jail run</code> and they will appear here.</p>
+    </div>
+    <p class="muted small" id="events-meta"></p>
+  </section>
+</main>
+
+<aside class="drawer" id="drawer" hidden aria-labelledby="drawer-title">
+  <div class="drawer-head"><h3 id="drawer-title">Event</h3><button type="button" class="close" id="drawer-close" aria-label="close">×</button></div>
+  <pre id="drawer-body"></pre>
+</aside>
+
+<div class="toasts" id="toasts" aria-live="polite"></div>
+<template id="tpl-card">
+  <article class="card">
+    <header>
+      <span class="state" data-f="state"></span>
+      <h3 data-f="name"></h3>
+      <span class="badge" data-f="how"></span>
+    </header>
+    <dl class="meta">
+      <div><dt>network</dt><dd data-f="network"></dd></div>
+      <div><dt>tools</dt><dd data-f="default"></dd></div>
+      <div><dt>lock</dt><dd data-f="lock"></dd></div>
+      <div><dt>uptime</dt><dd data-f="uptime"></dd></div>
+    </dl>
+    <div class="counts" data-f="counts"></div>
+    <div class="pending" data-f="pending" hidden></div>
+    <footer class="paths muted small" data-f="paths"></footer>
+  </article>
+</template>
+<script src="/static/app.js"></script>
+</body>
+</html>
