@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The README's sample policy allowed `write_file` under `~/projects` while only
+  `~/projects/scratch` was writable; the sample now keeps `under:` inside
+  `read_write`.
+- `mcp-jail show` lists, and `mcp-jail run` prints and audits (`policy` /
+  `warn`), every `args.under` directory that is not inside `read_write` (a
+  write there fails inside the jail as a filesystem error, not as denied by
+  policy) or not inside any mount at all.
+- The `tool_result` audit event records a result with `isError: true` (its
+  first text line), not only JSON-RPC errors, so a call that failed inside
+  the jail no longer looks like a clean `allow`.
+
 ## v0.6.0 — 2026-11-02
 
 Two gaps raised by early readers: trust on first contact, and what a launcher may exec. Existing policies keep working unchanged.

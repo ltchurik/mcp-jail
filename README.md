@@ -172,7 +172,7 @@ tools:
     write_file:               # a rule may also constrain arguments
       decision: allow
       args:
-        path: { under: [~/projects] }        # absolute, inside one of these
+        path: { under: [~/projects/scratch] }  # absolute, inside one of these; keep it inside read_write for a writing tool
     fetch:
       decision: allow
       args:
@@ -202,6 +202,8 @@ exec:                       # optional: pin what a launcher may exec outside the
 ```
 
 Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax. Argument constraints apply to the rule that matched; string and list-of-string arguments are checked element by element.
+
+An `under:` directory only lets a call *through the policy*; the mounts decide what the server can then do. `mcp-jail show` and `mcp-jail run` warn when an `under:` directory is not inside `read_write` (a write there fails inside the jail as a read-only filesystem error, not as "denied by policy") or not inside any mount at all. The audit's `tool_result` event records the server's `isError` results too, so such a failure does not look like a clean `allow`.
 
 ## What each layer does
 

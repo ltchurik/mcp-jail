@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 
 	"github.com/ltchurik/mcp-jail/internal/policy"
@@ -53,6 +54,17 @@ func TestExplain(t *testing.T) {
 		if plan.Toolchain != want {
 			t.Fatalf("toolchain = %q, want %q (%+v)", plan.Toolchain, want, plan.Notes)
 		}
+	}
+
+	// an under: rule wider than the mounts is reported as a note
+	p.Tools.Rules = map[string]policy.Rule{"write_file": {Decision: policy.Allow, Args: map[string]policy.ArgConstraint{"path": {Under: []string{"/srv/ro"}}}}}
+	plan = Explain(p, Spec{})
+	found := false
+	for _, n := range plan.Notes {
+		found = found || strings.HasPrefix(n, "tools.rules[write_file].args.path: /srv/ro is read-only inside the jail")
+	}
+	if (runtime.GOOS == "linux" || runtime.GOOS == "darwin") && !found {
+		t.Fatalf("lint note missing: %v", plan.Notes)
 	}
 
 	p.Network.Mode = policy.NetNone
