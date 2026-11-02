@@ -4,7 +4,7 @@
 
 [![CI](https://github.com/ltchurik/mcp-jail/actions/workflows/ci.yml/badge.svg)](https://github.com/ltchurik/mcp-jail/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/ltchurik/mcp-jail?display_name=tag&color=2f5fd0)](https://github.com/ltchurik/mcp-jail/releases/latest)
-[![Go](https://img.shields.io/badge/go-1.24-00ADD8)](go.mod)
+[![Go](https://img.shields.io/badge/go-1.27-00ADD8)](go.mod)
 [![License](https://img.shields.io/github/license/ltchurik/mcp-jail?color=1f8a4c)](LICENSE)
 
 Static scanners tell you a server *looks* suspicious. `mcp-jail` makes sure it *can't do* anything your policy doesn't allow: at runtime, for any server, in any language, without touching its code.

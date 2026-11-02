@@ -21,6 +21,10 @@
 
 ### Changed
 
+- Toolchain: Go 1.27 (`go.mod`, CI, release builds), golangci-lint v2.15 in
+  CI, and a `govulncheck` job on every push and pull request. The only
+  dependency, `gopkg.in/yaml.v3`, is at its latest release (v3.0.1) with no
+  known vulnerabilities.
 - README rewritten with dashboard screenshots, a feature table and a table
   of contents.
 - Dashboard: paths under the home directory are shown as `~/…` on server
