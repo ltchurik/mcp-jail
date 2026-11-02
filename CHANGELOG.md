@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## v0.3.0 — 2026-11-02
+
+The dashboard release: see what your jails do, approve what they ask for,
+all from one local page. Policies written for v0.2 keep working; the only
+new key is `ask.timeout`.
 
 ### Added
 
@@ -8,7 +12,9 @@
   `mcp-jail run` (running or not) with its sandbox, network mode, lock
   sections, pending changes and the last 24h of decisions, plus a live,
   filterable audit event view streamed over server-sent events. Loopback
-  only, token-protected, no external assets, read-only.
+  only, token-protected (random token exchanged for an `HttpOnly;
+  SameSite=Strict` cookie), no external assets, a strict CSP, foreign `Host`
+  headers and cross-site fetches refused.
 - The dashboard can **answer `ask` decisions** for headless clients: a jail
   without a terminal waits up to the new `ask.timeout` (default 60s) while a
   dashboard is open and shows the call at the top of the page with Allow /
@@ -27,6 +33,10 @@
 - **`mcp-jail ps`**: list running jails. `run` now registers itself in
   `~/.config/mcp-jail/run/` (or `$MCP_JAIL_HOME/run`) for the lifetime of
   the process.
+- **`use-cases/`**: eight worked scenarios with complete policies, linked
+  from the README.
+- Vulnerabilities are reported as GitHub issues with the `security` label
+  (or a private advisory for exploit details); the e-mail contact is gone.
 
 ### Changed
 

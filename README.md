@@ -306,7 +306,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [x] Dashboard: monitor, reports, lock approval and `ask` answers (`mcp-jail ui`, `mcp-jail report`)
+- [x] Dashboard: monitor, reports, lock approval and `ask` answers (`mcp-jail ui`, `mcp-jail report`) (v0.3)
 
 ## Non-goals
 
