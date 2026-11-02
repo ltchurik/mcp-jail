@@ -297,7 +297,7 @@ RULE=$("$PY" -c 'import json,sys,urllib.request as u
 H={"Authorization":"Bearer "+sys.argv[2],"X-Mcp-Jail":"1","Content-Type":"application/json"}
 r=u.urlopen(u.Request(sys.argv[1]+"/api/servers/e2e-ui/rules",data=json.dumps({"tool":"write_*","decision":"allow"}).encode(),headers=H,method="POST"),timeout=5); print(r.read().decode())' "$BASE" "$TOKEN")
 assert "$RULE" '"live":false,"warning":"no running jail: the rule applies on the next start"'
-assert "$(cat "$WORK/ui.yml")" '"write_\*": allow'
+assert "$(cat "$WORK/ui.yml")" '"write_\[\*\]": allow'   # the API promotes the literal name, never a glob over every tool
 assert "$(cat "$WORK/ui.yml")" '"read_\*": allow'
 kill $UI; wait $UI 2>/dev/null || true; UI=
 
