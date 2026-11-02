@@ -35,7 +35,8 @@ Known limitations, documented in the README and **not** vulnerabilities:
   Windows, it relies on `HTTP_PROXY` and a server that ignores it is not
   stopped; use `mode: none` there
 - in the hard allowlist the relay dials whatever an allowed name resolves to
-  on the host, including private addresses; choose `network.allow` accordingly
+  on the host, except loopback, link-local, private and other special ranges,
+  which are refused unless the literal address is in `network.allow`
 - the macOS sandbox scopes the filesystem and the network only: no PID or
   mount isolation, and system locations outside `/Users` stay readable
 - no sandbox on Windows yet; policy, lock and audit still apply
