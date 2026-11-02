@@ -272,6 +272,84 @@ func TestReportEndpoint(t *testing.T) {
 	}
 }
 
+func post(t *testing.T, url string, hdr map[string]string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader("{}"))
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Body.Close() }()
+	b, _ := io.ReadAll(r.Body)
+	return r.StatusCode, string(b)
+}
+
+func TestApprove(t *testing.T) {
+	ts := newTestServer(t)
+	sec, _ := lock.Compute(lock.Tools, []json.RawMessage{json.RawMessage(`{"name":"a"}`)})
+	if _, err := lock.Record("demo", lock.Tools, sec); err != nil {
+		t.Fatal(err)
+	}
+	pend, _ := lock.Compute(lock.Tools, []json.RawMessage{json.RawMessage(`{"name":"a"}`), json.RawMessage(`{"name":"b"}`)})
+	if err := lock.SavePending("demo", lock.Tools, pend); err != nil {
+		t.Fatal(err)
+	}
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+
+	// every refusal leaves the pending record in place
+	for name, hdr := range map[string]map[string]string{
+		"no auth":        {mutationHeader: "1"},
+		"no header":      {"Authorization": "Bearer " + tok},
+		"cross-site":     {"Authorization": "Bearer " + tok, mutationHeader: "1", "Sec-Fetch-Site": "cross-site"},
+		"foreign origin": {"Authorization": "Bearer " + tok, mutationHeader: "1", "Origin": "http://evil.example"},
+	} {
+		code, _ := post(t, ts.URL+"/api/servers/demo/approve", hdr)
+		if code != http.StatusForbidden && code != http.StatusUnauthorized {
+			t.Errorf("%s: %d", name, code)
+		}
+		if p, _ := lock.LoadPending("demo"); p == nil {
+			t.Fatalf("%s: pending record consumed", name)
+		}
+	}
+	if code, _ := post(t, ts.URL+"/api/servers/nope/approve", ok); code != http.StatusNotFound {
+		t.Errorf("unknown server: %d", code)
+	}
+	if code, _ := post(t, ts.URL+"/api/servers/..%2Fx/approve", ok); code != http.StatusBadRequest && code != http.StatusNotFound {
+		t.Errorf("traversal name: %d", code)
+	}
+	if c := status(t, ts.URL+"/api/servers/demo/approve", ok); c != http.StatusMethodNotAllowed {
+		t.Errorf("GET: %d", c)
+	}
+
+	same := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1", "Sec-Fetch-Site": "same-origin", "Origin": "http://" + strings.TrimPrefix(ts.URL, "http://")}
+	code, body := post(t, ts.URL+"/api/servers/demo/approve", same)
+	if code != http.StatusOK {
+		t.Fatalf("approve: %d %s", code, body)
+	}
+	var resp ApproveResponse
+	if err := json.Unmarshal([]byte(body), &resp); err != nil || resp.Name != "demo" || len(resp.Lock) != 1 || resp.Lock[0].Count != 2 {
+		t.Fatalf("response: %v %s", err, body)
+	}
+	if p, _ := lock.LoadPending("demo"); p != nil {
+		t.Fatal("pending record not consumed")
+	}
+	f, _ := lock.Load("demo")
+	if f.Section(lock.Tools).Hash != pend.Hash {
+		t.Fatal("lock not updated")
+	}
+	if code, _ := post(t, ts.URL+"/api/servers/demo/approve", ok); code != http.StatusNotFound {
+		t.Errorf("second approve: %d", code)
+	}
+	var st State
+	getJSON(t, ts.URL+"/api/state", map[string]string{"Authorization": "Bearer " + tok}, &st)
+	if len(st.Servers) != 1 || st.Servers[0].Pending != nil || st.Servers[0].Lock[0].Count != 2 {
+		t.Fatalf("state after approve: %+v", st.Servers)
+	}
+}
+
 func TestStream(t *testing.T) {
 	dir := t.TempDir()
 	auditPath := filepath.Join(dir, "live.jsonl")

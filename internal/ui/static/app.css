@@ -127,6 +127,12 @@ td.time { color: var(--text-muted); font-family: var(--mono); font-size: 12px; }
 /* report */
 .btn { font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); text-decoration: none; }
 .btn:hover { background: var(--surface-2); }
+button.btn { font: inherit; font-size: 12.5px; cursor: pointer; }
+.btn.primary { background: var(--lock); border-color: var(--lock); color: #fff; }
+.btn.primary:hover { filter: brightness(1.1); }
+.btn.danger { background: var(--deny); border-color: var(--deny); color: #fff; }
+.btn:disabled { opacity: .6; cursor: default; }
+.pending .actions { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
 .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: var(--gap); margin-top: 10px; }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 10px 12px; box-shadow: var(--shadow); border-top: 3px solid var(--border); }
 .tile .v { font-size: 22px; font-weight: 700; line-height: 1.2; font-variant-numeric: tabular-nums; }

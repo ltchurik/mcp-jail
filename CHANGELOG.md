@@ -9,6 +9,9 @@
   sections, pending changes and the last 24h of decisions, plus a live,
   filterable audit event view streamed over server-sent events. Loopback
   only, token-protected, no external assets, read-only.
+- The dashboard can **approve a pending lock change** (`POST
+  /api/servers/{name}/approve`, same as `mcp-jail approve`). Writes need the
+  token plus a custom `X-Mcp-Jail` header and a same-origin fetch.
 - **`mcp-jail report`** and the dashboard's report panel: decisions over
   time, calls per tool (most refused first) with average duration, hosts
   reached or blocked, top refusal reasons and lock events for a time range;

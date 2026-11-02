@@ -527,6 +527,7 @@ func cmdUI(args []string) error {
 	if err != nil {
 		return err
 	}
+	srv.Logf = logf
 	l, err := ui.Listen(*listen)
 	if err != nil {
 		return err

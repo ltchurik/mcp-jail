@@ -243,12 +243,16 @@ filterable view of the audit logs. New lines stream in as they are written;
 denies, blocks and lock events pop up as notifications. `mcp-jail report`
 prints the same aggregation in the terminal for cron jobs and tickets.
 
-It is read-only for now and built to be boring: plain HTML/CSS/JS embedded in
-the binary, no framework, nothing fetched from the internet. It binds to the
+The one thing it changes is the lock: a pending rug-pull can be **approved**
+from the server card (the same as `mcp-jail approve`; a running jail picks the
+new lock up on the client's next list request). Everything else is read-only.
+It is built to be boring: plain HTML/CSS/JS embedded in the binary, no
+framework, nothing fetched from the internet. It binds to the
 loopback interface only, refuses any other `--listen` address, and every
 request needs the random token from the printed URL (exchanged for a
 `HttpOnly; SameSite=Strict` cookie on first visit). Foreign `Host` headers and
-cross-site fetches are rejected. Whether the dashboard runs or not changes
+cross-site fetches are rejected; a write additionally needs a custom request
+header that only a same-origin script can set. Whether the dashboard runs or not changes
 nothing about enforcement: the proxy decides, the page only watches.
 
 Running jails register themselves in `~/.config/mcp-jail/run/` (next to the
@@ -296,7 +300,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [ ] Dashboard: monitor and reports (`mcp-jail ui`, `mcp-jail report`, done), approving lock changes and `ask` from the page
+- [ ] Dashboard: monitor, reports and lock approval (`mcp-jail ui`, `mcp-jail report`, done); answering `ask` from the page
 
 ## Non-goals
 

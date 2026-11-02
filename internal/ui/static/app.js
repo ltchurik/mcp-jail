@@ -41,6 +41,15 @@
     return r.json();
   }
 
+  // mutate POSTs to a state-changing endpoint. The custom header is the
+  // same-origin proof the server insists on.
+  async function mutate(path, body) {
+    const r = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "X-Mcp-Jail": "1", "Content-Type": "application/json", Accept: "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401) { setLive(false, "session expired: reopen the URL printed by mcp-jail ui"); throw new Error("unauthorized"); }
+    if (!r.ok) throw new Error((await r.text()).trim() || `${r.status}`);
+    return r.json();
+  }
+
   function setLive(on, text) {
     $("#live-dot").className = "dot " + (on ? "on" : "off");
     $("#live-text").textContent = text || (on ? "live" : "disconnected");
@@ -48,6 +57,7 @@
 
   // ---- servers -----------------------------------------------------------
   function renderServers(st) {
+    if (state.confirming) return; // an inline confirmation is open: do not pull the card from under the user
     state.servers = st.servers || [];
     $("#version").textContent = st.version ? "v" + st.version.replace(/^v/, "") : "";
     $("#server-count").textContent = state.servers.length ? `(${state.servers.filter(s => s.running).length} running / ${state.servers.length})` : "";
@@ -97,9 +107,34 @@
           ul.append(li);
         }
         p.append(ul);
-        const cmd = el("div", "small");
-        cmd.append("review the server, then ", el("code", null, `mcp-jail approve ${s.name}`));
-        p.append(cmd);
+        const act = el("div", "actions");
+        const btn = el("button", "btn primary", "Approve");
+        btn.type = "button";
+        const cmd = el("span", "muted small");
+        cmd.append("or ", el("code", null, `mcp-jail approve ${s.name}`));
+        act.append(btn, cmd);
+        p.append(act);
+        btn.addEventListener("click", () => {
+          // inline confirmation: no browser dialogs
+          state.confirming = true;
+          act.replaceChildren();
+          const yes = el("button", "btn danger", "Yes, accept the new definitions");
+          const no = el("button", "btn", "Cancel");
+          yes.type = no.type = "button";
+          act.append(el("span", "small", "Trust what the server now serves?"), yes, no);
+          no.addEventListener("click", () => { state.confirming = false; refreshState(); });
+          yes.addEventListener("click", async () => {
+            yes.disabled = no.disabled = true;
+            state.confirming = false;
+            try {
+              const r = await mutate(`/api/servers/${encodeURIComponent(s.name)}/approve`);
+              toast(`${s.name}: approved · ${r.lock.map(x => `${x.count} ${x.kind.replace(/_/g, " ")}`).join(", ")}`, "lock");
+            } catch (err) {
+              toast(`${s.name}: approve failed · ${err.message}`, "deny");
+            }
+            refreshState();
+          });
+        });
       }
       const paths = f("paths");
       if (s.policy) { const d = el("div"); d.title = s.policy; d.textContent = "policy " + s.policy; paths.append(d); }

@@ -48,7 +48,9 @@ type Server struct {
 	PollInterval time.Duration
 	// Now is overridable for tests.
 	Now func() time.Time
-	mux *http.ServeMux
+	// Logf receives one line per action taken from the page; nil discards.
+	Logf func(format string, args ...any)
+	mux  *http.ServeMux
 }
 
 // NewToken returns a random URL-safe token.
@@ -73,7 +75,7 @@ func New(token, version string, extra []string) (*Server, error) {
 		}
 		abs = append(abs, a)
 	}
-	s := &Server{token: token, version: version, extra: abs, PollInterval: 500 * time.Millisecond, Now: time.Now}
+	s := &Server{token: token, version: version, extra: abs, PollInterval: 500 * time.Millisecond, Now: time.Now, Logf: func(string, ...any) {}}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", s.requireAuth(http.FileServerFS(mustSub(static, "static")))))
@@ -81,6 +83,7 @@ func New(token, version string, extra []string) (*Server, error) {
 	s.mux.Handle("GET /api/events", s.requireAuth(http.HandlerFunc(s.handleEvents)))
 	s.mux.Handle("GET /api/stream", s.requireAuth(http.HandlerFunc(s.handleStream)))
 	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
+	s.mux.Handle("POST /api/servers/{name}/approve", s.requireMutation(http.HandlerFunc(s.handleApprove)))
 	return s, nil
 }
 
@@ -169,6 +172,76 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 		w.Header().Set("Cache-Control", "no-store")
 		next.ServeHTTP(w, r)
 	})
+}
+
+// mutationHeader must accompany every state-changing request. A browser
+// only sends custom headers on fetch() from a page that passed CORS, and
+// this server sends no CORS headers, so a cross-site page cannot forge it.
+const mutationHeader = "X-Mcp-Jail"
+
+// requireMutation is requireAuth plus the same-origin proof for writes:
+// the custom header, and when the browser states the fetch site, it must be
+// same-origin (a form post from another site says cross-site; a direct
+// tool such as curl says nothing and is accepted with the bearer token).
+func (s *Server) requireMutation(next http.Handler) http.Handler {
+	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(mutationHeader) == "" {
+			http.Error(w, "missing "+mutationHeader+" header", http.StatusForbidden)
+			return
+		}
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, r.Host) {
+			http.Error(w, "origin mismatch", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
+func sameOrigin(origin, host string) bool {
+	return origin == "http://"+host || (strings.HasPrefix(origin, "http://localhost") && loopbackHost(host))
+}
+
+// ApproveResponse is the result of approving a pending lock change.
+type ApproveResponse struct {
+	Name string         `json:"name"`
+	Lock []SectionState `json:"lock"`
+}
+
+// handleApprove promotes the pending sections of one server into its lock,
+// exactly like `mcp-jail approve <name>`. A running jail picks the new lock
+// up on the next list request from the client.
+func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" || strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
+		http.Error(w, "bad server name", http.StatusBadRequest)
+		return
+	}
+	pend, err := lock.LoadPending(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if pend == nil || len(pend.Sections) == 0 {
+		http.Error(w, "nothing pending for "+name, http.StatusNotFound)
+		return
+	}
+	f, err := lock.Approve(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := ApproveResponse{Name: name, Lock: []SectionState{}}
+	for _, k := range lock.Kinds {
+		if sec := f.Section(k); sec != nil {
+			resp.Lock = append(resp.Lock, SectionState{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash)})
+		}
+	}
+	s.Logf("approved %s from the dashboard: %d section(s)", name, len(pend.Sections))
+	writeJSON(w, resp)
 }
 
 // handleIndex exchanges ?token= for a cookie, then serves the page.

@@ -59,7 +59,8 @@ review the server, then: mcp-jail approve filesystem
 server (the package's changelog, `npm view`, the repository) and at the lock
 file, which keeps a hash per item. Then either
 
-- `mcp-jail approve filesystem` to accept every pending section, or
+- `mcp-jail approve filesystem` (or the **Approve** button on the server
+  card in `mcp-jail ui`) to accept every pending section, or
 - pin the previous version in the client config (`npx -y
   some-server@1.4.2`) and restart; the lists match again and the pending
   record is dropped, or
