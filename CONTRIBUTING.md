@@ -26,4 +26,4 @@ dependencies without an issue first; a security tool should be auditable.
 
 ## Reporting a vulnerability
 
-See [SECURITY.md](SECURITY.md) — not a public issue.
+See [SECURITY.md](SECURITY.md): open an issue with the `security` label, or a private advisory for exploit details.

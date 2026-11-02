@@ -1,5 +1,5 @@
 blank_issues_enabled: true
 contact_links:
-  - name: Security vulnerability
+  - name: Private security advisory
     url: https://github.com/ltchurik/mcp-jail/security/advisories/new
-    about: Jail escapes and policy bypasses go here, privately.
+    about: For reports with a working exploit you would rather not publish before a fix; plain security issues can use the "Security report" template.

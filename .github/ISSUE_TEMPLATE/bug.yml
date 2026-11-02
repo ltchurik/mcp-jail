@@ -4,7 +4,7 @@ labels: [bug]
 body:
   - type: markdown
     attributes:
-      value: "If this is a jail escape or a policy bypass, use **Security → Report a vulnerability** instead."
+      value: "If this is a jail escape or a policy bypass, use the **Security report** template instead."
   - type: input
     id: version
     attributes: { label: mcp-jail version, placeholder: "mcp-jail version" }
