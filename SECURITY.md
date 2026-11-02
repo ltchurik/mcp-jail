@@ -4,11 +4,11 @@ mcp-jail is a security boundary, so bugs in it matter more than usual.
 
 ## Reporting
 
-Please do **not** open a public issue for a vulnerability.
-
-Use GitHub's private reporting: **Security → Report a vulnerability** on
-https://github.com/ltchurik/mcp-jail, or e-mail ltchurik@gmail.com with
-`[mcp-jail]` in the subject.
+Report vulnerabilities as GitHub issues on
+https://github.com/ltchurik/mcp-jail/issues with the `security` label.
+If the report contains a working exploit or details you would rather not
+publish before a fix exists, use **Security → Report a vulnerability** on the
+same repository instead; it opens a private advisory with the same workflow.
 
 Include: the policy you used, the server command, your OS and bubblewrap
 version, and the smallest reproduction you have. You will get an

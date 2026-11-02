@@ -1,0 +1,27 @@
+name: Security report
+description: A jail escape, a policy bypass, or anything else SECURITY.md lists as in scope
+labels: [security]
+body:
+  - type: markdown
+    attributes:
+      value: "Prefer **Security → Report a vulnerability** (private advisory) if the report includes a working exploit you would rather not publish before a fix. Otherwise this issue is the right place."
+  - type: input
+    id: version
+    attributes: { label: mcp-jail version, placeholder: "mcp-jail version" }
+    validations: { required: true }
+  - type: input
+    id: env
+    attributes: { label: OS / bubblewrap version, placeholder: "Ubuntu 24.04, bwrap 0.9.0" }
+    validations: { required: true }
+  - type: textarea
+    id: policy
+    attributes: { label: Policy, render: yaml }
+    validations: { required: true }
+  - type: textarea
+    id: cmd
+    attributes: { label: Server command and client }
+    validations: { required: true }
+  - type: textarea
+    id: what
+    attributes: { label: What the policy forbids and how the server got past it, description: "Smallest reproduction, [mcp-jail] stderr lines and audit log entries." }
+    validations: { required: true }
