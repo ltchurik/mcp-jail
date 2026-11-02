@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.5.0 — 2026-11-02
+
+Remote MCP servers can now be jailed too. Existing policies keep working unchanged.
 
 ### Added
 
