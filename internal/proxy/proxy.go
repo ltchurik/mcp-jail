@@ -201,6 +201,14 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 		return false
 	}
 	d := p.Policy.Decide(tc.Name)
+	if d != policy.Deny {
+		if err := p.Policy.CheckArgs(tc.Name, tc.Arguments); err != nil {
+			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: "args: " + err.Error(), Args: args})
+			p.Logf("deny tools/call %s (%v)", tc.Name, err)
+			p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodePolicyDenied, "mcp-jail: tool "+tc.Name+" denied by policy: "+err.Error()))
+			return false
+		}
+	}
 	switch d {
 	case policy.Allow:
 		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "allow", Args: args})

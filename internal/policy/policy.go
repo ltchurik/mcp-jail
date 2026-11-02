@@ -2,9 +2,14 @@
 package policy
 
 import (
+	"encoding/json"
+	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -53,8 +58,8 @@ type Policy struct {
 	} `yaml:"filesystem"`
 
 	Tools struct {
-		Default Decision            `yaml:"default"`
-		Rules   map[string]Decision `yaml:"rules"` // exact name or glob (filepath.Match)
+		Default Decision        `yaml:"default"`
+		Rules   map[string]Rule `yaml:"rules"` // exact name or glob (filepath.Match)
 	} `yaml:"tools"`
 
 	Lock struct {
@@ -76,6 +81,49 @@ type Policy struct {
 		// Env lists environment variables passed through to the jailed server.
 		Env []string `yaml:"env"`
 	} `yaml:"sandbox"`
+}
+
+// Rule is the value of a tools.rules entry: either a bare decision
+// ("read_*": allow) or a mapping with per-argument constraints:
+//
+//	write_file:
+//	  decision: allow
+//	  args:
+//	    path: { under: [~/projects] }
+//	    url:  { host: [network.allow] }
+type Rule struct {
+	Decision Decision                 `yaml:"decision"`
+	Args     map[string]ArgConstraint `yaml:"args"`
+}
+
+// ArgConstraint restricts one tool argument. A constrained argument that is
+// missing from the call is refused unless Optional is set; a value of an
+// unexpected type is always refused.
+type ArgConstraint struct {
+	// Under requires a filesystem path argument to be absolute and inside
+	// one of these directories (after cleaning, so ".." cannot escape).
+	Under []string `yaml:"under"`
+	// Host requires a URL or host[:port] argument to match one of these
+	// patterns (exact name or *.suffix). The entry "network.allow" stands
+	// for the network allowlist.
+	Host []string `yaml:"host"`
+	// Optional lets the call through when the argument is absent.
+	Optional bool `yaml:"optional"`
+}
+
+// UnmarshalYAML accepts both the scalar and the mapping form.
+func (r *Rule) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		r.Decision = Decision(n.Value)
+		return nil
+	}
+	type plain Rule
+	var p plain
+	if err := n.Decode(&p); err != nil {
+		return err
+	}
+	*r = Rule(p)
+	return nil
 }
 
 // Default returns a policy with safe defaults.
@@ -119,9 +167,33 @@ func (p *Policy) Validate() error {
 	if err := checkDecision(p.Tools.Default); err != nil {
 		return fmt.Errorf("tools.default: %w", err)
 	}
-	for k, v := range p.Tools.Rules {
-		if err := checkDecision(v); err != nil {
+	for k, r := range p.Tools.Rules {
+		if err := checkDecision(r.Decision); err != nil {
 			return fmt.Errorf("tools.rules[%s]: %w", k, err)
+		}
+		for arg, c := range r.Args {
+			if len(c.Under) == 0 && len(c.Host) == 0 {
+				return fmt.Errorf("tools.rules[%s].args[%s]: needs under or host", k, arg)
+			}
+			if len(c.Under) > 0 && len(c.Host) > 0 {
+				return fmt.Errorf("tools.rules[%s].args[%s]: under and host are mutually exclusive", k, arg)
+			}
+			for _, h := range c.Host {
+				if h == "" {
+					return fmt.Errorf("tools.rules[%s].args[%s]: empty host pattern", k, arg)
+				}
+				if h == "network.allow" && len(p.Network.Allow) == 0 {
+					return fmt.Errorf("tools.rules[%s].args[%s]: network.allow is empty", k, arg)
+				}
+			}
+			c.Under = expandAll(c.Under)
+			for i, d := range c.Under {
+				if !filepath.IsAbs(d) {
+					return fmt.Errorf("tools.rules[%s].args[%s]: under must be absolute, got %q", k, arg, d)
+				}
+				c.Under[i] = filepath.Clean(d)
+			}
+			r.Args[arg] = c
 		}
 	}
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
@@ -138,25 +210,136 @@ func checkDecision(d Decision) error {
 	return fmt.Errorf("must be allow|deny|ask, got %q", d)
 }
 
-// Decide returns the decision for a tool name. Exact match wins over glob;
-// among globs, the longest pattern wins.
-func (p *Policy) Decide(tool string) Decision {
-	if d, ok := p.Tools.Rules[tool]; ok {
-		return d
+// Rule returns the rule for a tool name. Exact match wins over glob; among
+// globs, the longest pattern wins; otherwise the default decision applies.
+func (p *Policy) Rule(tool string) Rule {
+	if r, ok := p.Tools.Rules[tool]; ok {
+		return r
 	}
-	best, bestLen := p.Tools.Default, -1
-	for pat, d := range p.Tools.Rules {
+	best, bestLen := Rule{Decision: p.Tools.Default}, -1
+	for pat, r := range p.Tools.Rules {
 		if ok, _ := filepath.Match(pat, tool); ok && len(pat) > bestLen {
-			best, bestLen = d, len(pat)
+			best, bestLen = r, len(pat)
 		}
 	}
 	return best
 }
 
+// Decide returns the decision for a tool name.
+func (p *Policy) Decide(tool string) Decision { return p.Rule(tool).Decision }
+
+// CheckArgs applies the rule's argument constraints to a tools/call
+// arguments object. It returns nil when every constraint holds, otherwise a
+// reason suitable for the audit log and the error sent to the client.
+// Anything that cannot be verified (unparsable arguments, a value of the
+// wrong type, a relative path) is a violation.
+func (p *Policy) CheckArgs(tool string, args json.RawMessage) error {
+	r := p.Rule(tool)
+	if len(r.Args) == 0 {
+		return nil
+	}
+	var m map[string]json.RawMessage
+	if len(args) > 0 && string(args) != "null" {
+		if err := json.Unmarshal(args, &m); err != nil {
+			return errors.New("arguments are not an object")
+		}
+	}
+	names := make([]string, 0, len(r.Args))
+	for n := range r.Args {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		c := r.Args[name]
+		raw, ok := m[name]
+		if !ok || string(raw) == "null" {
+			if c.Optional {
+				continue
+			}
+			return fmt.Errorf("argument %q is required by policy", name)
+		}
+		vals, err := stringValues(raw)
+		if err != nil {
+			return fmt.Errorf("argument %q: %w", name, err)
+		}
+		for _, v := range vals {
+			if len(c.Under) > 0 {
+				if err := checkUnder(v, c.Under); err != nil {
+					return fmt.Errorf("argument %q: %w", name, err)
+				}
+			}
+			if len(c.Host) > 0 {
+				if err := p.checkHost(v, c.Host); err != nil {
+					return fmt.Errorf("argument %q: %w", name, err)
+				}
+			}
+		}
+	}
+	return nil
+}
+
+// stringValues accepts a string or an array of strings.
+func stringValues(raw json.RawMessage) ([]string, error) {
+	var s string
+	if json.Unmarshal(raw, &s) == nil {
+		return []string{s}, nil
+	}
+	var list []string
+	if json.Unmarshal(raw, &list) == nil {
+		return list, nil
+	}
+	return nil, errors.New("must be a string or a list of strings")
+}
+
+func checkUnder(v string, dirs []string) error {
+	if !filepath.IsAbs(v) {
+		return fmt.Errorf("path %q is not absolute", v)
+	}
+	clean := filepath.Clean(v)
+	for _, d := range dirs {
+		if clean == d || strings.HasPrefix(clean, strings.TrimSuffix(d, string(filepath.Separator))+string(filepath.Separator)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("path %q is outside %v", v, dirs)
+}
+
+func (p *Policy) checkHost(v string, patterns []string) error {
+	host := v
+	if strings.Contains(v, "://") {
+		u, err := url.Parse(v)
+		if err != nil || u.Hostname() == "" {
+			return fmt.Errorf("url %q has no host", v)
+		}
+		host = u.Hostname()
+	} else if h, _, err := net.SplitHostPort(v); err == nil {
+		host = h
+	}
+	host = strings.Trim(host, "[]")
+	if host == "" {
+		return fmt.Errorf("%q has no host", v)
+	}
+	for _, pat := range patterns {
+		if pat == "network.allow" {
+			if p.HostAllowed(host) {
+				return nil
+			}
+			continue
+		}
+		if matchHost([]string{pat}, host) {
+			return nil
+		}
+	}
+	return fmt.Errorf("host %q not allowed", host)
+}
+
 // HostAllowed reports whether a hostname passes the network allowlist.
-func (p *Policy) HostAllowed(host string) bool {
+func (p *Policy) HostAllowed(host string) bool { return matchHost(p.Network.Allow, host) }
+
+// matchHost matches a hostname against patterns: exact name or *.suffix.
+func matchHost(patterns []string, host string) bool {
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	for _, a := range p.Network.Allow {
+	for _, a := range patterns {
 		a = strings.ToLower(a)
 		if a == host {
 			return true
@@ -211,6 +394,16 @@ tools:
     "read_*": allow
     "list_*": allow
     "delete_*": deny
+    # A rule can also constrain arguments. A constrained argument that is
+    # missing, of the wrong type or outside the bounds makes the call fail.
+    # write_file:
+    #   decision: allow
+    #   args:
+    #     path: { under: [~/projects/myrepo] }   # absolute path inside one of these
+    # fetch:
+    #   decision: allow
+    #   args:
+    #     url: { host: [network.allow] }          # host must be in network.allow
 
 lock:
   enabled: true   # refuse to run if tool definitions change (rug-pull)

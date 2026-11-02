@@ -101,7 +101,7 @@ func basePolicy(t *testing.T) *policy.Policy {
 	p := policy.Default()
 	p.Name = "test"
 	p.Tools.Default = policy.Deny
-	p.Tools.Rules = map[string]policy.Decision{"read_*": policy.Allow}
+	p.Tools.Rules = map[string]policy.Rule{"read_*": {Decision: policy.Allow}}
 	return p
 }
 
@@ -267,5 +267,25 @@ func TestUnhashableListFailsClosed(t *testing.T) {
 	}
 	if m := s.call(`{"jsonrpc":"2.0","id":2,"method":"prompts/get","params":{"name":"x"}}`); m.Error == nil {
 		t.Fatalf("prompts/get must be refused after an unverifiable list, got %s", m.Raw)
+	}
+}
+
+func TestArgConstraints(t *testing.T) {
+	p := basePolicy(t)
+	p.Tools.Rules["read_file"] = policy.Rule{Decision: policy.Allow,
+		Args: map[string]policy.ArgConstraint{"path": {Under: []string{"/srv/ok"}}}}
+	s := start(t, p, toolsV1)
+	defer s.close()
+	s.call(`{"jsonrpc":"2.0","id":0,"method":"tools/list"}`)
+	if m := s.call(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/srv/ok/a"}}}`); m.Error != nil {
+		t.Fatalf("inside: %+v", m.Error)
+	}
+	m := s.call(`{"jsonrpc":"2.0","id":2,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/srv/ok/../secret"}}}`)
+	if m.Error == nil || m.Error.Code != jsonrpc.CodePolicyDenied || !strings.Contains(m.Error.Message, "path") {
+		t.Fatalf("outside must be denied with the reason, got %s", m.Raw)
+	}
+	m = s.call(`{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file"}}`)
+	if m.Error == nil || m.Error.Code != jsonrpc.CodePolicyDenied {
+		t.Fatalf("missing constrained argument must be denied, got %s", m.Raw)
 	}
 }

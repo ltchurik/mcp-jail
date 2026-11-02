@@ -76,6 +76,14 @@ tools:
     "read_*":   allow
     "list_*":   allow
     "delete_*": deny
+    write_file:               # a rule may also constrain arguments
+      decision: allow
+      args:
+        path: { under: [~/projects] }        # absolute, inside one of these
+    fetch:
+      decision: allow
+      args:
+        url: { host: [network.allow] }       # host in network.allow (or list patterns)
 
 lock:
   enabled: true             # refuse to run if tool definitions change
@@ -99,11 +107,12 @@ sandbox:
 | `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
+| `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
-Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax.
+Exact tool names beat globs; among globs the longest pattern wins. Globs use `filepath.Match` syntax. Argument constraints apply to the rule that matched; string and list-of-string arguments are checked element by element.
 
 ## Hard egress allowlist
 
@@ -220,7 +229,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [ ] `ask` via webhook/approval inbox for headless use
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [x] Prompts and resources in the rug-pull lock (v0.2)
-- [ ] Per-tool argument constraints (`path` must be under X, `url` host must be in allowlist)
+- [x] Per-tool argument constraints (v0.2)
 - [ ] `mcp-jail wrap` — rewrite an existing client config in place
 
 ## Non-goals

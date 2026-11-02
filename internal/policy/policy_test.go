@@ -1,15 +1,21 @@
 package policy
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
 
 func TestDecide(t *testing.T) {
 	p := Default()
 	p.Tools.Default = Ask
-	p.Tools.Rules = map[string]Decision{
-		"read_*":    Allow,
-		"read_file": Deny,
-		"*":         Deny,
-		"list_*":    Allow,
+	p.Tools.Rules = map[string]Rule{
+		"read_*":    {Decision: Allow},
+		"read_file": {Decision: Deny},
+		"*":         {Decision: Deny},
+		"list_*":    {Decision: Allow},
 	}
 	cases := map[string]Decision{
 		"read_file":  Deny,  // exact beats glob
@@ -57,8 +63,125 @@ func TestValidate(t *testing.T) {
 		t.Error("expected error for allowlist without hosts")
 	}
 	p = Default()
-	p.Tools.Rules = map[string]Decision{"x": "maybe"}
+	p.Tools.Rules = map[string]Rule{"x": {Decision: "maybe"}}
 	if err := p.Validate(); err == nil {
 		t.Error("expected error for bad decision")
+	}
+}
+
+func TestRuleYAMLForms(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.yml")
+	doc := `
+name: t
+network: { mode: allowlist, allow: [api.github.com] }
+tools:
+  default: deny
+  rules:
+    "read_*": allow
+    write_file:
+      decision: allow
+      args:
+        path: { under: [` + dir + `/proj, "~/x"] }
+    fetch:
+      decision: ask
+      args:
+        url: { host: [network.allow, "*.example.org"], optional: true }
+`
+	if err := os.WriteFile(path, []byte(doc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Decide("read_x") != Allow || p.Decide("write_file") != Allow || p.Decide("fetch") != Ask || p.Decide("other") != Deny {
+		t.Fatalf("decisions: %+v", p.Tools.Rules)
+	}
+	home, _ := os.UserHomeDir()
+	under := p.Tools.Rules["write_file"].Args["path"].Under
+	if len(under) != 2 || under[0] != filepath.Join(dir, "proj") || under[1] != filepath.Join(home, "x") {
+		t.Fatalf("under not expanded: %v", under)
+	}
+
+	bad := []string{
+		"tools: { rules: { w: { decision: allow, args: { p: {} } } } }",
+		"tools: { rules: { w: { decision: allow, args: { p: { under: [rel/path] } } } } }",
+		"tools: { rules: { w: { decision: allow, args: { p: { under: [/a], host: [b] } } } } }",
+		"tools: { rules: { w: { decision: allow, args: { p: { host: [network.allow] } } } } }", // network.allow is empty
+		"tools: { rules: { w: { decision: maybe } } }",
+		"tools: { rules: { w: { decision: allow, args: { p: { host: [\"\"] } } } } }",
+	}
+	for _, b := range bad {
+		if err := os.WriteFile(path, []byte(b), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := Load(path); err == nil {
+			t.Errorf("expected error for %s", b)
+		}
+	}
+}
+
+func TestCheckArgs(t *testing.T) {
+	p := Default()
+	p.Network.Allow = []string{"api.github.com"}
+	p.Tools.Rules = map[string]Rule{
+		"write_file": {Decision: Allow, Args: map[string]ArgConstraint{"path": {Under: []string{"/srv/proj"}}}},
+		"read_many":  {Decision: Allow, Args: map[string]ArgConstraint{"paths": {Under: []string{"/srv/proj"}, Optional: true}}},
+		"fetch":      {Decision: Allow, Args: map[string]ArgConstraint{"url": {Host: []string{"network.allow", "*.example.org"}}}},
+		"plain":      {Decision: Allow},
+	}
+	ok := map[string]string{
+		"write_file": `{"path":"/srv/proj/a.txt"}`,
+		"read_many":  `{"paths":["/srv/proj/a","/srv/proj/b/c"]}`,
+		"fetch":      `{"url":"https://api.github.com/repos"}`,
+		"plain":      `{"anything":1}`,
+	}
+	for tool, args := range ok {
+		if err := p.CheckArgs(tool, json.RawMessage(args)); err != nil {
+			t.Errorf("%s %s: unexpected %v", tool, args, err)
+		}
+	}
+	if err := p.CheckArgs("read_many", nil); err != nil {
+		t.Errorf("optional missing arg must pass: %v", err)
+	}
+	if err := p.CheckArgs("fetch", json.RawMessage(`{"url":"sub.example.org:8443"}`)); err != nil {
+		t.Errorf("bare host:port against *.example.org: %v", err)
+	}
+	if err := p.CheckArgs("write_file", json.RawMessage(`{"path":"/srv/proj"}`)); err != nil {
+		t.Errorf("the directory itself is inside: %v", err)
+	}
+
+	bad := map[string][]string{
+		"write_file": {
+			`{}`,                                 // required
+			`{"path":null}`,                      // required
+			`{"path":"/srv/proj/../../etc/pw"}`,  // traversal
+			`{"path":"/srv/project/x"}`,          // sibling with same prefix
+			`{"path":"relative/x"}`,              // not absolute
+			`{"path":42}`,                        // wrong type
+			`{"path":["/srv/proj/a","/etc/pw"]}`, // one bad element
+			`[]`,                                 // not an object
+			`not json`,
+		},
+		"read_many": {`{"paths":["/srv/proj/a","/tmp/x"]}`, `{"paths":"/etc"}`},
+		"fetch": {
+			`{"url":"https://evil.example.com/"}`,
+			`{"url":"https://api.github.com.evil.net/"}`,
+			`{"url":"/relative"}`,
+			`{"url":""}`,
+			`{"url":"https://user@/x"}`,
+			`{}`,
+		},
+	}
+	for tool, list := range bad {
+		for _, args := range list {
+			err := p.CheckArgs(tool, json.RawMessage(args))
+			if err == nil {
+				t.Errorf("%s %s: expected violation", tool, args)
+			} else if !strings.Contains(err.Error(), "argument") && !strings.Contains(err.Error(), "arguments") {
+				t.Errorf("%s %s: reason should name the argument: %v", tool, args, err)
+			}
+		}
 	}
 }

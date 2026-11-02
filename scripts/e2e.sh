@@ -14,7 +14,8 @@ cp examples/echo-server.py "$WORK/"
 req() { printf '%s\n' "$@"; }
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
 LIST='{"jsonrpc":"2.0","id":2,"method":"tools/list"}'
-READ='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{}}}'
+READ='{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"'"$WORK"'/notes.txt"}}}'
+READBAD='{"jsonrpc":"2.0","id":17,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"'"$WORK"'/../../etc/passwd"}}}'
 DEL='{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"delete_file","arguments":{}}}'
 PLIST='{"jsonrpc":"2.0","id":6,"method":"prompts/list"}'
 PGET='{"jsonrpc":"2.0","id":7,"method":"prompts/get","params":{"name":"summarize"}}'
@@ -36,7 +37,7 @@ PROBE='{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"probe","a
 
 run() { # $1 = policy file, $2... = request lines (default: the standard set)
   local pol=$1; shift
-  [[ $# -gt 0 ]] || set -- "$INIT" "$LIST" "$READ" "$DEL" "$PROBE" "$PLIST" "$PGET" "$RLIST" "$RREAD"
+  [[ $# -gt 0 ]] || set -- "$INIT" "$LIST" "$READ" "$READBAD" "$DEL" "$PROBE" "$PLIST" "$PGET" "$RLIST" "$RREAD"
   req "$@" | "$BIN" run --quiet --policy "$pol" -- "$PY" "$WORK/echo-server.py" 2>"$WORK/stderr" \
     || { echo "FAIL: mcp-jail exited non-zero"; cat "$WORK/stderr"; exit 1; }
 }
@@ -50,12 +51,20 @@ echo "== policy / lock / audit (sandbox disabled)"
 cat >"$WORK/p.yml" <<YML
 name: e2e
 network: { mode: none }
-tools: { default: deny, rules: { "read_*": allow, probe: allow } }
+tools:
+  default: deny
+  rules:
+    "read_*": allow
+    probe: allow
+    read_file: { decision: allow, args: { path: { under: [$WORK] } } }
 audit: { path: $WORK/audit.jsonl }
 sandbox: { disabled: true }
 YML
 OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?3, ?"result"'
+# argument constraint: a path that escapes the allowed directory is refused before it reaches the server
+assert "$OUT" '"id":17,"error":\{"code":-32001,"message":"mcp-jail: tool read_file denied by policy: argument \\"path\\": path .* is outside'
+assert "$(cat "$WORK/audit.jsonl")" '"tool":"read_file","decision":"deny","reason":"args: argument'
 assert "$OUT" '"id":4,"error":\{"code":-32001'
 assert "$OUT" '"net\\": \\"reachable'
 assert "$OUT" '"sentinel_visible\\": true'
