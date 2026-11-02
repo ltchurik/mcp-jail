@@ -35,8 +35,49 @@ type Plan struct {
 	// than by a cooperative HTTP_PROXY.
 	Hard bool `json:"hard"`
 	// Env lists the variable names passed into the jail.
-	Env   []string `json:"env"`
-	Notes []string `json:"notes,omitempty"`
+	Env []string `json:"env"`
+	// Exec lists the pinned executables (exec.allow) and their state on
+	// this host right now.
+	Exec  []ExecPin `json:"exec,omitempty"`
+	Notes []string  `json:"notes,omitempty"`
+}
+
+// ExecPin is one exec.allow entry as found on the host.
+type ExecPin struct {
+	Path   string `json:"path"`
+	SHA256 string `json:"sha256,omitempty"` // the pinned digest, if any
+	// Status is ok, not pinned (allowed, no digest), missing, not a regular
+	// file, or sha256 mismatch.
+	Status string `json:"status"`
+}
+
+// execPins reports the state of every exec.allow entry without refusing.
+func execPins(p *policy.Policy) []ExecPin {
+	var out []ExecPin
+	for _, path := range p.Exec.Allow {
+		pin := ExecPin{Path: path, SHA256: p.Exec.SHA256[path]}
+		st, err := os.Stat(path)
+		switch {
+		case err != nil:
+			pin.Status = "missing"
+		case !st.Mode().IsRegular():
+			pin.Status = "not a regular file"
+		case pin.SHA256 == "":
+			pin.Status = "not pinned"
+		default:
+			got, err := fileSHA256(path)
+			switch {
+			case err != nil:
+				pin.Status = "unreadable"
+			case got != pin.SHA256:
+				pin.Status = "sha256 mismatch"
+			default:
+				pin.Status = "ok"
+			}
+		}
+		out = append(out, pin)
+	}
+	return out
 }
 
 // linuxBase are the read-only binds every bwrap jail starts with.
@@ -100,6 +141,12 @@ func Explain(p *policy.Policy, s Spec) Plan {
 	}
 	for _, m := range masks(s.Protect, bound) {
 		plan.Masked = append(plan.Masked, m.path)
+	}
+	plan.Exec = execPins(p)
+	for _, pin := range plan.Exec {
+		if dir := coveredBy(pin.Path, bound); dir != "" {
+			plan.Notes = append(plan.Notes, "exec.allow "+pin.Path+" is inside "+dir+", which is shared whole: its siblings are executable too")
+		}
 	}
 	return plan
 }

@@ -122,6 +122,20 @@ type Policy struct {
 		Env []string `yaml:"env"`
 	} `yaml:"sandbox"`
 
+	// Exec pins executables outside the base system paths that the jailed
+	// process tree may run, for launchers (npx, uvx, a thin npm package)
+	// that exec a separately installed binary. Each Allow entry is made
+	// visible on its own (a file bind on Linux, a process-exec literal on
+	// macOS), so an unlisted sibling in the same directory is absent or not
+	// executable; a directory listed in filesystem.* stays executable as a
+	// whole. SHA256 pins a file's content: a mismatch refuses to start.
+	// Needs the sandbox; refused with sandbox.disabled or on a platform
+	// without one.
+	Exec struct {
+		Allow  []string          `yaml:"allow"`
+		SHA256 map[string]string `yaml:"sha256"` // path -> hex digest
+	} `yaml:"exec"`
+
 	// Server, when url is set, is a remote MCP server reached over Streamable
 	// HTTP instead of a command started in a sandbox: `run` takes no command,
 	// the sandbox, filesystem and network sections do not apply (the jail
@@ -284,6 +298,9 @@ func (p *Policy) Validate() error {
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
 	p.Filesystem.ReadWrite = expandAll(p.Filesystem.ReadWrite)
 	p.Audit.Path = expand(p.Audit.Path)
+	if err := p.validateExec(); err != nil {
+		return err
+	}
 	switch {
 	case p.Ask.Timeout == 0:
 		p.Ask.Timeout = 60 * time.Second
@@ -333,6 +350,55 @@ func (p *Policy) Validate() error {
 			s.Headers[k] = v
 		}
 	}
+	return nil
+}
+
+// validateExec expands and checks exec.allow and exec.sha256: absolute,
+// clean, distinct paths; every pinned digest names an allowed path and is a
+// lowercase SHA-256 hex string.
+func (p *Policy) validateExec() error {
+	e := &p.Exec
+	if len(e.Allow) == 0 && len(e.SHA256) == 0 {
+		return nil
+	}
+	if p.Sandbox.Disabled {
+		return errors.New("exec.allow cannot be enforced with sandbox.disabled: true")
+	}
+	if p.Remote() {
+		return errors.New("exec.allow does not apply to a remote server (server.url)")
+	}
+	seen := map[string]bool{}
+	for i, a := range e.Allow {
+		if hasControl(a) {
+			return fmt.Errorf("exec.allow[%d]: control character in path", i)
+		}
+		a = expand(a)
+		if !filepath.IsAbs(a) {
+			return fmt.Errorf("exec.allow[%d]: must be an absolute path, got %q", i, a)
+		}
+		a = filepath.Clean(a)
+		if seen[a] {
+			return fmt.Errorf("exec.allow: %s listed twice", a)
+		}
+		seen[a] = true
+		e.Allow[i] = a
+	}
+	pins := make(map[string]string, len(e.SHA256))
+	for k, v := range e.SHA256 {
+		if hasControl(k) {
+			return errors.New("exec.sha256: control character in path")
+		}
+		path := filepath.Clean(expand(k))
+		if !seen[path] {
+			return fmt.Errorf("exec.sha256[%s]: not in exec.allow", k)
+		}
+		v = strings.ToLower(strings.TrimSpace(v))
+		if len(v) != 64 || strings.Trim(v, "0123456789abcdef") != "" {
+			return fmt.Errorf("exec.sha256[%s]: must be a 64-digit hex SHA-256", k)
+		}
+		pins[path] = v
+	}
+	e.SHA256 = pins
 	return nil
 }
 
@@ -614,6 +680,15 @@ audit:
 sandbox:
   disabled: false
   env: [PATH, HOME, LANG]
+
+# Pin executables a launcher (npx, uvx, a thin npm package) execs from
+# outside the system paths: each file is made visible on its own, so an
+# unlisted sibling is not. sha256 refuses to start if the file changed.
+# exec:
+#   allow:
+#     - ~/.local/bin/some-server
+#   sha256:
+#     ~/.local/bin/some-server: "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 
 # A remote server over Streamable HTTP instead of a command: set server.url
 # (https, or http for localhost) and run without a command after --. The

@@ -8,7 +8,7 @@ BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")   # absolute: some scena
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
-trap 'kill $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null; wait $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
+trap 'kill $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null; wait $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$ "$HOME"/.mcp-jail-e2e-$$-bin' EXIT
 LISTENER=
 APPROVER=
 JAIL=
@@ -379,6 +379,39 @@ assert "$(cat "$WORK/ui.yml")" '"write_\[\*\]": allow'   # the API promotes the 
 assert "$(cat "$WORK/ui.yml")" '"read_\*": allow'
 kill $UI; wait $UI 2>/dev/null || true; UI=
 
+# exec pinning fixtures: two scripts in a directory under $HOME (hidden in both sandboxes)
+EXECDIR="$HOME/.mcp-jail-e2e-$$-bin"; mkdir -p "$EXECDIR"
+printf '#!/bin/sh\necho hi\n' >"$EXECDIR/hello.sh"; printf '#!/bin/sh\necho other\n' >"$EXECDIR/other.sh"; chmod 700 "$EXECDIR"/*.sh
+HELLO_SHA=$($PY -c 'import hashlib,sys;print(hashlib.sha256(open(sys.argv[1],"rb").read()).hexdigest())' "$EXECDIR/hello.sh")
+exec_scenario() { # $1 = label of the sandbox
+  echo "== $1: exec pins"
+  cat >"$WORK/x.yml" <<YML
+name: e2e-exec
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-exec.jsonl }
+exec:
+  allow: [$EXECDIR/hello.sh]
+  sha256: { $EXECDIR/hello.sh: $HELLO_SHA }
+YML
+  OUT=$(run "$WORK/x.yml" "$INIT" "$LIST" \
+    "$(probe 20 '{"exec":"'"$EXECDIR"'/hello.sh"}')" \
+    "$(probe 21 '{"exec":"'"$EXECDIR"'/other.sh"}')")
+  assert "$OUT" '"id": ?20.*"exec\\": \\"exit:0:hi'                 # the pinned file runs
+  assert "$OUT" '"id": ?21.*"exec\\": \\"error:'                    # its unlisted sibling does not exist for the jail
+  assert "$(cat "$WORK/audit-exec.jsonl")" '"kind":"start","reason":"[^"]*1 exec pin\(s\)'
+  SHOW=$($BIN show --policy "$WORK/x.yml" -- "$PY" "$WORK/echo-server.py")
+  assert "$SHOW" "^  exec: +$EXECDIR/hello.sh  \(ok\)"
+  # a changed pinned file never starts
+  printf '#!/bin/sh\necho tampered\n' >"$EXECDIR/hello.sh"
+  assert "$($BIN show --policy "$WORK/x.yml")" '^  exec: .*SHA256 MISMATCH: the jail will refuse to start'
+  if req "$INIT" | "$BIN" run --quiet --policy "$WORK/x.yml" -- "$PY" "$WORK/echo-server.py" >/dev/null 2>"$WORK/stderr"; then echo "FAIL: tampered pin started"; exit 1; fi
+  assert "$(cat "$WORK/stderr")" 'exec.sha256: .*hello.sh has changed'
+  printf '#!/bin/sh\necho hi\n' >"$EXECDIR/hello.sh"
+}
+
 if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then
   echo "== bubblewrap: no home, no network"
   cat >"$WORK/s.yml" <<YML
@@ -438,6 +471,8 @@ YML
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"dns","decision":"blocked","host":"blocked.e2e.test"'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"allowed.e2e.test"|"kind":"net","decision":"allow","host":"allowed.e2e.test"'
+
+  exec_scenario bubblewrap
 elif [[ "$(uname -s)" == Darwin ]] && command -v sandbox-exec >/dev/null; then
   echo "== sandbox-exec: no home, no network"
   cat >"$WORK/s.yml" <<YML
@@ -486,6 +521,8 @@ YML
   assert "$OUT" '"id": ?13.*"http\\": \\"error:URLError'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
   assert "$(cat "$WORK/audit-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"blocked.e2e.test"'
+
+  exec_scenario sandbox-exec
 else
   echo "== sandbox: skipped ($(uname -s))"
 fi

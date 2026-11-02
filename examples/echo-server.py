@@ -31,6 +31,13 @@ def probe(args):
             out["dns"] = socket.gethostbyname(args["dns"])
         except OSError as e:
             out["dns"] = "error:" + type(e).__name__
+    if args.get("exec"):  # can the server run this program?
+        import subprocess
+        try:
+            r = subprocess.run([args["exec"]], capture_output=True, timeout=5)
+            out["exec"] = "exit:%d:%s" % (r.returncode, r.stdout.decode().strip())
+        except Exception as e:
+            out["exec"] = "error:" + type(e).__name__
     if args.get("url"):  # HTTP as the server sees it; proxy=false ignores HTTP_PROXY
         import urllib.request, urllib.error
         handlers = [] if args.get("proxy", True) else [urllib.request.ProxyHandler({})]

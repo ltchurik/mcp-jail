@@ -11,7 +11,10 @@
 package sandbox
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -86,13 +89,22 @@ func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error)
 	}
 
 	if p.Sandbox.Disabled {
+		if len(p.Exec.Allow) > 0 {
+			return nil, "", "", fmt.Errorf("exec.allow cannot be enforced with sandbox.disabled")
+		}
 		return append([]string{"env", "-i"}, append(env, s.Command...)...), "sandbox disabled by policy", "", nil
+	}
+	if err := checkExec(p); err != nil {
+		return nil, "", "", err
 	}
 	switch runtime.GOOS {
 	case "linux":
 		return buildLinux(p, s, env)
 	case "darwin":
 		return buildDarwin(p, s, env)
+	}
+	if len(p.Exec.Allow) > 0 {
+		return nil, "", "", fmt.Errorf("exec.allow cannot be enforced on %s (no sandbox)", runtime.GOOS)
 	}
 	why := "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
 	return append([]string{"env", "-i"}, append(env, s.Command...)...), why, "", nil
@@ -187,6 +199,14 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 			args = append(args, "--ro-bind", "/dev/null", m.path)
 		}
 	}
+	// Pinned executables: each file on its own, so its siblings stay absent.
+	for _, path := range p.Exec.Allow {
+		if dir := coveredBy(path, bound); dir != "" {
+			notes = append(notes, "exec.allow "+path+" is inside "+dir+", which is bound whole: its siblings are executable too")
+			continue
+		}
+		args = append(args, "--ro-bind", path, path)
+	}
 	args = append(args, "--clearenv")
 	for _, kv := range env {
 		k, v, _ := strings.Cut(kv, "=")
@@ -208,10 +228,64 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 	case p.Network.Mode == policy.NetNone:
 		why += ", net ns (no network)"
 	}
+	if n := len(p.Exec.Allow); n > 0 {
+		why += fmt.Sprintf(", %d exec pin(s)", n)
+	}
 	if len(notes) > 0 {
 		why += "; " + strings.Join(notes, "; ")
 	}
 	return append([]string{bwrap}, args...), why, "", nil
+}
+
+// coveredBy returns the bound directory that contains path, or "".
+func coveredBy(path string, bound []string) string {
+	for _, d := range bound {
+		if d != "" && under(path, filepath.Clean(d)) {
+			return d
+		}
+	}
+	return ""
+}
+
+// checkExec verifies exec.allow on the host before anything starts: every
+// entry must be a regular file, and a pinned digest must match its content.
+// Anything else refuses to start (fail closed). The check happens before
+// the bind or the profile is set up; a file an attacker can rewrite in that
+// window is a file they could rewrite anyway, so the pin protects against
+// a package manager update, not against someone who already owns ~/.local.
+func checkExec(p *policy.Policy) error {
+	for _, path := range p.Exec.Allow {
+		if st, err := os.Stat(path); err != nil {
+			return fmt.Errorf("exec.allow: %s: %w", path, err)
+		} else if !st.Mode().IsRegular() {
+			return fmt.Errorf("exec.allow: %s is not a regular file", path)
+		}
+		want, pinned := p.Exec.SHA256[path]
+		if !pinned {
+			continue
+		}
+		got, err := fileSHA256(path)
+		if err != nil {
+			return fmt.Errorf("exec.sha256: %s: %w", path, err)
+		}
+		if got != want {
+			return fmt.Errorf("exec.sha256: %s has changed (sha256 %s, pinned %s); refusing to start", path, got[:12], want[:12])
+		}
+	}
+	return nil
+}
+
+func fileSHA256(path string) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // buildDarwin wraps the server in sandbox-exec with a profile generated from
@@ -268,6 +342,9 @@ func buildDarwin(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	case policy.NetAllowlist:
 		why += ", net via proxy only (hard, HTTP_PROXY)"
 	}
+	if n := len(p.Exec.Allow); n > 0 {
+		why += fmt.Sprintf(", %d exec pin(s)", n)
+	}
 	if len(notes) > 0 {
 		why += "; " + strings.Join(notes, "; ")
 	}
@@ -320,6 +397,16 @@ func darwinProfile(p *policy.Policy, s Spec, h profilePaths) string {
 	}
 	if ex := realPaths(extra...); len(ex) > 0 {
 		b.WriteString(";; toolchain and working directory\n(allow file-read* " + subpaths(ex) + ")\n")
+	}
+	// Pinned executables: nothing under the hidden trees may run except the
+	// directories the policy shares whole (as on Linux, where they are
+	// mounted) and the listed files, which also need to be readable.
+	if pins := realPaths(p.Exec.Allow...); len(pins) > 0 {
+		b.WriteString(";; exec.allow: under the hidden trees only these may run\n(deny process-exec* " + subpaths(hide) + ")\n")
+		if dirs := realPaths(append(append(append([]string{}, p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...), extra...)...); len(dirs) > 0 {
+			b.WriteString("(allow process-exec* " + subpaths(dirs) + ")\n")
+		}
+		b.WriteString("(allow process-exec* " + literals(pins) + ")\n(allow file-read* " + literals(pins) + ")\n")
 	}
 
 	switch p.Network.Mode {
@@ -428,6 +515,14 @@ func subpaths(paths []string) string {
 	parts := make([]string, 0, len(paths))
 	for _, p := range paths {
 		parts = append(parts, "(subpath "+sbQuote(p)+")")
+	}
+	return strings.Join(parts, " ")
+}
+
+func literals(paths []string) string {
+	parts := make([]string, 0, len(paths))
+	for _, p := range paths {
+		parts = append(parts, "(literal "+sbQuote(p)+")")
 	}
 	return strings.Join(parts, " ")
 }
