@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/policy"
@@ -29,6 +30,9 @@ type Proxy struct {
 	// TTYPath is the terminal used for `ask`; "" means /dev/tty. Tests point
 	// it at a path that does not exist.
 	TTYPath string
+	// Asks, when set, lets an attached dashboard answer `ask` decisions that
+	// have no terminal (see package control). nil: terminal or webhook only.
+	Asks *control.Broker
 
 	client io.Writer // to MCP client
 	server io.Writer // to jailed server
@@ -285,10 +289,7 @@ func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 		}
 		f, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
-			if p.Policy.Ask.Webhook.URL != "" {
-				return p.askWebhook(tc)
-			}
-			return false, "no tty"
+			return p.askHeadless(tc)
 		}
 		p.tty = f
 	}

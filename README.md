@@ -64,6 +64,14 @@ mcp-jail wrap .mcp.json                                                         
 
 Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml` (network `none`, directories from the command line writable, npx/uvx caches, `env` keys passed through, `ask` for unknown tools). The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
 
+## Use cases
+
+Worked scenarios with a complete policy each, in [`use-cases/`](use-cases/README.md):
+scope the filesystem server to one project, try an unknown server safely, give
+an API server exactly one host and its token, keep a fetch tool on a leash,
+catch a rug-pull, approve calls from Slack or a web form, wrap an existing
+client config, and watch, report and hand over.
+
 ## Policy
 
 ```yaml
@@ -96,6 +104,7 @@ tools:
         url: { host: [network.allow] }       # host in network.allow (or list patterns)
 
 ask:                        # how `ask` is answered without a terminal
+  timeout: 60s              # how long to wait for the dashboard (mcp-jail ui)
   webhook:
     url: https://approvals.example.internal/mcp-jail
     timeout: 60s            # no answer in time = deny
@@ -124,7 +133,7 @@ sandbox:
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
-| `tools: ask` | Prompt on `/dev/tty`; without a tty, POST to `ask.webhook` and wait for `{"decision":"allow"}`; no tty and no webhook, timeout, error or any other answer ⇒ denied | **Hard** |
+| `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
@@ -154,7 +163,10 @@ Inside the jail the shim briefly runs as the user namespace's root so it can bin
 
 ## Headless approvals
 
-Claude Desktop and Cursor start servers without a terminal, so `ask` would always deny. Configure `ask.webhook` and mcp-jail POSTs each pending call:
+Claude Desktop and Cursor start servers without a terminal, so `ask` would always deny. Two things can answer instead:
+
+- **The dashboard.** While `mcp-jail ui` is open in a browser, every headless `ask` shows up at the top of the page with the arguments and **Allow** / **Deny** buttons, and the jail waits up to `ask.timeout` (default 60s) for the click. No dashboard open ⇒ the call is denied at once, as before; dashboard open but nobody clicks ⇒ denied at the deadline. The jail and the page talk over a user-only Unix socket next to the lock files.
+- **A webhook.** Configure `ask.webhook` and mcp-jail POSTs each pending call:
 
 ```json
 {"server":"filesystem","tool":"write_file","arguments":{"path":"/home/me/projects/a.txt"},
@@ -222,21 +234,31 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
 mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (add --open to launch the browser)
 mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
+mcp-jail report --since 7d      # text summary of the same data; --json, --csv, --server NAME
 ```
 
 `mcp-jail ui` is a local page over everything the other commands know: every
 server that ever ran through `mcp-jail run` (running or not), its sandbox,
 network mode, lock sections and any **pending change** waiting for
-`mcp-jail approve`, plus a live, filterable view of the audit logs with the
-last 24h of decisions per server. New lines stream in as they are written;
-denies, blocks and lock events pop up as notifications.
+`mcp-jail approve`; a **report** for the chosen range (decisions over time,
+calls per tool with how many were refused, hosts reached or blocked, the
+reasons things were refused, lock events) with CSV/JSON export; and a live,
+filterable view of the audit logs. New lines stream in as they are written;
+denies, blocks and lock events pop up as notifications. `mcp-jail report`
+prints the same aggregation in the terminal for cron jobs and tickets.
 
-It is read-only for now and built to be boring: plain HTML/CSS/JS embedded in
-the binary, no framework, nothing fetched from the internet. It binds to the
+Two things on it change state: a pending rug-pull can be **approved** from
+the server card (the same as `mcp-jail approve`; a running jail picks the new
+lock up on the client's next list request), and headless **`ask` decisions**
+can be answered at the top of the page (see [Headless
+approvals](#headless-approvals)). Everything else is read-only.
+It is built to be boring: plain HTML/CSS/JS embedded in the binary, no
+framework, nothing fetched from the internet. It binds to the
 loopback interface only, refuses any other `--listen` address, and every
 request needs the random token from the printed URL (exchanged for a
 `HttpOnly; SameSite=Strict` cookie on first visit). Foreign `Host` headers and
-cross-site fetches are rejected. Whether the dashboard runs or not changes
+cross-site fetches are rejected; a write additionally needs a custom request
+header that only a same-origin script can set. Whether the dashboard runs or not changes
 nothing about enforcement: the proxy decides, the page only watches.
 
 Running jails register themselves in `~/.config/mcp-jail/run/` (next to the
@@ -284,7 +306,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [ ] Dashboard: monitor (`mcp-jail ui`, done), reports, approving lock changes and `ask` from the page
+- [x] Dashboard: monitor, reports, lock approval and `ask` answers (`mcp-jail ui`, `mcp-jail report`)
 
 ## Non-goals
 

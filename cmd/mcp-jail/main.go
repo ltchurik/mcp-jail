@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/egress"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
@@ -45,6 +46,8 @@ Usage:
   mcp-jail ps                          list running jails
   mcp-jail ui   [--listen 127.0.0.1:0] [--audit FILE]...
                                        local dashboard: servers, audit events, pending changes
+  mcp-jail report [--since 24h] [--server NAME] [--json|--csv] [--audit FILE]...
+                                       summarise the audit logs
   mcp-jail version
 
 Client config (Claude Desktop, Cursor, Claude Code, …):
@@ -78,6 +81,8 @@ func main() {
 		err = cmdPS()
 	case "ui":
 		err = cmdUI(os.Args[2:])
+	case "report":
+		err = cmdReport(os.Args[2:])
 	case sandbox.ShimCommand: // internal: mcp-jail re-executed inside the jail
 		code, err := cmdShim(os.Args[2:])
 		if err != nil {
@@ -226,9 +231,20 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
+	// control socket: the dashboard answers `ask` decisions through it
+	asks := control.NewBroker(p.Name)
+	controlPath := ""
+	if cs, err := control.Listen(control.SocketPath(registry.Dir(), p.Name, os.Getpid()), asks); err != nil {
+		logf("control socket: %v (the dashboard cannot answer asks for this jail)", err)
+		asks = nil
+	} else {
+		controlPath = cs.Path()
+		defer func() { _ = cs.Close() }()
+	}
 	if unregister, err := registry.Register(registry.Entry{
 		Name: p.Name, Policy: absPath(*pol), Audit: p.Audit.Path, Command: cmdline, How: how,
 		Network: string(p.Network.Mode), Default: string(p.Tools.Default), Lock: p.Lock.Enabled,
+		Control: controlPath,
 	}); err != nil {
 		logf("registry: %v (dashboard will not list this jail)", err)
 	} else {
@@ -242,7 +258,7 @@ func cmdRun(args []string) error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 	}()
 
-	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf}
+	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Asks: asks}
 	runErr := px.Run(os.Stdin, os.Stdout, sin, sout)
 	_ = sin.Close()
 	waitErr := cmd.Wait()
@@ -523,6 +539,7 @@ func cmdUI(args []string) error {
 	if err != nil {
 		return err
 	}
+	srv.Logf = logf
 	l, err := ui.Listen(*listen)
 	if err != nil {
 		return err
@@ -541,6 +558,50 @@ func cmdUI(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	return srv.Serve(ctx, l)
+}
+
+func cmdReport(args []string) error {
+	fs := flag.NewFlagSet("report", flag.ContinueOnError)
+	since := fs.String("since", "24h", "start of the range: a duration ago (24h, 7d is 168h) or RFC 3339")
+	until := fs.String("until", "", "end of the range (default now)")
+	server := fs.String("server", "", "only this server")
+	asJSON := fs.Bool("json", false, "print the report as JSON")
+	asCSV := fs.Bool("csv", false, "print the per-tool and per-host tables as CSV")
+	var extra stringList
+	fs.Var(&extra, "audit", "additional audit log to include (repeatable)")
+	fs.Usage = usage
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("report takes no positional arguments")
+	}
+	if *asJSON && *asCSV {
+		return errors.New("--json and --csv are exclusive")
+	}
+	now := time.Now()
+	f := ui.Filter{Server: *server}
+	var err error
+	if f.Since, err = ui.ParseTime(*since, now); err != nil {
+		return fmt.Errorf("--since: %w", err)
+	}
+	if f.Until, err = ui.ParseTime(*until, now); err != nil {
+		return fmt.Errorf("--until: %w", err)
+	}
+	if _, err := registry.Prune(); err != nil {
+		logf("registry: %v", err)
+	}
+	rep := ui.BuildReport(ui.AuditPaths(extra), f, now)
+	switch {
+	case *asJSON:
+		enc := json.NewEncoder(os.Stdout)
+		enc.SetIndent("", "  ")
+		return enc.Encode(rep)
+	case *asCSV:
+		return rep.WriteCSV(os.Stdout)
+	default:
+		return rep.WriteText(os.Stdout)
+	}
 }
 
 // browse opens url with the platform's default handler; best effort.

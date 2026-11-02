@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/registry"
 )
@@ -48,7 +49,9 @@ type Server struct {
 	PollInterval time.Duration
 	// Now is overridable for tests.
 	Now func() time.Time
-	mux *http.ServeMux
+	// Logf receives one line per action taken from the page; nil discards.
+	Logf func(format string, args ...any)
+	mux  *http.ServeMux
 }
 
 // NewToken returns a random URL-safe token.
@@ -73,13 +76,17 @@ func New(token, version string, extra []string) (*Server, error) {
 		}
 		abs = append(abs, a)
 	}
-	s := &Server{token: token, version: version, extra: abs, PollInterval: 500 * time.Millisecond, Now: time.Now}
+	s := &Server{token: token, version: version, extra: abs, PollInterval: 500 * time.Millisecond, Now: time.Now, Logf: func(string, ...any) {}}
 	s.mux = http.NewServeMux()
 	s.mux.HandleFunc("GET /{$}", s.handleIndex)
 	s.mux.Handle("GET /static/", http.StripPrefix("/static/", s.requireAuth(http.FileServerFS(mustSub(static, "static")))))
 	s.mux.Handle("GET /api/state", s.requireAuth(http.HandlerFunc(s.handleState)))
 	s.mux.Handle("GET /api/events", s.requireAuth(http.HandlerFunc(s.handleEvents)))
 	s.mux.Handle("GET /api/stream", s.requireAuth(http.HandlerFunc(s.handleStream)))
+	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
+	s.mux.Handle("POST /api/servers/{name}/approve", s.requireMutation(http.HandlerFunc(s.handleApprove)))
+	s.mux.Handle("GET /api/asks", s.requireAuth(http.HandlerFunc(s.handleAsks)))
+	s.mux.Handle("POST /api/servers/{name}/asks/{id}", s.requireMutation(http.HandlerFunc(s.handleAnswer)))
 	return s, nil
 }
 
@@ -170,6 +177,163 @@ func (s *Server) requireAuth(next http.Handler) http.Handler {
 	})
 }
 
+// mutationHeader must accompany every state-changing request. A browser
+// only sends custom headers on fetch() from a page that passed CORS, and
+// this server sends no CORS headers, so a cross-site page cannot forge it.
+const mutationHeader = "X-Mcp-Jail"
+
+// requireMutation is requireAuth plus the same-origin proof for writes:
+// the custom header, and when the browser states the fetch site, it must be
+// same-origin (a form post from another site says cross-site; a direct
+// tool such as curl says nothing and is accepted with the bearer token).
+func (s *Server) requireMutation(next http.Handler) http.Handler {
+	return s.requireAuth(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get(mutationHeader) == "" {
+			http.Error(w, "missing "+mutationHeader+" header", http.StatusForbidden)
+			return
+		}
+		if site := r.Header.Get("Sec-Fetch-Site"); site != "" && site != "same-origin" {
+			http.Error(w, "cross-site request refused", http.StatusForbidden)
+			return
+		}
+		if o := r.Header.Get("Origin"); o != "" && !sameOrigin(o, r.Host) {
+			http.Error(w, "origin mismatch", http.StatusForbidden)
+			return
+		}
+		next.ServeHTTP(w, r)
+	}))
+}
+
+func sameOrigin(origin, host string) bool {
+	return origin == "http://"+host || (strings.HasPrefix(origin, "http://localhost") && loopbackHost(host))
+}
+
+// ApproveResponse is the result of approving a pending lock change.
+type ApproveResponse struct {
+	Name string         `json:"name"`
+	Lock []SectionState `json:"lock"`
+}
+
+// handleApprove promotes the pending sections of one server into its lock,
+// exactly like `mcp-jail approve <name>`. A running jail picks the new lock
+// up on the next list request from the client.
+func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	if name == "" || strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
+		http.Error(w, "bad server name", http.StatusBadRequest)
+		return
+	}
+	pend, err := lock.LoadPending(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if pend == nil || len(pend.Sections) == 0 {
+		http.Error(w, "nothing pending for "+name, http.StatusNotFound)
+		return
+	}
+	f, err := lock.Approve(name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	resp := ApproveResponse{Name: name, Lock: []SectionState{}}
+	for _, k := range lock.Kinds {
+		if sec := f.Section(k); sec != nil {
+			resp.Lock = append(resp.Lock, SectionState{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash)})
+		}
+	}
+	s.Logf("approved %s from the dashboard: %d section(s)", name, len(pend.Sections))
+	writeJSON(w, resp)
+}
+
+// asksOf lists the pending asks of one running jail; a jail that does not
+// answer has none (and cannot be answered either).
+func (s *Server) asksOf(e registry.Entry) []control.Pending {
+	if e.Control == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	l, err := control.Dial(e.Control).List(ctx)
+	if err != nil {
+		return nil
+	}
+	return l
+}
+
+// AsksResponse is the /api/asks document: every pending ask of every
+// running jail, oldest first. Polling it is what makes a jail wait for the
+// dashboard instead of denying a headless `ask` at once.
+type AsksResponse struct {
+	Asks []control.Pending `json:"asks"`
+	Now  time.Time         `json:"now"`
+}
+
+func (s *Server) handleAsks(w http.ResponseWriter, _ *http.Request) {
+	resp := AsksResponse{Asks: []control.Pending{}, Now: s.Now().UTC()}
+	live, _ := registry.List()
+	for _, e := range live {
+		resp.Asks = append(resp.Asks, s.asksOf(e)...)
+	}
+	sort.SliceStable(resp.Asks, func(i, j int) bool { return resp.Asks[i].Since.Before(resp.Asks[j].Since) })
+	writeJSON(w, resp)
+}
+
+// handleAnswer forwards an allow/deny for one ask to the jail's control
+// socket. The proxy audits the decision as ask_allow/ask_deny "dashboard".
+func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
+	name, id := r.PathValue("name"), r.PathValue("id")
+	var body struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	var allow bool
+	switch body.Decision {
+	case "allow":
+		allow = true
+	case "deny":
+	default:
+		http.Error(w, `decision must be "allow" or "deny"`, http.StatusBadRequest)
+		return
+	}
+	live, err := registry.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var entry *registry.Entry
+	for i := range live {
+		if live[i].Name == name && live[i].Control != "" {
+			entry = &live[i]
+			break
+		}
+	}
+	if entry == nil {
+		http.Error(w, "no running jail named "+name+" with a control socket", http.StatusNotFound)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := control.Dial(entry.Control).Answer(ctx, id, allow, "dashboard"); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, control.ErrUnknown) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	dec := "denied"
+	if allow {
+		dec = "allowed"
+	}
+	s.Logf("%s: ask %s %s from the dashboard", name, id, dec)
+	writeJSON(w, map[string]any{"ok": true, "name": name, "id": id, "allow": allow})
+}
+
 // handleIndex exchanges ?token= for a cookie, then serves the page.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if t := r.URL.Query().Get("token"); t != "" {
@@ -210,6 +374,8 @@ type ServerState struct {
 	Command   []string       `json:"command,omitempty"`
 	Counts    map[string]int `json:"counts,omitempty"` // decision -> events in the last 24h
 	LastEvent *time.Time     `json:"last_event,omitempty"`
+	Control   bool           `json:"control"` // asks can be answered from here
+	Asks      int            `json:"asks"`    // pending asks right now
 	Error     string         `json:"error,omitempty"`
 }
 
@@ -275,6 +441,10 @@ func (s *Server) state() State {
 		v.Running, v.PID, v.StartedAt = true, e.PID, &sa
 		v.How, v.Network, v.Default, v.LockOn = e.How, e.Network, e.Default, e.Lock
 		v.Audit, v.Policy, v.Command = e.Audit, e.Policy, e.Command
+		if e.Control != "" {
+			v.Control = true
+			v.Asks = len(s.asksOf(e))
+		}
 	}
 	// locks may exist for servers that never registered (v0.2 runs)
 	if ents, err := fs.ReadDir(osDirFS(lock.Dir()), "."); err == nil {
@@ -345,7 +515,11 @@ func nz(s []string) []string {
 }
 
 // auditPaths lists every audit file the dashboard reads.
-func (s *Server) auditPaths() []string {
+func (s *Server) auditPaths() []string { return AuditPaths(s.extra) }
+
+// AuditPaths lists the audit files of every known or running server plus
+// extra, absolute, deduplicated and sorted.
+func AuditPaths(extra []string) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(p string) {
@@ -364,7 +538,10 @@ func (s *Server) auditPaths() []string {
 			add(e.Audit)
 		}
 	}
-	for _, e := range s.extra {
+	for _, e := range extra {
+		if a, err := filepath.Abs(e); err == nil {
+			e = a
+		}
 		add(e)
 	}
 	sort.Strings(out)
@@ -387,11 +564,11 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	f := Filter{Server: q.Get("server"), Kind: q.Get("kind"), Decision: q.Get("decision"), Tool: q.Get("tool"), Host: q.Get("host"), Query: q.Get("q")}
 	var err error
-	if f.Since, err = parseTime(q.Get("since"), s.Now()); err != nil {
+	if f.Since, err = ParseTime(q.Get("since"), s.Now()); err != nil {
 		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
 		return
 	}
-	if f.Until, err = parseTime(q.Get("until"), s.Now()); err != nil {
+	if f.Until, err = ParseTime(q.Get("until"), s.Now()); err != nil {
 		http.Error(w, "until: "+err.Error(), http.StatusBadRequest)
 		return
 	}
@@ -415,8 +592,38 @@ func (s *Server) handleEvents(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, EventsResponse{Events: evs, Skipped: skipped, Files: files, Limit: limit})
 }
 
-// parseTime accepts RFC 3339, a Go duration meaning "ago" (24h, 15m), or "".
-func parseTime(v string, now time.Time) (time.Time, error) {
+// handleReport aggregates the audit logs over ?since/?until (and ?server);
+// ?format=csv returns the per-tool and per-host tables as a download.
+func (s *Server) handleReport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	f := Filter{Server: q.Get("server")}
+	var err error
+	if f.Since, err = ParseTime(q.Get("since"), s.Now()); err != nil {
+		http.Error(w, "since: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	if f.Until, err = ParseTime(q.Get("until"), s.Now()); err != nil {
+		http.Error(w, "until: "+err.Error(), http.StatusBadRequest)
+		return
+	}
+	rep := BuildReport(s.auditPaths(), f, s.Now())
+	switch q.Get("format") {
+	case "", "json":
+		writeJSON(w, rep)
+	case "csv":
+		w.Header().Set("Content-Type", "text/csv; charset=utf-8")
+		w.Header().Set("Content-Disposition", `attachment; filename="mcp-jail-report.csv"`)
+		_ = rep.WriteCSV(w)
+	case "text":
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		_ = rep.WriteText(w)
+	default:
+		http.Error(w, "format: json, csv or text", http.StatusBadRequest)
+	}
+}
+
+// ParseTime accepts RFC 3339, a Go duration meaning "ago" (24h, 15m), or "".
+func ParseTime(v string, now time.Time) (time.Time, error) {
 	if v == "" {
 		return time.Time{}, nil
 	}

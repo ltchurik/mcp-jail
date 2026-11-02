@@ -41,6 +41,15 @@
     return r.json();
   }
 
+  // mutate POSTs to a state-changing endpoint. The custom header is the
+  // same-origin proof the server insists on.
+  async function mutate(path, body) {
+    const r = await fetch(path, { method: "POST", credentials: "same-origin", headers: { "X-Mcp-Jail": "1", "Content-Type": "application/json", Accept: "application/json" }, body: body ? JSON.stringify(body) : undefined });
+    if (r.status === 401) { setLive(false, "session expired: reopen the URL printed by mcp-jail ui"); throw new Error("unauthorized"); }
+    if (!r.ok) throw new Error((await r.text()).trim() || `${r.status}`);
+    return r.json();
+  }
+
   function setLive(on, text) {
     $("#live-dot").className = "dot " + (on ? "on" : "off");
     $("#live-text").textContent = text || (on ? "live" : "disconnected");
@@ -48,6 +57,7 @@
 
   // ---- servers -----------------------------------------------------------
   function renderServers(st) {
+    if (state.confirming) return; // an inline confirmation is open: do not pull the card from under the user
     state.servers = st.servers || [];
     $("#version").textContent = st.version ? "v" + st.version.replace(/^v/, "") : "";
     $("#server-count").textContent = state.servers.length ? `(${state.servers.filter(s => s.running).length} running / ${state.servers.length})` : "";
@@ -82,6 +92,7 @@
         if (s.counts && s.counts[k]) counts.append(el("span", "pill " + k, `${s.counts[k]} ${k.replace("_", " ")}`));
       }
       if (s.counts === undefined) counts.append(el("span", "muted small", "no events in the last 24h"));
+      if (s.asks) counts.append(el("span", "pill ask", `${s.asks} waiting`));
       if (s.pending) {
         const p = f("pending");
         p.hidden = false;
@@ -97,9 +108,34 @@
           ul.append(li);
         }
         p.append(ul);
-        const cmd = el("div", "small");
-        cmd.append("review the server, then ", el("code", null, `mcp-jail approve ${s.name}`));
-        p.append(cmd);
+        const act = el("div", "actions");
+        const btn = el("button", "btn primary", "Approve");
+        btn.type = "button";
+        const cmd = el("span", "muted small");
+        cmd.append("or ", el("code", null, `mcp-jail approve ${s.name}`));
+        act.append(btn, cmd);
+        p.append(act);
+        btn.addEventListener("click", () => {
+          // inline confirmation: no browser dialogs
+          state.confirming = true;
+          act.replaceChildren();
+          const yes = el("button", "btn danger", "Yes, accept the new definitions");
+          const no = el("button", "btn", "Cancel");
+          yes.type = no.type = "button";
+          act.append(el("span", "small", "Trust what the server now serves?"), yes, no);
+          no.addEventListener("click", () => { state.confirming = false; refreshState(); });
+          yes.addEventListener("click", async () => {
+            yes.disabled = no.disabled = true;
+            state.confirming = false;
+            try {
+              const r = await mutate(`/api/servers/${encodeURIComponent(s.name)}/approve`);
+              toast(`${s.name}: approved · ${r.lock.map(x => `${x.count} ${x.kind.replace(/_/g, " ")}`).join(", ")}`, "lock");
+            } catch (err) {
+              toast(`${s.name}: approve failed · ${err.message}`, "deny");
+            }
+            refreshState();
+          });
+        });
       }
       const paths = f("paths");
       if (s.policy) { const d = el("div"); d.title = s.policy; d.textContent = "policy " + s.policy; paths.append(d); }
@@ -157,6 +193,156 @@
     $("#events-meta").textContent = `${state.events.length} of up to ${r.limit} events from ${r.files.length} file${r.files.length === 1 ? "" : "s"}` + (r.skipped_lines ? ` · ${r.skipped_lines} unparsable line${r.skipped_lines === 1 ? "" : "s"} skipped` : "");
   }
 
+  // ---- report ------------------------------------------------------------
+  const SVGNS = "http://www.w3.org/2000/svg";
+  const svgEl = (tag, attrs, text) => { const e = document.createElementNS(SVGNS, tag); for (const [k, v] of Object.entries(attrs)) e.setAttribute(k, v); if (text != null) e.textContent = text; return e; };
+  const fmtN = (n) => n.toLocaleString();
+  const SERIES = [["allow", "allow"], ["deny", "deny"], ["blocked", "blocked"], ["ask", "ask"]];
+
+  function tile(cls, value, label) {
+    const t = el("div", "tile " + cls);
+    t.append(el("div", "v", fmtN(value)), el("div", "l", label));
+    return t;
+  }
+  function legend(target, items) {
+    const box = $(target);
+    box.replaceChildren();
+    for (const [cls, name] of items) { const s = el("span", null, name); s.style.setProperty("--c", `var(--${cls === "blocked" ? "deny" : cls})`); if (cls === "blocked") s.style.opacity = ".75"; box.append(s); }
+  }
+  // bucketMinutes parses a Go duration string such as "1h0m0s" or "168h0m0s".
+  function bucketMinutes(b) {
+    const m = /^(?:(\d+)h)?(?:(\d+)m)?(?:[\d.]+s)?$/.exec(b || "");
+    return m ? (Number(m[1] || 0) * 60 + Number(m[2] || 0)) : 60;
+  }
+  function timelineChart(rep) {
+    const svg = $("#timeline");
+    svg.replaceChildren();
+    const data = rep.timeline || [];
+    const W = Math.max(svg.clientWidth || 400, 200), H = 140, padL = 32, padB = 18, padT = 6;
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("height", H);
+    const max = Math.max(1, ...data.map(b => b.allow + b.deny + b.blocked + b.ask));
+    const plotW = W - padL - 4, plotH = H - padB - padT;
+    const slot = plotW / Math.max(data.length, 1);
+    const bw = Math.min(24, Math.max(2, slot - 2));
+    // gridlines: 0 and max, rounded
+    for (const v of [0, max]) {
+      const y = padT + plotH - (v / max) * plotH;
+      svg.append(svgEl("line", { x1: padL, x2: W - 4, y1: y, y2: y, class: "grid" }));
+      svg.append(svgEl("text", { x: padL - 6, y: y + 4, "text-anchor": "end" }, fmtN(v)));
+    }
+    data.forEach((b, i) => {
+      const x = padL + i * slot + (slot - bw) / 2;
+      let y = padT + plotH;
+      const total = b.allow + b.deny + b.blocked + b.ask;
+      for (const [k] of SERIES) {
+        const v = b[k];
+        if (!v) continue;
+        const h = (v / max) * plotH;
+        y -= h;
+        const r = svgEl("rect", { x, y, width: bw, height: Math.max(h - (y > padT + plotH - h ? 0 : 0), 1), class: k, rx: 0 });
+        svg.append(r);
+        y -= 2; // 2px surface gap between segments
+      }
+      const hit = svgEl("rect", { x: padL + i * slot, y: padT, width: slot, height: plotH, class: "hit" });
+      const when = new Date(b.start);
+      hit.append(svgEl("title", {}, `${when.toLocaleString([], { hour12: false })}\n${total} decisions: ${b.allow} allow, ${b.deny} deny, ${b.blocked} blocked, ${b.ask} ask`));
+      svg.append(hit);
+    });
+    if (data.length) {
+      const first = new Date(data[0].start), last = new Date(data[data.length - 1].start);
+      const mins = bucketMinutes(rep.bucket);
+      const f = (d) => mins < 60 ? d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit", hour12: false })
+        : mins < 1440 ? d.toLocaleString([], { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false })
+        : d.toLocaleDateString([], { month: "short", day: "numeric" });
+      svg.append(svgEl("text", { x: padL, y: H - 4 }, f(first)));
+      svg.append(svgEl("text", { x: W - 4, y: H - 4, "text-anchor": "end" }, f(last)));
+    }
+  }
+  function toolsChart(rep) {
+    const svg = $("#tools-chart");
+    svg.replaceChildren();
+    const rows = (rep.tools || []).slice(0, 8);
+    const W = Math.max(svg.clientWidth || 400, 200), rowH = 26, labelW = Math.min(160, W * 0.38), padR = 44;
+    const H = Math.max(rows.length * rowH, 20);
+    svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
+    svg.setAttribute("height", H);
+    const max = Math.max(1, ...rows.map(t => t.total));
+    const plotW = W - labelW - padR;
+    rows.forEach((t, i) => {
+      const y = i * rowH + 4, bh = 16;
+      const name = svgEl("text", { x: labelW - 8, y: y + 12, "text-anchor": "end" }, t.tool.length > 22 ? t.tool.slice(0, 21) + "…" : t.tool);
+      name.append(svgEl("title", {}, `${t.tool} (${t.server})`));
+      svg.append(name);
+      let x = labelW;
+      const parts = [["allow", t.allow], ["deny", t.deny], ["ask", t.ask_allow + t.ask_deny]];
+      for (const [k, v] of parts) {
+        if (!v) continue;
+        const w = (v / max) * plotW;
+        const r = svgEl("rect", { x, y, width: Math.max(w, 1), height: bh, class: k });
+        r.append(svgEl("title", {}, `${t.tool}: ${v} ${k}`));
+        svg.append(r);
+        x += w + 2;
+      }
+      const val = svgEl("text", { x: Math.min(x + 4, W - 2), y: y + 12, class: "val" }, fmtN(t.total));
+      svg.append(val);
+      const hit = svgEl("rect", { x: 0, y: y - 4, width: W, height: rowH, class: "hit" });
+      hit.append(svgEl("title", {}, `${t.tool} on ${t.server}\n${t.total} calls: ${t.allow} allow, ${t.deny} deny, ${t.ask_allow} asked+allowed, ${t.ask_deny} asked+denied` + (t.avg_ms ? `\navg ${t.avg_ms.toFixed(1)} ms` : "") + (t.errors ? `\n${t.errors} errors` : "")));
+      svg.insertBefore(hit, svg.firstChild);
+    });
+    $("#tools-more").textContent = (rep.tools || []).length > 8 ? `${rep.tools.length - 8} more tools in the CSV export` : (rows.length ? "" : "no tool calls in this range");
+  }
+  function renderReport(rep) {
+    const d = rep.decisions || {};
+    const tiles = $("#tiles");
+    tiles.replaceChildren(
+      tile("", rep.total, "events"),
+      tile("allow", d.allow || 0, "allowed"),
+      tile("deny", d.deny || 0, "denied by policy"),
+      tile("ask", (d.ask_allow || 0) + (d.ask_deny || 0), `asked · ${d.ask_allow || 0} yes / ${d.ask_deny || 0} no`),
+      tile("blocked", d.blocked || 0, "blocked (net, lock)"),
+      tile("lock", (rep.locks || []).length, "lock events"),
+    );
+    $("#report-range").textContent = `${fmtDate(rep.since)} → ${fmtDate(rep.until)}` + (rep.truncated ? " · truncated" : "");
+    const bm = bucketMinutes(rep.bucket);
+    $("#timeline-bucket").textContent = rep.bucket ? `per ${bm >= 1440 ? (bm / 1440) + "d" : bm >= 60 ? (bm / 60) + "h" : bm + "m"}` : "";
+    legend("#timeline-legend", SERIES);
+    legend("#tools-legend", [["allow", "allow"], ["deny", "deny"], ["ask", "ask"]]);
+    timelineChart(rep);
+    toolsChart(rep);
+    const hosts = $("#hosts");
+    hosts.replaceChildren();
+    for (const h of (rep.hosts || []).slice(0, 12)) {
+      const tr = el("tr");
+      const td = el("td", "host", h.host); td.title = `${h.host} · ${h.servers.join(", ")}`;
+      tr.append(td, el("td", "num", fmtN(h.allowed)), el("td", "num", fmtN(h.blocked)));
+      if (h.blocked) tr.children[2].append(" ", el("span", "pill blocked", "blocked"));
+      hosts.append(tr);
+    }
+    $("#hosts-empty").hidden = (rep.hosts || []).length > 0;
+    const reasons = $("#reasons");
+    reasons.replaceChildren();
+    for (const r of (rep.reasons || []).slice(0, 8)) {
+      const tr = el("tr");
+      const td = el("td", "reason", r.reason); td.title = r.reason;
+      tr.append(el("td", "num", fmtN(r.count)), td);
+      reasons.append(tr);
+    }
+    $("#reasons-empty").hidden = (rep.reasons || []).length > 0;
+  }
+  async function loadReport() {
+    const since = $("#report-since").value;
+    const qs = new URLSearchParams({ since });
+    const server = state.filters.server;
+    if (server) qs.set("server", server);
+    $("#report-csv").href = "/api/report?format=csv&" + qs;
+    $("#report-json").href = "/api/report?" + qs;
+    state.report = await api("/api/report?" + qs);
+    if (!$("#view-overview").hidden) renderReport(state.report);
+  }
+  $("#report-since").addEventListener("change", () => loadReport().catch(console.warn));
+  window.addEventListener("resize", () => { clearTimeout(window.__rr); window.__rr = setTimeout(() => loadReport().catch(console.warn), 200); });
+
   // ---- drawer ------------------------------------------------------------
   function openDrawer(e) {
     $("#drawer-title").textContent = `${e.kind || "event"} ${target(e)} ${e.decision || ""}`.trim();
@@ -186,10 +372,13 @@
       state.events.unshift(e);
       if (state.events.length > state.maxRows) state.events.length = state.maxRows;
       prepend(e);
+      if ($("#view-events").hidden && (e.decision === "deny" || e.decision === "blocked" || e.decision === "ask_deny")) { unseen++; badge(); }
       if (e.kind === "lock") { toast(`${e.server}: lock ${e.decision} ${e.reason || ""}`, "lock"); refreshState(); }
       else if (e.decision === "deny" || e.decision === "blocked" || e.decision === "ask_deny") toast(`${e.server}: ${e.kind} ${target(e)} ${e.decision}`, "deny");
       if (e.kind === "start" || e.kind === "exit") refreshState();
       $("#events-meta").textContent = `${state.events.length} events (live)`;
+      clearTimeout(state.reportTimer);
+      state.reportTimer = setTimeout(() => loadReport().catch(console.warn), 1500);
     });
   }
 
@@ -197,11 +386,85 @@
     try { renderServers(await api("/api/state")); } catch (err) { console.warn(err); }
   }
 
+  // ---- pending asks ------------------------------------------------------
+  // Polled every second while the page is visible. The poll itself matters:
+  // a jail waits for the dashboard only while someone is polling it.
+  const asks = { known: new Map(), timer: null };
+  function renderAsks(list, now) {
+    const box = $("#asks"), wrap = $("#ask-list");
+    const ids = new Set(list.map(a => `${a.server}/${a.id}`));
+    for (const [key, node] of asks.known) if (!ids.has(key)) { node.remove(); asks.known.delete(key); }
+    for (const a of list) {
+      const key = `${a.server}/${a.id}`;
+      let node = asks.known.get(key);
+      if (!node) {
+        node = el("div", "ask");
+        const what = el("div", "what");
+        what.append(el("span", "srv", a.server), "wants to call", el("span", "tool", a.tool), el("span", "muted small left"));
+        const buttons = el("div", "buttons");
+        const allow = el("button", "btn allow", "Allow"), deny = el("button", "btn danger", "Deny");
+        allow.type = deny.type = "button";
+        for (const [btn, decision] of [[allow, "allow"], [deny, "deny"]]) {
+          btn.addEventListener("click", async () => {
+            allow.disabled = deny.disabled = true;
+            try {
+              await mutate(`/api/servers/${encodeURIComponent(a.server)}/asks/${encodeURIComponent(a.id)}`, { decision });
+              toast(`${a.server}: ${a.tool} ${decision === "allow" ? "allowed" : "denied"}`, decision === "allow" ? "" : "deny");
+            } catch (err) {
+              toast(`${a.server}: answer failed · ${err.message}`, "deny");
+              allow.disabled = deny.disabled = false;
+            }
+            loadAsks().catch(() => {});
+          });
+        }
+        buttons.append(allow, deny);
+        node.append(what, buttons);
+        if (a.arguments !== undefined && a.arguments !== null) { const pre = el("pre", "args"); pre.textContent = typeof a.arguments === "string" ? a.arguments : JSON.stringify(a.arguments, null, 1); node.append(pre); }
+        wrap.append(node);
+        asks.known.set(key, node);
+        if (document.hidden) { try { new Notification("mcp-jail", { body: `${a.server} wants to call ${a.tool}` }); } catch { /* no permission */ } }
+      }
+      const left = Math.max(0, Math.round((new Date(a.deadline) - new Date(now)) / 1000));
+      node.querySelector(".left").textContent = a.deadline && left ? `${left}s left` : "";
+    }
+    box.hidden = list.length === 0;
+    if (list.length) document.title = `(${list.length}) mcp-jail`; else if (document.title.startsWith("(")) document.title = "mcp-jail";
+  }
+  async function loadAsks() {
+    const r = await api("/api/asks");
+    renderAsks(r.asks || [], r.now);
+  }
+  function scheduleAsks() {
+    clearTimeout(asks.timer);
+    asks.timer = setTimeout(async () => { try { await loadAsks(); } catch { /* retried next tick */ } scheduleAsks(); }, document.hidden ? 5000 : 1000);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAsks().catch(() => {}); });
+
+  // ---- tabs --------------------------------------------------------------
+  const TAB_KEY = "mcp-jail.tab";
+  let unseen = 0;
+  function showTab(name) {
+    for (const b of document.querySelectorAll(".tab")) b.setAttribute("aria-selected", String(b.dataset.tab === name));
+    for (const m of document.querySelectorAll("main[data-view]")) m.hidden = m.dataset.view !== name;
+    if (name === "events") { unseen = 0; badge(); }
+    if (name === "overview" && state.report) renderReport(state.report); // charts size to their panel; redraw when visible
+    try { localStorage.setItem(TAB_KEY, name); } catch { /* private mode */ }
+  }
+  function badge() {
+    const b = $("#events-badge");
+    b.hidden = unseen === 0;
+    b.textContent = unseen > 99 ? "99+" : String(unseen);
+  }
+  for (const b of document.querySelectorAll(".tab")) b.addEventListener("click", () => showTab(b.dataset.tab));
+  let initialTab = "overview";
+  try { initialTab = localStorage.getItem(TAB_KEY) || "overview"; } catch { /* ignore */ }
+
   // ---- wiring ------------------------------------------------------------
   let debounce;
-  filtersForm.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => loadEvents().catch(console.warn), 150); });
+  filtersForm.addEventListener("input", () => { clearTimeout(debounce); debounce = setTimeout(() => { loadEvents().catch(console.warn); loadReport().catch(console.warn); }, 150); });
   filtersForm.addEventListener("submit", (ev) => ev.preventDefault());
   setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 1000);
   setInterval(refreshState, 10000);
-  refreshState().then(loadEvents).catch(console.warn).finally(connect);
+  showTab(initialTab);
+  refreshState().then(loadEvents).then(loadReport).catch(console.warn).finally(() => { connect(); loadAsks().catch(() => {}); scheduleAsks(); });
 })();

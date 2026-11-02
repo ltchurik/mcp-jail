@@ -196,12 +196,83 @@ EV=$(http "$BASE/api/events?server=e2e-ui&decision=deny" "$TOKEN")
 assert "$EV" '"server":"e2e-ui","kind":"tool_call","tool":"delete_file","decision":"deny"'
 refute "$EV" '"tool":"read_file"'
 assert "$(http "$BASE/api/events?since=nonsense" "$TOKEN")" '^400$'
+REP=$(http "$BASE/api/report?since=1h&server=e2e-ui" "$TOKEN")
+assert "$REP" '"decisions":\{"allow":1,"created":1,"deny":1\}'
+assert "$REP" '"tool":"delete_file","allow":0,"deny":1'
+assert "$(http "$BASE/api/report?format=csv&server=e2e-ui" "$TOKEN")" '^e2e-ui,delete_file,1,0,1,0,0,0,$'
+TXT=$("$BIN" report --since 1h --server e2e-ui)
+assert "$TXT" 'decisions: +allow 1 +deny 1 +created 1'
+assert "$TXT" '^delete_file +e2e-ui +1 +0 +1 +0'
+assert "$("$BIN" report --json --server e2e-ui)" '"hosts": \[\]'
+"$BIN" report --since never 2>"$WORK/rep.err" && { echo "FAIL: bad --since accepted"; exit 1; }
+assert "$(cat "$WORK/rep.err")" '\-\-since'
 "$BIN" ui --listen 0.0.0.0:0 2>"$WORK/ui-bad.err" && { echo "FAIL: ui bound a non-loopback address"; exit 1; }
 assert "$(cat "$WORK/ui-bad.err")" 'localhost only'
 kill $JAIL; wait $JAIL 2>/dev/null || true; JAIL=
 for _ in $(seq 50); do "$BIN" ps | grep -q 'no running jails' && break; sleep 0.1; done
 assert "$("$BIN" ps)" 'no running jails'
 assert "$(http "$BASE/api/state" "$TOKEN")" '"name":"e2e-ui","running":false,"last_seen"'  # history survives exit
+# approve a rug-pull from the dashboard: change a tool description, run again, approve over the API
+edit 's/Report what the server can see/Report what the server sees/'
+OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
+assert "$OUT" '"id":2,"error":\{"code":-32002'
+assert "$(http "$BASE/api/state" "$TOKEN")" '"pending":\{"seen_at":"[^"]*","sections":\{"tools":\{"added":\[\],"removed":\[\],"changed":\["probe"\]\}\}\}'
+post() { # $1 = url, $2 = bearer token, $3... = extra "Header: value"; prints status then body
+  "$PY" -c 'import sys,urllib.request as u
+h={"Authorization":"Bearer "+sys.argv[2]}
+for x in sys.argv[3:]:
+    k,v=x.split(": ",1); h[k]=v
+req=u.Request(sys.argv[1],data=b"{}",headers=h,method="POST")
+try:
+    r=u.urlopen(req,timeout=5); print(r.status); print(r.read().decode())
+except u.HTTPError as e: print(e.code); print(e.read().decode())' "$@"; }
+assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN")" '^403'                                   # no same-origin proof
+assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN" "X-Mcp-Jail: 1" "Sec-Fetch-Site: cross-site")" '^403'
+assert "$("$BIN" diff e2e-ui)" 'changed probe'                                                           # refusals changed nothing
+assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN" "X-Mcp-Jail: 1")" '"name":"e2e-ui","lock":\[\{"kind":"tools","count":3'
+assert "$("$BIN" diff e2e-ui)" 'nothing pending'
+OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
+assert "$OUT" '"id": ?2, ?"result"'
+assert "$(http "$BASE/api/events?server=e2e-ui&kind=lock" "$TOKEN")" '"decision":"blocked","reason":"tools added=\[\] removed=\[\] changed=\[probe\]"'
+
+echo "== ask answered from the dashboard (no tty)"
+cat >"$WORK/ask.yml" <<YML
+name: e2e-ask
+network: { mode: none }
+tools: { default: ask, rules: { "read_*": allow } }
+ask: { timeout: 20s }
+lock: { enabled: false }
+audit: { path: $WORK/audit-ask.jsonl }
+sandbox: { disabled: true }
+YML
+DEL2='{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"delete_file","arguments":{"path":"second"}}}'
+# the dashboard must be polling before the ask arrives, so the feeder pauses after initialize
+( req "$INIT"; sleep 3; req "$DEL"; sleep 1; req "$DEL2"; sleep 30 ) | \
+  "$PY" -c 'import os,sys,subprocess;os.setsid();sys.exit(subprocess.call(sys.argv[1:]))' \
+  "$BIN" run --quiet --policy "$WORK/ask.yml" -- "$PY" "$WORK/echo-server.py" >"$WORK/ask.out" 2>"$WORK/stderr" &
+JAIL=$!
+# answer the first delete_file with allow and the second with deny, through the dashboard API
+"$PY" -c 'import json,sys,time,urllib.request as u
+base,tok=sys.argv[1],sys.argv[2]
+H={"Authorization":"Bearer "+tok,"X-Mcp-Jail":"1","Content-Type":"application/json"}
+seen={}
+deadline=time.time()+25
+while time.time()<deadline and len(seen)<2:
+    r=json.loads(u.urlopen(u.Request(base+"/api/asks",headers=H),timeout=5).read())
+    for a in r["asks"]:
+        if a["id"] in seen or a["tool"]!="delete_file": continue
+        dec="allow" if not seen else "deny"
+        u.urlopen(u.Request(base+"/api/servers/"+a["server"]+"/asks/"+a["id"],data=json.dumps({"decision":dec}).encode(),headers=H,method="POST"),timeout=5).read()
+        seen[a["id"]]=dec
+    time.sleep(0.3)
+print(json.dumps(seen))
+sys.exit(0 if len(seen)==2 else 1)' "$BASE" "$TOKEN" >"$WORK/answers" || { echo "FAIL: dashboard answering"; cat "$WORK/answers" "$WORK/stderr"; exit 1; }
+for _ in $(seq 100); do grep -q '"id": *14' "$WORK/ask.out" && break; sleep 0.1; done
+kill $JAIL 2>/dev/null; wait $JAIL 2>/dev/null || true; JAIL=
+assert "$(cat "$WORK/ask.out")" '"id": ?4, ?"result"'
+assert "$(cat "$WORK/ask.out")" '"id":14,"error":\{"code":-32003,"message":"mcp-jail: tool delete_file not approved \(dashboard\)'
+assert "$(cat "$WORK/audit-ask.jsonl")" '"tool":"delete_file","decision":"ask_allow","reason":"dashboard"'
+assert "$(cat "$WORK/audit-ask.jsonl")" '"tool":"delete_file","decision":"ask_deny","reason":"dashboard"'
 kill $UI; wait $UI 2>/dev/null || true; UI=
 
 if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then
