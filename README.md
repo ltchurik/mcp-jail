@@ -118,7 +118,7 @@ mcp-jail ui --open
 ## Dashboard
 
 ```sh
-mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
+mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command (secrets in it shown as ***)
 mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (--open launches the browser)
 mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
 mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, --server NAME
