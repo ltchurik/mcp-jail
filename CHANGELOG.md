@@ -1,8 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.4.1 — 2026-11-02
 
-Closes everything the v0.4.0 security review left open.
+Closes everything the v0.4.0 security review left open. No policy changes needed.
 
 ### Security
 
