@@ -262,6 +262,8 @@ If the server later changes any name, description, schema, prompt text or resour
 
 The client sees an error instead of that list, and every use of it (`tools/call`, `prompts/get`, `resources/read`) is refused until you look. The other lists keep working if they are unchanged.
 
+A `tools/call` or `prompts/get` for a name that the verified list does not contain is refused too, so a server cannot act on a tool the client never saw through the lock. A list the server pages (`nextCursor`) is forwarded page by page and verified as a whole once the last page is in; calls between pages are refused rather than parked.
+
 ```sh
 mcp-jail diff filesystem      # what changed, per section
 mcp-jail approve filesystem   # accept the new set (or click Approve in the dashboard)
