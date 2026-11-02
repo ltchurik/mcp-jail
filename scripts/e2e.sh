@@ -8,12 +8,13 @@ BIN=$(cd "$(dirname "$BIN")" && pwd)/$(basename "$BIN")   # absolute: some scena
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
-trap 'kill $LISTENER $APPROVER $JAIL $UI 2>/dev/null; wait $LISTENER $APPROVER $JAIL $UI 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
+trap 'kill $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null; wait $LISTENER $APPROVER $JAIL $UI $HTTPSRV 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
 LISTENER=
 APPROVER=
 JAIL=
 UI=
-cp examples/echo-server.py "$WORK/"
+HTTPSRV=
+cp examples/echo-server.py examples/echo-http-server.py "$WORK/"
 
 req() { printf '%s\n' "$@"; }
 INIT='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
@@ -143,14 +144,17 @@ assert "$(cat "$WORK/audit-webhook.jsonl")" '"tool":"delete_file","decision":"as
 echo "== wrap"
 cat >"$WORK/client.json" <<JSON
 {"mcpServers":{"echo":{"command":"$PY","args":["$WORK/echo-server.py","$WORK"],"env":{"FOO":"bar"}},
-               "remote":{"url":"https://example.com/mcp"}},"theme":"dark"}
+               "remote":{"url":"https://example.com/mcp"},"legacy":{"type":"sse","url":"https://example.com/sse"}},"theme":"dark"}
 JSON
 $BIN wrap --policy-dir "$WORK/policies" "$WORK/client.json" 2>"$WORK/wrap.err" || { cat "$WORK/wrap.err"; exit 1; }
 assert "$(cat "$WORK/wrap.err")" 'wrapped +echo'
-assert "$(cat "$WORK/wrap.err")" 'skipped +remote'
+assert "$(cat "$WORK/wrap.err")" 'wrapped +remote'
+assert "$(cat "$WORK/wrap.err")" 'skipped +legacy .*SSE'
 assert "$(cat "$WORK/client.json")" '^ *"'"$WORK"'/policies/echo.yml",$'
 assert "$(cat "$WORK/client.json")" '"theme": "dark"'
-assert "$(cat "$WORK/client.json")" '"url": "https://example.com/mcp"'
+assert "$(cat "$WORK/client.json")" '"url": "https://example.com/sse"'
+refute "$(cat "$WORK/client.json")" '"url": "https://example.com/mcp"'
+assert "$(cat "$WORK/policies/remote.yml")" 'url: "https://example.com/mcp"'
 [[ -f "$WORK/client.json.bak" ]] || { echo "FAIL: no backup"; exit 1; }
 assert "$(cat "$WORK/policies/echo.yml")" 'name: echo'
 assert "$(cat "$WORK/policies/echo.yml")" 'env: \[PATH, HOME, LANG, FOO\]'
@@ -163,6 +167,47 @@ while IFS= read -r line; do ARGV+=("$line"); done < <($PY -c 'import json,sys;s=
 OUT=$(req "$INIT" "$LIST" | "${ARGV[@]}" 2>"$WORK/stderr") || { echo "FAIL: wrapped server exited non-zero"; cat "$WORK/stderr"; exit 1; }
 assert "$OUT" '"id": ?2, ?"result"'
 assert "$($BIN locks)" '^echo .*3 tools'
+
+echo "== remote server (streamable http)"
+$PY "$WORK/echo-http-server.py" >"$WORK/hport" 2>"$WORK/http.log" &
+HTTPSRV=$!
+waitport "$WORK/hport" "streamable http echo server" || { cat "$WORK/http.log"; exit 1; }
+HPORT=$(cat "$WORK/hport")
+cat >"$WORK/r.yml" <<YML
+name: e2e-remote
+server:
+  url: http://127.0.0.1:$HPORT/mcp
+  headers: { X-E2E: "\${E2E_HDR}" }
+tools: { default: deny, rules: { "read_*": allow } }
+lock: { enabled: true }
+audit: { path: $WORK/audit-remote.jsonl }
+YML
+OUT=$(req "$INIT" "$LIST" "$READ" "$DEL" "$PLIST" "$PGET" | E2E_HDR=hdr-ok "$BIN" run --quiet --policy "$WORK/r.yml" 2>"$WORK/stderr") || { echo "FAIL: remote run exited non-zero"; cat "$WORK/stderr"; exit 1; }
+assert "$OUT" '"id":1,"result".*echo-http'                  # the jail compacts the server's JSON
+assert "$OUT" '"id":2,"result":\{"tools"'
+assert "$OUT" '"method":"notifications/message".*working'    # notification on the tools/call SSE stream
+assert "$OUT" 'called read_file with x-e2e=hdr-ok'          # policy header, value from the environment
+assert "$OUT" '"id":4,"error":\{"code":-32001'              # delete_file denied before it leaves the machine
+assert "$OUT" '"id":7,"result"'
+assert "$OUT" 'hello from GET'                              # server-initiated stream
+assert "$($BIN locks)" '^e2e-remote .*2 tools'
+assert "$(cat "$WORK/audit-remote.jsonl")" '"kind":"start".*remote \(streamable http\)'
+# a command next to server.url is refused
+if "$BIN" run --quiet --policy "$WORK/r.yml" -- "$PY" "$WORK/echo-server.py" </dev/null 2>"$WORK/stderr"; then echo "FAIL: command + server.url accepted"; exit 1; fi
+assert "$(cat "$WORK/stderr")" 'remote server'
+# wrap an http entry: the token moves to the client's env, the policy gets server.url
+cat >"$WORK/client-http.json" <<JSON
+{"mcpServers":{"rem":{"type":"http","url":"http://127.0.0.1:$HPORT/mcp","headers":{"Authorization":"Bearer e2e-token"}}}}
+JSON
+$BIN wrap --policy-dir "$WORK/policies" "$WORK/client-http.json" 2>"$WORK/wrap.err" || { cat "$WORK/wrap.err"; exit 1; }
+assert "$(cat "$WORK/wrap.err")" 'wrapped +rem'
+assert "$(cat "$WORK/client-http.json")" '"REM_AUTHORIZATION": "Bearer e2e-token"'
+assert "$(cat "$WORK/policies/rem.yml")" 'Authorization: "\$\{REM_AUTHORIZATION\}"'
+refute "$(cat "$WORK/policies/rem.yml")" 'e2e-token'
+ARGV=(); while IFS= read -r line; do ARGV+=("$line"); done < <($PY -c 'import json,sys;s=json.load(open(sys.argv[1]))["mcpServers"]["rem"];print("\n".join([s["command"]]+s["args"]))' "$WORK/client-http.json")
+OUT=$(req "$INIT" "$LIST" "$READ" | REM_AUTHORIZATION="Bearer e2e-token" "${ARGV[@]}" 2>"$WORK/stderr") || { echo "FAIL: wrapped remote exited non-zero"; cat "$WORK/stderr"; exit 1; }
+assert "$OUT" 'called read_file with authorization=Bearer e2e-token'
+kill $HTTPSRV 2>/dev/null; wait $HTTPSRV 2>/dev/null || true
 
 echo "== ps / ui dashboard"
 cat >"$WORK/ui.yml" <<YML

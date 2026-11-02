@@ -104,6 +104,27 @@ type Policy struct {
 		// Env lists environment variables passed through to the jailed server.
 		Env []string `yaml:"env"`
 	} `yaml:"sandbox"`
+
+	// Server, when url is set, is a remote MCP server reached over Streamable
+	// HTTP instead of a command started in a sandbox: `run` takes no command,
+	// the sandbox, filesystem and network sections do not apply (the jail
+	// itself talks to exactly this URL), and tools, ask, lock and audit work
+	// as for a local server. Plain http is accepted for localhost only;
+	// redirects are never followed; headers go to this URL and nowhere else.
+	Server struct {
+		URL     string            `yaml:"url"`
+		Headers map[string]string `yaml:"headers"` // values support ${ENV} expansion
+	} `yaml:"server"`
+}
+
+// Remote reports whether the policy names a remote server (server.url).
+func (p *Policy) Remote() bool { return p.Server.URL != "" }
+
+// reservedHeaders are set by the transport and cannot come from the policy.
+var reservedHeaders = map[string]bool{
+	"host": true, "content-length": true, "content-type": true, "accept": true,
+	"mcp-session-id": true, "mcp-protocol-version": true, "last-event-id": true,
+	"connection": true, "transfer-encoding": true,
 }
 
 // Rule is the value of a tools.rules entry: either a bare decision
@@ -263,6 +284,28 @@ func (p *Policy) Validate() error {
 		}
 		for k, v := range w.Headers {
 			w.Headers[k] = os.ExpandEnv(v)
+		}
+	}
+	if s := &p.Server; s.URL != "" {
+		u, err := url.Parse(s.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("server.url must be an http(s) URL, got %q", s.URL)
+		}
+		if u.User != nil {
+			return errors.New("server.url: credentials in the URL are not allowed; use server.headers")
+		}
+		if u.Scheme == "http" && !loopbackName(u.Hostname()) {
+			return fmt.Errorf("server.url: plain http is only allowed for localhost, got %q", s.URL)
+		}
+		for k, v := range s.Headers {
+			v = os.ExpandEnv(v)
+			if k == "" || hasControl(k) || strings.ContainsAny(k, " :") || hasControl(v) {
+				return fmt.Errorf("server.headers[%q]: not a valid header", k)
+			}
+			if reservedHeaders[strings.ToLower(k)] {
+				return fmt.Errorf("server.headers[%s]: set by mcp-jail, cannot be overridden", k)
+			}
+			s.Headers[k] = v
 		}
 	}
 	return nil
@@ -542,4 +585,11 @@ audit:
 sandbox:
   disabled: false
   env: [PATH, HOME, LANG]
+
+# A remote server over Streamable HTTP instead of a command: set server.url
+# (https, or http for localhost) and run without a command after --. The
+# sandbox, filesystem and network sections then do not apply.
+# server:
+#   url: https://mcp.example.com/mcp
+#   headers: { Authorization: "Bearer ${MCP_EXAMPLE_TOKEN}" }
 `

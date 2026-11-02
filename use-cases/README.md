@@ -14,6 +14,7 @@ see in the audit log or the dashboard when it works.
 | [Approve dangerous calls from Slack or a web form](approvals-without-a-terminal.md) | keep `ask` useful in Claude Desktop and in CI, where there is no terminal | `ask.webhook`, timeout ⇒ deny |
 | [Wrap every server your client already has](wrap-an-existing-client-config.md) | jail all of `claude_desktop_config.json` / `.cursor/mcp.json` / `.mcp.json` in one go | `wrap`, generated policies |
 | [Watch, report and hand over](monitor-report-and-hand-over.md) | see what your servers did today, export it for a review, or ship it to your log pipeline | `ps`, `ui`, `report`, JSONL audit |
+| [Jail a remote server over Streamable HTTP](remote-server-over-streamable-http.md) | put a hosted MCP server (Linear, GitHub, your own) behind the same policy, lock and audit as a local one, token kept out of the policy file | `server.url`, `server.headers`, `wrap` for `type: http` |
 
 The policies here are deliberately strict. Loosen them one key at a time and
 let the audit log tell you what the server really needs: every refusal has a

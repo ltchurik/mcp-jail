@@ -279,3 +279,40 @@ func TestWebhookPlainHTTPOnlyForLoopback(t *testing.T) {
 		}
 	}
 }
+
+func TestServerValidate(t *testing.T) {
+	t.Setenv("TOK", "secret")
+	p := Default()
+	p.Server.URL = "https://mcp.example.com/mcp"
+	p.Server.Headers = map[string]string{"Authorization": "Bearer ${TOK}"}
+	if err := p.Validate(); err != nil || p.Server.Headers["Authorization"] != "Bearer secret" || !p.Remote() {
+		t.Fatalf("%v %+v", err, p.Server)
+	}
+	for _, bad := range []func(*Policy){
+		func(p *Policy) { p.Server.URL = "http://mcp.example.com/mcp" },
+		func(p *Policy) { p.Server.URL = "ftp://x/mcp" },
+		func(p *Policy) { p.Server.URL = "https://user:pw@mcp.example.com/mcp" },
+		func(p *Policy) {
+			p.Server.URL = "https://x/mcp"
+			p.Server.Headers = map[string]string{"Mcp-Session-Id": "x"}
+		},
+		func(p *Policy) { p.Server.URL = "https://x/mcp"; p.Server.Headers = map[string]string{"X-A": "a\nb"} },
+		func(p *Policy) {
+			p.Server.URL = "https://x/mcp"
+			p.Server.Headers = map[string]string{"bad header": "a"}
+		},
+	} {
+		p := Default()
+		bad(p)
+		if err := p.Validate(); err == nil {
+			t.Errorf("accepted %+v", p.Server)
+		}
+	}
+	for _, ok := range []string{"http://localhost:3000/mcp", "http://127.0.0.1:3000/mcp", "http://[::1]:3000/mcp"} {
+		p := Default()
+		p.Server.URL = ok
+		if err := p.Validate(); err != nil {
+			t.Errorf("%s: %v", ok, err)
+		}
+	}
+}

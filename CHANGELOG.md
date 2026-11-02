@@ -1,5 +1,32 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Streamable HTTP transport: a policy with `server.url` (and optional
+  `server.headers`, `${VAR}` expanded) jails a remote MCP server. The client
+  keeps talking stdio to `mcp-jail`; the jail speaks Streamable HTTP to the
+  server (POST per message, JSON or SSE answers, `Mcp-Session-Id`,
+  `MCP-Protocol-Version`, a standing GET stream, DELETE on exit) and applies
+  policy, argument constraints, `ask`, lock and audit exactly as for a local
+  server. `https` is required outside localhost, redirects are refused, special
+  address ranges are refused unless written literally, headers never leave
+  `server.url`. HTTP errors, unusable bodies and expired sessions reach the
+  client as JSON-RPC error `-32005` and the audit log as `protocol` events.
+- `mcp-jail wrap` converts `{"type": "http", "url": …, "headers": …}` entries:
+  credential-looking headers move to the entry's `env`, the policy references
+  them as `${NAME}`. Legacy `type: sse` entries are left alone.
+- `examples/echo-http-server.py`, a small Streamable HTTP server for trying
+  this out; the e2e suite runs the remote path and the HTTP `wrap` on both CI
+  platforms.
+
+### Changed
+
+- After one side of the proxy closes, in-flight answers are still forwarded
+  for up to two seconds, so a client that shuts its input right after its
+  last request (scripts, one-shot tools) gets the answers.
+
 ## v0.4.1 — 2026-11-02
 
 Closes everything the v0.4.0 security review left open. No policy changes needed.

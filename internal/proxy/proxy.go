@@ -125,6 +125,7 @@ func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer,
 	go func() { errc <- p.pump(clientIn, p.fromClient) }()
 	go func() { errc <- p.pump(serverOut, p.fromServer) }()
 	err := <-errc
+	p.drain(errc, drainGrace)
 	p.lmu.Lock()
 	for _, st := range p.sections {
 		st.tainted = true // release anyone parked in waitVerified with a deny
@@ -135,6 +136,34 @@ func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer,
 		_ = p.tty.Close()
 	}
 	return err
+}
+
+// drainGrace is how long Run keeps forwarding answers after one side
+// closed: a client that shuts its input right after its last request (a
+// script, a one-shot tool) still gets the answers in flight.
+const drainGrace = 2 * time.Second
+
+func (p *Proxy) drain(errc <-chan error, grace time.Duration) {
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	tick := time.NewTicker(20 * time.Millisecond)
+	defer tick.Stop()
+	for {
+		p.pmu.Lock()
+		n := len(p.pending)
+		p.pmu.Unlock()
+		if n == 0 {
+			return
+		}
+		select {
+		case e := <-errc: // the other side ended too; nothing more will come
+			_ = e
+			return
+		case <-deadline.C:
+			return
+		case <-tick.C:
+		}
+	}
 }
 
 func (p *Proxy) pump(r io.Reader, handle func([]byte)) error {
