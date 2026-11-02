@@ -95,6 +95,12 @@ tools:
       args:
         url: { host: [network.allow] }       # host in network.allow (or list patterns)
 
+ask:                        # how `ask` is answered without a terminal
+  webhook:
+    url: https://approvals.example.internal/mcp-jail
+    timeout: 60s            # no answer in time = deny
+    headers: { Authorization: "Bearer ${APPROVER_TOKEN}" }
+
 lock:
   enabled: true             # refuse to run if tool definitions change
 
@@ -118,7 +124,7 @@ sandbox:
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
-| `tools: ask` | Prompt on `/dev/tty`; no tty ⇒ denied | **Hard** |
+| `tools: ask` | Prompt on `/dev/tty`; without a tty, POST to `ask.webhook` and wait for `{"decision":"allow"}`; no tty and no webhook, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
@@ -145,6 +151,17 @@ jail (netns: lo only)                          host (mcp-jail process)
 - Needs unprivileged user namespaces (same requirement as bubblewrap itself) and bubblewrap ≥ 0.5 for `--cap-add`. No `CAP_NET_ADMIN`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
 
 Inside the jail the shim briefly runs as the user namespace's root so it can bind the privileged ports; the server itself is started in a nested user namespace under your normal uid/gid with no capabilities.
+
+## Headless approvals
+
+Claude Desktop and Cursor start servers without a terminal, so `ask` would always deny. Configure `ask.webhook` and mcp-jail POSTs each pending call:
+
+```json
+{"server":"filesystem","tool":"write_file","arguments":{"path":"/home/me/projects/a.txt"},
+ "ts":"2026-11-02T10:00:00Z","text":"[mcp-jail] filesystem wants to call write_file {\"path\":...}"}
+```
+
+The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else — a timeout, a non-200 status, a body that is not a decision, a connection error — denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is a deny, so pair it with a small approval service when you want to say yes. A terminal, when there is one, still takes precedence over the webhook.
 
 ## Rug-pull lock
 
@@ -236,7 +253,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 
 - [x] Hard egress allowlist on Linux (v0.2)
 - [x] macOS sandbox via `sandbox-exec` profiles (v0.2)
-- [ ] `ask` via webhook/approval inbox for headless use
+- [x] `ask` via webhook for headless use (v0.2)
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)

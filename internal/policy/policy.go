@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -61,6 +62,21 @@ type Policy struct {
 		Default Decision        `yaml:"default"`
 		Rules   map[string]Rule `yaml:"rules"` // exact name or glob (filepath.Match)
 	} `yaml:"tools"`
+
+	Ask struct {
+		// Webhook answers `ask` decisions when there is no terminal (headless
+		// clients such as Claude Desktop). mcp-jail POSTs a JSON description of
+		// the call and expects {"decision":"allow"} back within Timeout;
+		// anything else — a deny, a timeout, an error, an unexpected body — is
+		// a deny. The same payload carries a "text" field, so a Slack incoming
+		// webhook URL yields a notification (and, since Slack answers "ok", a
+		// deny).
+		Webhook struct {
+			URL     string            `yaml:"url"`
+			Timeout time.Duration     `yaml:"timeout"` // default 60s, max 10m
+			Headers map[string]string `yaml:"headers"` // values support ${ENV} expansion
+		} `yaml:"webhook"`
+	} `yaml:"ask"`
 
 	Lock struct {
 		// Enabled turns on rug-pull protection: tools/list is hashed on first run
@@ -199,6 +215,23 @@ func (p *Policy) Validate() error {
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
 	p.Filesystem.ReadWrite = expandAll(p.Filesystem.ReadWrite)
 	p.Audit.Path = expand(p.Audit.Path)
+	if w := &p.Ask.Webhook; w.URL != "" {
+		u, err := url.Parse(w.URL)
+		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
+			return fmt.Errorf("ask.webhook.url must be an http(s) URL, got %q", w.URL)
+		}
+		switch {
+		case w.Timeout == 0:
+			w.Timeout = 60 * time.Second
+		case w.Timeout < 0:
+			return fmt.Errorf("ask.webhook.timeout must be positive")
+		case w.Timeout > 10*time.Minute:
+			return fmt.Errorf("ask.webhook.timeout must be at most 10m")
+		}
+		for k, v := range w.Headers {
+			w.Headers[k] = os.ExpandEnv(v)
+		}
+	}
 	return nil
 }
 
@@ -404,6 +437,14 @@ tools:
     #   decision: allow
     #   args:
     #     url: { host: [network.allow] }          # host must be in network.allow
+
+# ask without a terminal (Claude Desktop, Cursor): POST the call to a webhook
+# that answers {"decision":"allow"} within the timeout; anything else denies.
+# ask:
+#   webhook:
+#     url: https://approvals.example.internal/mcp-jail
+#     timeout: 60s
+#     headers: { Authorization: "Bearer ${MCP_JAIL_WEBHOOK_TOKEN}" }
 
 lock:
   enabled: true   # refuse to run if tool definitions change (rug-pull)

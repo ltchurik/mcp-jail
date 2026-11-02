@@ -20,6 +20,8 @@ In scope — anything that lets a jailed server do what the policy says it can't
 
 - escaping the filesystem scope or the network namespace
 - a `tools/call` reaching the server despite a `deny` / unanswered `ask`
+  (including an `ask.webhook` that timed out, failed or answered anything
+  but `{"decision":"allow"}`)
 - a changed tool, prompt or resource set passing the rug-pull lock
 - tampering with or suppressing the audit log from inside the jail
 

@@ -7,8 +7,9 @@ BIN=${BIN:-./bin/mcp-jail}
 PY=$(command -v python3)
 export MCP_JAIL_HOME=$(mktemp -d)
 WORK=$(mktemp -d)
-trap 'kill $LISTENER 2>/dev/null; wait $LISTENER 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
+trap 'kill $LISTENER $APPROVER 2>/dev/null; wait $LISTENER $APPROVER 2>/dev/null || true; rm -rf "$MCP_JAIL_HOME" "$WORK" "$HOME"/.mcp-jail-e2e-$$' EXIT
 LISTENER=
+APPROVER=
 cp examples/echo-server.py "$WORK/"
 
 req() { printf '%s\n' "$@"; }
@@ -99,6 +100,39 @@ assert "$($BIN diff e2e)" 'changed summarize'
 $BIN approve e2e >/dev/null
 OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?6, ?"result"'
+
+echo "== ask via webhook (no tty)"
+# approver: allow read_*, deny everything else; records what it saw
+$PY -c 'import http.server as h,json,sys
+class Q(h.BaseHTTPRequestHandler):
+    def do_POST(self):
+        req=json.loads(self.rfile.read(int(self.headers["Content-Length"])))
+        ans={"decision":"allow" if req["tool"].startswith("read_") else "deny","reason":"e2e approver"}
+        sys.stderr.write(json.dumps(req)+"\n"); sys.stderr.flush()
+        body=json.dumps(ans).encode(); self.send_response(200); self.send_header("Content-Length",str(len(body))); self.end_headers(); self.wfile.write(body)
+    def log_message(self,*a): pass
+s=h.HTTPServer(("127.0.0.1",0),Q); print(s.server_address[1],flush=True); s.serve_forever()' >"$WORK/aport" 2>"$WORK/approver.log" &
+APPROVER=$!
+for _ in $(seq 50); do [[ -s "$WORK/aport" ]] && break; sleep 0.1; done
+APORT=$(cat "$WORK/aport")
+cat >"$WORK/w.yml" <<YML
+name: e2e-webhook
+network: { mode: none }
+tools: { default: ask }
+ask: { webhook: { url: "http://127.0.0.1:$APORT/approve", timeout: 5s, headers: { X-Token: "\${E2E_TOKEN}" } } }
+lock: { enabled: false }
+audit: { path: $WORK/audit-webhook.jsonl }
+sandbox: { disabled: true }
+YML
+# a new session has no controlling terminal, so `ask` cannot fall back to /dev/tty
+OUT=$(req "$INIT" "$READ" "$DEL" | E2E_TOKEN=sekrit $PY -c 'import os,sys,subprocess;os.setsid();sys.exit(subprocess.call(sys.argv[1:]))' \
+  "$BIN" run --quiet --policy "$WORK/w.yml" -- "$PY" "$WORK/echo-server.py" 2>"$WORK/stderr") || { cat "$WORK/stderr"; exit 1; }
+kill $APPROVER 2>/dev/null; wait $APPROVER 2>/dev/null || true
+assert "$OUT" '"id": ?3, ?"result"'
+assert "$OUT" '"id":4,"error":\{"code":-32003,"message":"mcp-jail: tool delete_file not approved \(webhook: e2e approver\)'
+assert "$(cat "$WORK/approver.log")" '"server": "e2e-webhook", "tool": "read_file", "arguments": \{"path"'
+assert "$(cat "$WORK/audit-webhook.jsonl")" '"tool":"read_file","decision":"ask_allow","reason":"webhook"'
+assert "$(cat "$WORK/audit-webhook.jsonl")" '"tool":"delete_file","decision":"ask_deny","reason":"webhook: e2e approver"'
 
 echo "== wrap"
 cat >"$WORK/client.json" <<JSON

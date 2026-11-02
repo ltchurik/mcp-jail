@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDecide(t *testing.T) {
@@ -183,5 +184,40 @@ func TestCheckArgs(t *testing.T) {
 				t.Errorf("%s %s: reason should name the argument: %v", tool, args, err)
 			}
 		}
+	}
+}
+
+func TestAskWebhookValidate(t *testing.T) {
+	t.Setenv("TOK", "secret")
+	p := Default()
+	p.Ask.Webhook.URL = "https://hooks.example/x"
+	p.Ask.Webhook.Headers = map[string]string{"Authorization": "Bearer ${TOK}"}
+	if err := p.Validate(); err != nil {
+		t.Fatal(err)
+	}
+	if p.Ask.Webhook.Timeout != 60*time.Second || p.Ask.Webhook.Headers["Authorization"] != "Bearer secret" {
+		t.Fatalf("defaults/expansion: %+v", p.Ask.Webhook)
+	}
+	for _, bad := range []func(*Policy){
+		func(p *Policy) { p.Ask.Webhook.URL = "ftp://x" },
+		func(p *Policy) { p.Ask.Webhook.URL = "https://" },
+		func(p *Policy) { p.Ask.Webhook.URL = "https://x"; p.Ask.Webhook.Timeout = -time.Second },
+		func(p *Policy) { p.Ask.Webhook.URL = "https://x"; p.Ask.Webhook.Timeout = time.Hour },
+	} {
+		p := Default()
+		bad(p)
+		if err := p.Validate(); err == nil {
+			t.Errorf("expected error for %+v", p.Ask.Webhook)
+		}
+	}
+	// yaml duration strings parse
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.yml")
+	if err := os.WriteFile(path, []byte("ask: { webhook: { url: https://x.example/h, timeout: 90s } }\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lp, err := Load(path)
+	if err != nil || lp.Ask.Webhook.Timeout != 90*time.Second {
+		t.Fatalf("load: %v %+v", err, lp)
 	}
 }

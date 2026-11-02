@@ -26,6 +26,9 @@ type Proxy struct {
 	Policy *policy.Policy
 	Audit  *audit.Logger
 	Logf   func(format string, args ...any) // stderr logger
+	// TTYPath is the terminal used for `ask`; "" means /dev/tty. Tests point
+	// it at a path that does not exist.
+	TTYPath string
 
 	client io.Writer // to MCP client
 	server io.Writer // to jailed server
@@ -272,11 +275,19 @@ func (p *Proxy) setLock(k lock.Kind, verified, tainted bool) {
 	p.lmu.Unlock()
 }
 
-// ask prompts on the controlling terminal. Without one, the answer is no.
+// ask decides an `ask` call: on the controlling terminal when there is one,
+// otherwise through the webhook when configured, otherwise no.
 func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 	if p.tty == nil {
-		f, err := os.OpenFile("/dev/tty", os.O_RDWR, 0)
+		path := p.TTYPath
+		if path == "" {
+			path = "/dev/tty"
+		}
+		f, err := os.OpenFile(path, os.O_RDWR, 0)
 		if err != nil {
+			if p.Policy.Ask.Webhook.URL != "" {
+				return p.askWebhook(tc)
+			}
 			return false, "no tty"
 		}
 		p.tty = f

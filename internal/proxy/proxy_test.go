@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -66,11 +67,13 @@ func startWith(t *testing.T, p *policy.Policy, tools string, extra map[string]st
 	sIn, sOut := fakeServer(t, tools, extra)
 	cInR, cInW := io.Pipe()
 	cOutR, cOutW := io.Pipe()
-	px := &Proxy{Policy: p, Logf: t.Logf}
+	px := &Proxy{Policy: p, Logf: t.Logf, TTYPath: filepath.Join(t.TempDir(), "no-such-tty")}
 	done := make(chan error, 1)
 	go func() { done <- px.Run(cInR, cOutW, sIn, sOut); _ = cOutW.Close() }()
-	return &session{t: t, toCli: cInW, fromCl: bufio.NewReader(cOutR), done: done}
+	return &session{t: t, toCli: cInW, fromCl: newReader(cOutR), done: done}
 }
+
+func newReader(r io.Reader) *bufio.Reader { return bufio.NewReader(r) }
 
 func (s *session) call(req string) *jsonrpc.Message {
 	s.t.Helper()
