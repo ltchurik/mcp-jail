@@ -162,3 +162,17 @@ func TestComputeRefusesDuplicateNames(t *testing.T) {
 		t.Fatalf("err = %v", err)
 	}
 }
+
+func TestParsePage(t *testing.T) {
+	pg, err := ParsePage(Tools, raw(`{"tools":[{"name":"a"}],"nextCursor":"abc"}`))
+	if err != nil || len(pg.Items) != 1 || pg.Next != "abc" {
+		t.Fatalf("paged: %+v %v", pg, err)
+	}
+	pg, err = ParsePage(Tools, raw(`{"tools":[],"nextCursor":null}`))
+	if err != nil || pg.Next != "" {
+		t.Fatalf("null cursor: %+v %v", pg, err)
+	}
+	if _, err := ParsePage(Tools, raw(`{"tools":[],"nextCursor":7}`)); err == nil {
+		t.Fatal("non-string cursor must fail")
+	}
+}

@@ -65,7 +65,11 @@ Scanners pattern-match descriptions and produce [mostly false positives](https:/
 go install github.com/ltchurik/mcp-jail/cmd/mcp-jail@latest
 ```
 
-Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached.
+Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
+
+```sh
+gh attestation verify mcp-jail_<version>_linux_amd64.tar.gz --repo ltchurik/mcp-jail
+```
 
 Linux sandboxing needs bubblewrap:
 
@@ -261,6 +265,8 @@ If the server later changes any name, description, schema, prompt text or resour
 ```
 
 The client sees an error instead of that list, and every use of it (`tools/call`, `prompts/get`, `resources/read`) is refused until you look. The other lists keep working if they are unchanged.
+
+A `tools/call` or `prompts/get` for a name that the verified list does not contain is refused too, so a server cannot act on a tool the client never saw through the lock. A list the server pages (`nextCursor`) is forwarded page by page and verified as a whole once the last page is in; calls between pages are refused rather than parked.
 
 ```sh
 mcp-jail diff filesystem      # what changed, per section
