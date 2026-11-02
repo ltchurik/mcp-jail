@@ -64,6 +64,14 @@ mcp-jail wrap .mcp.json                                                         
 
 Every stdio server in `mcpServers` is rerouted through `mcp-jail run` and gets a starter policy in `~/.config/mcp-jail/policies/<name>.yml` (network `none`, directories from the command line writable, npx/uvx caches, `env` keys passed through, `ask` for unknown tools). The original file is kept as `.bak`; remote (`url`) servers and servers already wrapped are left alone, and existing policies are never overwritten without `--force`. `--dry-run` prints the result instead of writing it. Review the policies, then restart the client.
 
+## Use cases
+
+Worked scenarios with a complete policy each, in [`use-cases/`](use-cases/README.md):
+scope the filesystem server to one project, try an unknown server safely, give
+an API server exactly one host and its token, keep a fetch tool on a leash,
+catch a rug-pull, approve calls from Slack or a web form, wrap an existing
+client config, and watch, report and hand over.
+
 ## Policy
 
 ```yaml
