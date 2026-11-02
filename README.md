@@ -65,7 +65,11 @@ Scanners pattern-match descriptions and produce [mostly false positives](https:/
 go install github.com/ltchurik/mcp-jail/cmd/mcp-jail@latest
 ```
 
-Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached.
+Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
+
+```sh
+gh attestation verify mcp-jail_<version>_linux_amd64.tar.gz --repo ltchurik/mcp-jail
+```
 
 Linux sandboxing needs bubblewrap:
 
