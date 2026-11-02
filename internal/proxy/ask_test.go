@@ -230,3 +230,26 @@ func TestWebhookExplicitDenyIsFinal(t *testing.T) {
 		t.Fatalf("got %s after %s", m.Raw, time.Since(start))
 	}
 }
+
+func TestWebhookRedirectIsNotADecision(t *testing.T) {
+	var leaked atomic.Value
+	leaked.Store("")
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		leaked.Store(r.Header.Get("Authorization"))
+		_, _ = io.WriteString(w, `{"decision":"allow"}`)
+	}))
+	defer target.Close()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL, http.StatusTemporaryRedirect)
+	}))
+	defer srv.Close()
+	s := startNoTTY(t, askPolicy(t, srv.URL, 5*time.Second))
+	defer s.close()
+	m := s.call(callReq)
+	if m.Error == nil || m.Error.Code != jsonrpc.CodeAskRejected || !strings.Contains(m.Error.Message, "status 307") {
+		t.Fatalf("redirect must deny: %s", m.Raw)
+	}
+	if leaked.Load() != "" {
+		t.Fatalf("headers followed the redirect: %v", leaked.Load())
+	}
+}

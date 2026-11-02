@@ -67,6 +67,15 @@ Findings of an internal security review, all fixed:
   characters (it names lock, registry and socket files); control characters
   are rejected in paths and hosts and neutralised in the macOS profile.
 
+- The egress relay (Linux) and the `HTTP_PROXY` filter now check what an
+  allowed name resolves to: a loopback, private, link-local, CGNAT,
+  multicast or unspecified address is refused unless that literal address
+  is in `network.allow`. Before, whoever ran the DNS of an allowed host could
+  point the jail at the host's own loopback or LAN services. The filter's
+  upstream transport no longer honours the host's `HTTP_PROXY`.
+- `ask.webhook.url` must be `https` unless it names localhost; the webhook
+  client no longer follows redirects, so the configured headers go to the
+  configured URL only and a 3xx is a deny.
 - Dashboard: a tool name promoted to a rule is escaped so a server that
   names a tool `*` cannot turn *Always allow* into a rule for every tool;
   `Origin` is parsed instead of prefix-matched; ask ids in URLs are

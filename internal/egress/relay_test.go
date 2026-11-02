@@ -75,13 +75,63 @@ func newRig(t *testing.T, allow []string) *rig {
 }
 
 // redirect makes the relay dial upstream whenever the shim asks for name.
+// It stands in for DNS, so it bypasses the resolved-address guard: the test
+// servers live on the loopback, which the guard would (rightly) refuse.
 func (r *rig) redirect(name, upstream string) {
+	inner := (&net.Dialer{Timeout: 5 * time.Second}).DialContext
+	r.relay.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		if h, _, _ := net.SplitHostPort(addr); h == name {
+			addr = upstream
+		}
+		return inner(ctx, network, addr)
+	}
+}
+
+// resolveTo is redirect with the guard kept: what the relay does when an
+// allowed name really resolves to upstream.
+func (r *rig) resolveTo(name, upstream string) {
 	inner := r.relay.dial
 	r.relay.dial = func(ctx context.Context, network, addr string) (net.Conn, error) {
 		if h, _, _ := net.SplitHostPort(addr); h == name {
 			addr = upstream
 		}
 		return inner(ctx, network, addr)
+	}
+}
+
+func TestAllowedNameResolvingToLoopbackIsRefused(t *testing.T) {
+	up := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, "secret local service")
+	}))
+	defer up.Close()
+	r := newRig(t, []string{"api.allowed.test"})
+	r.resolveTo("api.allowed.test", up.Listener.Addr().String())
+	pu, _ := url.Parse("http://" + r.proxyAddr)
+	cl := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu)}, Timeout: 5 * time.Second}
+	resp, err := cl.Get("http://api.allowed.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, _ := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if resp.StatusCode == http.StatusOK || strings.Contains(string(b), "secret") {
+		t.Fatalf("reached a loopback service through an allowed name: %d %q", resp.StatusCode, b)
+	}
+	if !strings.Contains(string(b), "local or private address") {
+		t.Fatalf("unexpected refusal: %q", b)
+	}
+	// with the literal address listed, the same resolution is fine
+	r2 := newRig(t, []string{"api.allowed.test", "127.0.0.1"})
+	r2.resolveTo("api.allowed.test", up.Listener.Addr().String())
+	pu2, _ := url.Parse("http://" + r2.proxyAddr)
+	cl2 := &http.Client{Transport: &http.Transport{Proxy: http.ProxyURL(pu2)}, Timeout: 5 * time.Second}
+	resp, err = cl2.Get("http://api.allowed.test/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("listed loopback refused: %d", resp.StatusCode)
 	}
 }
 
