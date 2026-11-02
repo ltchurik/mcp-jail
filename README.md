@@ -104,6 +104,7 @@ tools:
         url: { host: [network.allow] }       # host in network.allow (or list patterns)
 
 ask:                        # how `ask` is answered without a terminal
+  timeout: 60s              # how long to wait for the dashboard (mcp-jail ui)
   webhook:
     url: https://approvals.example.internal/mcp-jail
     timeout: 60s            # no answer in time = deny
@@ -132,7 +133,7 @@ sandbox:
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
-| `tools: ask` | Prompt on `/dev/tty`; without a tty, POST to `ask.webhook` and wait for `{"decision":"allow"}`; no tty and no webhook, timeout, error or any other answer ⇒ denied | **Hard** |
+| `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
@@ -162,7 +163,10 @@ Inside the jail the shim briefly runs as the user namespace's root so it can bin
 
 ## Headless approvals
 
-Claude Desktop and Cursor start servers without a terminal, so `ask` would always deny. Configure `ask.webhook` and mcp-jail POSTs each pending call:
+Claude Desktop and Cursor start servers without a terminal, so `ask` would always deny. Two things can answer instead:
+
+- **The dashboard.** While `mcp-jail ui` is open in a browser, every headless `ask` shows up at the top of the page with the arguments and **Allow** / **Deny** buttons, and the jail waits up to `ask.timeout` (default 60s) for the click. No dashboard open ⇒ the call is denied at once, as before; dashboard open but nobody clicks ⇒ denied at the deadline. The jail and the page talk over a user-only Unix socket next to the lock files.
+- **A webhook.** Configure `ask.webhook` and mcp-jail POSTs each pending call:
 
 ```json
 {"server":"filesystem","tool":"write_file","arguments":{"path":"/home/me/projects/a.txt"},
@@ -243,9 +247,11 @@ filterable view of the audit logs. New lines stream in as they are written;
 denies, blocks and lock events pop up as notifications. `mcp-jail report`
 prints the same aggregation in the terminal for cron jobs and tickets.
 
-The one thing it changes is the lock: a pending rug-pull can be **approved**
-from the server card (the same as `mcp-jail approve`; a running jail picks the
-new lock up on the client's next list request). Everything else is read-only.
+Two things on it change state: a pending rug-pull can be **approved** from
+the server card (the same as `mcp-jail approve`; a running jail picks the new
+lock up on the client's next list request), and headless **`ask` decisions**
+can be answered at the top of the page (see [Headless
+approvals](#headless-approvals)). Everything else is read-only.
 It is built to be boring: plain HTML/CSS/JS embedded in the binary, no
 framework, nothing fetched from the internet. It binds to the
 loopback interface only, refuses any other `--listen` address, and every
@@ -300,7 +306,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
-- [ ] Dashboard: monitor, reports and lock approval (`mcp-jail ui`, `mcp-jail report`, done); answering `ask` from the page
+- [x] Dashboard: monitor, reports, lock approval and `ask` answers (`mcp-jail ui`, `mcp-jail report`)
 
 ## Non-goals
 

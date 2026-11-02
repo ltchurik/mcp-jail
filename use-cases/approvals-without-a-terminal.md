@@ -5,7 +5,7 @@ Cursor start servers without a terminal, and a CI agent has nobody at the
 keyboard. You still want a human in the loop for `write_*` and `send_*`, and
 a safe answer when no human shows up.
 
-## Policy
+## The dashboard is the simplest approver
 
 ```yaml
 tools:
@@ -17,6 +17,26 @@ tools:
     "write_*":  ask
 
 ask:
+  timeout: 120s                 # how long a call may wait for your click
+```
+
+Run `mcp-jail ui` and leave it open. Every `ask` that has no terminal shows
+up at the top of the page with the server, the tool and the arguments, and a
+countdown; **Allow** sends it on, **Deny** refuses it, the deadline refuses
+it. The audit log says who decided:
+
+```json
+{"ts":"2026-11-02T14:00:07Z","server":"mail","kind":"tool_call","tool":"send_email","decision":"ask_allow","reason":"dashboard"}
+```
+
+With the page closed nothing waits: the call is denied immediately, as
+before, so a forgotten `ask` cannot stall an agent for two minutes per call.
+
+## Or a webhook
+
+```yaml
+ask:
+  timeout: 120s
   webhook:
     url: https://approvals.internal.example/mcp-jail
     timeout: 120s                       # nobody answered ⇒ deny
@@ -61,12 +81,14 @@ h.ThreadingHTTPServer(("127.0.0.1", 8765), Approver).serve_forever()
 ## Slack
 
 Point `url` at a Slack (or Mattermost) incoming webhook. Slack posts the
-`text` field to the channel and answers `ok`, which is not a decision, so the
-call is **denied** but you are **told**. That is the right shape for a
-first version: nothing happens silently. To say yes from Slack, put a small
-service in front that posts the message with an *Approve* button and answers
-the pending `mcp-jail` request when someone clicks; the interaction payload
-has everything you need to correlate (server, tool, timestamp).
+`text` field to the channel and answers `ok`, which is not a decision. On its
+own that means the call is **denied** but you are **told**. With the
+dashboard open too, the non-decision does not end the wait: Slack pings you,
+you switch to the page and click Allow before the deadline. That pairing
+covers most teams. For a Slack-native yes, put a small service in front
+that posts the message with an *Approve* button and answers the pending
+`mcp-jail` request when someone clicks; the interaction payload has
+everything you need to correlate (server, tool, timestamp).
 
 ## CI
 

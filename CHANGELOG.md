@@ -9,6 +9,13 @@
   sections, pending changes and the last 24h of decisions, plus a live,
   filterable audit event view streamed over server-sent events. Loopback
   only, token-protected, no external assets, read-only.
+- The dashboard can **answer `ask` decisions** for headless clients: a jail
+  without a terminal waits up to the new `ask.timeout` (default 60s) while a
+  dashboard is open and shows the call at the top of the page with Allow /
+  Deny. Each `run` opens a user-only control socket in the registry
+  directory; `ask_allow` / `ask_deny` carry the reason `dashboard`. A webhook
+  that returns no decision (Slack's `ok`) no longer ends the wait when a
+  dashboard is open; an explicit webhook deny does.
 - The dashboard can **approve a pending lock change** (`POST
   /api/servers/{name}/approve`, same as `mcp-jail approve`). Writes need the
   token plus a custom `X-Mcp-Jail` header and a same-origin fetch.

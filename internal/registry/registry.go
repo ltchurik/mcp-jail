@@ -25,14 +25,15 @@ type Entry struct {
 	Name      string    `json:"name"`
 	PID       int       `json:"pid"`
 	StartedAt time.Time `json:"started_at"`
-	Policy    string    `json:"policy"`   // absolute path of the policy file
-	Audit     string    `json:"audit"`    // absolute path of the audit log, "" if disabled
-	Command   []string  `json:"command"`  // the server command
-	How       string    `json:"how"`      // sandbox description, e.g. "bwrap", "sandbox-exec", "no sandbox"
-	Network   string    `json:"network"`  // network.mode
-	Default   string    `json:"default"`  // tools.default
-	Lock      bool      `json:"lock"`     // lock.enabled
-	Hostname  string    `json:"hostname"` // informational
+	Policy    string    `json:"policy"`            // absolute path of the policy file
+	Audit     string    `json:"audit"`             // absolute path of the audit log, "" if disabled
+	Command   []string  `json:"command"`           // the server command
+	How       string    `json:"how"`               // sandbox description, e.g. "bwrap", "sandbox-exec", "no sandbox"
+	Network   string    `json:"network"`           // network.mode
+	Default   string    `json:"default"`           // tools.default
+	Lock      bool      `json:"lock"`              // lock.enabled
+	Hostname  string    `json:"hostname"`          // informational
+	Control   string    `json:"control,omitempty"` // control socket path, "" when unavailable
 	path      string
 }
 

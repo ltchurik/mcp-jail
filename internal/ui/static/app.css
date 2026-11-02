@@ -124,6 +124,19 @@ td.time { color: var(--text-muted); font-family: var(--mono); font-size: 12px; }
 .close { font: inherit; font-size: 20px; line-height: 1; background: none; border: 0; color: var(--text-muted); cursor: pointer; padding: 2px 8px; }
 .close:hover { color: var(--text); }
 
+/* pending asks */
+.asks { max-width: 1400px; margin: 12px auto 0; padding: 0 16px; }
+.asks h2 { display: flex; flex-wrap: wrap; gap: 8px; align-items: baseline; color: var(--ask); }
+.ask-list { display: grid; gap: 8px; margin-top: 8px; }
+.ask { display: grid; grid-template-columns: 1fr auto; gap: 8px 16px; align-items: center; background: var(--ask-bg); border: 1px solid var(--ask); border-radius: var(--radius); padding: 10px 14px; }
+.ask .what { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: baseline; }
+.ask .what .srv { font-weight: 600; }
+.ask .what .tool { font-family: var(--mono); font-weight: 600; }
+.ask .args { grid-column: 1 / -1; margin: 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; word-break: break-all; max-height: 120px; overflow: auto; background: var(--surface); border-radius: 6px; padding: 6px 8px; }
+.ask .buttons { display: flex; gap: 8px; }
+.btn.allow { background: var(--allow); border-color: var(--allow); color: #fff; }
+.ask .left { font-variant-numeric: tabular-nums; }
+
 /* report */
 .btn { font-size: 12.5px; padding: 4px 10px; border: 1px solid var(--border); border-radius: 6px; background: var(--surface); color: var(--text); text-decoration: none; }
 .btn:hover { background: var(--surface-2); }

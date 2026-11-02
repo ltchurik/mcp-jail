@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/egress"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
@@ -230,9 +231,20 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
+	// control socket: the dashboard answers `ask` decisions through it
+	asks := control.NewBroker(p.Name)
+	controlPath := ""
+	if cs, err := control.Listen(control.SocketPath(registry.Dir(), p.Name, os.Getpid()), asks); err != nil {
+		logf("control socket: %v (the dashboard cannot answer asks for this jail)", err)
+		asks = nil
+	} else {
+		controlPath = cs.Path()
+		defer func() { _ = cs.Close() }()
+	}
 	if unregister, err := registry.Register(registry.Entry{
 		Name: p.Name, Policy: absPath(*pol), Audit: p.Audit.Path, Command: cmdline, How: how,
 		Network: string(p.Network.Mode), Default: string(p.Tools.Default), Lock: p.Lock.Enabled,
+		Control: controlPath,
 	}); err != nil {
 		logf("registry: %v (dashboard will not list this jail)", err)
 	} else {
@@ -246,7 +258,7 @@ func cmdRun(args []string) error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 	}()
 
-	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf}
+	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Asks: asks}
 	runErr := px.Run(os.Stdin, os.Stdout, sin, sout)
 	_ = sin.Close()
 	waitErr := cmd.Wait()

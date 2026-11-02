@@ -22,7 +22,8 @@ mcp-jail ui --open
 The dashboard is a local page (loopback only; the URL carries a one-time
 token). **Overview** has a card per server, running or not: sandbox, network
 mode, lock sections and a **Pending change** box when a rug-pull was caught,
-plus the report for the chosen range. **Events** is the audit log, live:
+plus the report for the chosen range. Headless `ask` calls appear at the
+top with Allow / Deny while the page is open. **Events** is the audit log, live:
 filter by server, kind, decision or text, click a row for the full JSON,
 and watch denies and blocks arrive as toasts. Leave it open on a second
 screen.

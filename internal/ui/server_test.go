@@ -2,6 +2,7 @@ package ui
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/registry"
 )
@@ -418,4 +420,107 @@ func TestParseTime(t *testing.T) {
 			t.Errorf("%q accepted", bad)
 		}
 	}
+}
+
+func TestAsks(t *testing.T) {
+	ts := newTestServer(t)
+	// a running jail with a control socket (short path: unix sockets are length-limited)
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	b := control.NewBroker("demo")
+	cs, err := control.Listen(filepath.Join(dir, "demo.sock"), b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+	unreg, err := registry.Register(registry.Entry{Name: "demo", Control: cs.Path(), Audit: filepath.Join(dir, "a.jsonl")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unreg()
+	// and one without (older binary): must be skipped, not break the listing
+	unreg2, _ := registry.Register(registry.Entry{Name: "old", PID: os.Getpid()})
+	defer unreg2()
+
+	bearer := map[string]string{"Authorization": "Bearer " + tok}
+	var ar AsksResponse
+	getJSON(t, ts.URL+"/api/asks", bearer, &ar)
+	if len(ar.Asks) != 0 || !b.Attached() {
+		t.Fatalf("empty poll must attach: %+v %v", ar, b.Attached())
+	}
+	p := b.Submit("send_email", json.RawMessage(`{"to":"x@example"}`), time.Now().Add(time.Minute))
+	getJSON(t, ts.URL+"/api/asks", bearer, &ar)
+	if len(ar.Asks) != 1 || ar.Asks[0].ID != p.ID || ar.Asks[0].Server != "demo" || ar.Asks[0].Tool != "send_email" {
+		t.Fatalf("asks: %+v", ar.Asks)
+	}
+	var st State
+	getJSON(t, ts.URL+"/api/state", bearer, &st)
+	var demo *ServerState
+	for i := range st.Servers {
+		if st.Servers[i].Name == "demo" {
+			demo = &st.Servers[i]
+		}
+	}
+	if demo == nil || !demo.Control || demo.Asks != 1 {
+		t.Fatalf("state: %+v", st.Servers)
+	}
+
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+	url := ts.URL + "/api/servers/demo/asks/" + p.ID
+	if code, _ := postBody(t, url, map[string]string{"Authorization": "Bearer " + tok}, `{"decision":"allow"}`); code != http.StatusForbidden {
+		t.Errorf("no header: %d", code)
+	}
+	if code, _ := postBody(t, url, ok, `{"decision":"whatever"}`); code != http.StatusBadRequest {
+		t.Errorf("bad decision: %d", code)
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/old/asks/1", ok, `{"decision":"allow"}`); code != http.StatusNotFound {
+		t.Errorf("no control socket: %d", code)
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/demo/asks/77", ok, `{"decision":"allow"}`); code != http.StatusNotFound {
+		t.Errorf("unknown id: %d", code)
+	}
+	select {
+	case <-time.After(10 * time.Millisecond):
+	case d := <-answered(p):
+		t.Fatalf("refused requests must not answer: %+v", d)
+	}
+	code, body := postBody(t, url, ok, `{"decision":"allow"}`)
+	if code != http.StatusOK || !strings.Contains(body, `"allow":true`) {
+		t.Fatalf("answer: %d %s", code, body)
+	}
+	d, got := p.Wait(context.Background())
+	if !got || !d.Allow || d.By != "dashboard" {
+		t.Fatalf("decision: %+v %v", d, got)
+	}
+}
+
+func answered(p *control.Pending) <-chan control.Decision {
+	c := make(chan control.Decision, 1)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Millisecond)
+		defer cancel()
+		if d, ok := p.Wait(ctx); ok {
+			c <- d
+		}
+	}()
+	return c
+}
+
+func postBody(t *testing.T, url string, hdr map[string]string, body string) (int, string) {
+	t.Helper()
+	req, _ := http.NewRequest(http.MethodPost, url, strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	for k, v := range hdr {
+		req.Header.Set(k, v)
+	}
+	r, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = r.Body.Close() }()
+	b, _ := io.ReadAll(r.Body)
+	return r.StatusCode, string(b)
 }
