@@ -216,6 +216,32 @@ One JSON object per line:
 
 Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails you `decision=="blocked"` lines.
 
+## Dashboard
+
+```sh
+mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command
+mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (add --open to launch the browser)
+mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
+```
+
+`mcp-jail ui` is a local page over everything the other commands know: every
+server that ever ran through `mcp-jail run` (running or not), its sandbox,
+network mode, lock sections and any **pending change** waiting for
+`mcp-jail approve`, plus a live, filterable view of the audit logs with the
+last 24h of decisions per server. New lines stream in as they are written;
+denies, blocks and lock events pop up as notifications.
+
+It is read-only for now and built to be boring: plain HTML/CSS/JS embedded in
+the binary, no framework, nothing fetched from the internet. It binds to the
+loopback interface only, refuses any other `--listen` address, and every
+request needs the random token from the printed URL (exchanged for a
+`HttpOnly; SameSite=Strict` cookie on first visit). Foreign `Host` headers and
+cross-site fetches are rejected. Whether the dashboard runs or not changes
+nothing about enforcement: the proxy decides, the page only watches.
+
+Running jails register themselves in `~/.config/mcp-jail/run/` (next to the
+locks); entries whose process is gone are pruned automatically.
+
 ## Platform support
 
 | OS | Sandbox | Policy / lock / audit |
@@ -258,6 +284,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.
 - [x] Prompts and resources in the rug-pull lock (v0.2)
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap` — rewrite an existing client config in place (v0.2)
+- [ ] Dashboard: monitor (`mcp-jail ui`, done), reports, approving lock changes and `ask` from the page
 
 ## Non-goals
 

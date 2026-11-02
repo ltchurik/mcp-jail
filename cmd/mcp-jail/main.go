@@ -3,6 +3,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"flag"
@@ -11,8 +12,10 @@ import (
 	"os/exec"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
 	"github.com/ltchurik/mcp-jail/internal/egress"
@@ -20,7 +23,9 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
 	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/proxy"
+	"github.com/ltchurik/mcp-jail/internal/registry"
 	"github.com/ltchurik/mcp-jail/internal/sandbox"
+	"github.com/ltchurik/mcp-jail/internal/ui"
 	"github.com/ltchurik/mcp-jail/internal/wrap"
 )
 
@@ -37,6 +42,9 @@ Usage:
   mcp-jail approve <name>              accept pending tool changes
   mcp-jail reset   <name>              forget the lock
   mcp-jail locks                       list locks
+  mcp-jail ps                          list running jails
+  mcp-jail ui   [--listen 127.0.0.1:0] [--audit FILE]...
+                                       local dashboard: servers, audit events, pending changes
   mcp-jail version
 
 Client config (Claude Desktop, Cursor, Claude Code, …):
@@ -66,6 +74,10 @@ func main() {
 		err = cmdReset(os.Args[2:])
 	case "locks":
 		err = cmdLocks()
+	case "ps":
+		err = cmdPS()
+	case "ui":
+		err = cmdUI(os.Args[2:])
 	case sandbox.ShimCommand: // internal: mcp-jail re-executed inside the jail
 		code, err := cmdShim(os.Args[2:])
 		if err != nil {
@@ -80,10 +92,28 @@ func main() {
 		usage()
 		os.Exit(2)
 	}
+	var ec exitCode
+	if errors.As(err, &ec) {
+		os.Exit(int(ec))
+	}
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "mcp-jail:", err)
 		os.Exit(1)
 	}
+}
+
+// exitCode propagates the jailed server's exit status after deferred
+// cleanup (audit close, registry entry) has run.
+type exitCode int
+
+func (e exitCode) Error() string { return fmt.Sprintf("server exited with %d", int(e)) }
+
+// absPath is best effort: a relative path stays relative if Abs fails.
+func absPath(p string) string {
+	if a, err := filepath.Abs(p); err == nil {
+		return a
+	}
+	return p
 }
 
 func logf(format string, args ...any) {
@@ -196,6 +226,14 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
+	if unregister, err := registry.Register(registry.Entry{
+		Name: p.Name, Policy: absPath(*pol), Audit: p.Audit.Path, Command: cmdline, How: how,
+		Network: string(p.Network.Mode), Default: string(p.Tools.Default), Lock: p.Lock.Enabled,
+	}); err != nil {
+		logf("registry: %v (dashboard will not list this jail)", err)
+	} else {
+		defer unregister()
+	}
 
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
@@ -219,7 +257,7 @@ func cmdRun(args []string) error {
 		return runErr
 	}
 	if code != 0 {
-		os.Exit(code)
+		return exitCode(code)
 	}
 	return nil
 }
@@ -442,3 +480,84 @@ func cmdLocks() error {
 	}
 	return nil
 }
+
+func cmdPS() error {
+	if _, err := registry.Prune(); err != nil {
+		return err
+	}
+	live, err := registry.List()
+	if err != nil {
+		return err
+	}
+	if len(live) == 0 {
+		fmt.Println("no running jails")
+		return nil
+	}
+	now := time.Now()
+	for _, e := range live {
+		up := now.Sub(e.StartedAt).Round(time.Second)
+		fmt.Printf("%-20s pid %-7d up %-10s %-12s net=%-9s tools.default=%-5s %s\n",
+			e.Name, e.PID, up, e.How, e.Network, e.Default, strings.Join(e.Command, " "))
+	}
+	return nil
+}
+
+func cmdUI(args []string) error {
+	fs := flag.NewFlagSet("ui", flag.ContinueOnError)
+	listen := fs.String("listen", "127.0.0.1:0", "address to bind; must be loopback")
+	var extra stringList
+	fs.Var(&extra, "audit", "additional audit log to show (repeatable)")
+	openBrowser := fs.Bool("open", false, "open the dashboard in the default browser")
+	fs.Usage = usage
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 0 {
+		return errors.New("ui takes no positional arguments")
+	}
+	token, err := ui.NewToken()
+	if err != nil {
+		return err
+	}
+	srv, err := ui.New(token, version, extra)
+	if err != nil {
+		return err
+	}
+	l, err := ui.Listen(*listen)
+	if err != nil {
+		return err
+	}
+	if _, err := registry.Prune(); err != nil {
+		logf("registry: %v", err)
+	}
+	url := srv.URL(l)
+	fmt.Println(url)
+	logf("dashboard listening on %s; the token in the URL is the only credential, press Ctrl-C to stop", l.Addr())
+	if *openBrowser {
+		if err := browse(url); err != nil {
+			logf("open browser: %v", err)
+		}
+	}
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+	return srv.Serve(ctx, l)
+}
+
+// browse opens url with the platform's default handler; best effort.
+func browse(url string) error {
+	var c *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		c = exec.Command("open", url)
+	case "windows":
+		c = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		c = exec.Command("xdg-open", url)
+	}
+	return c.Start()
+}
+
+type stringList []string
+
+func (s *stringList) String() string     { return strings.Join(*s, ",") }
+func (s *stringList) Set(v string) error { *s = append(*s, v); return nil }
