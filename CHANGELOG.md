@@ -1,6 +1,13 @@
 # Changelog
 
-## Unreleased
+## v0.4.0 — 2026-11-02
+
+Promote rules and stop jails from the dashboard, and a hardening release: an internal
+security review of the proxy, the sandboxes, the egress paths and the
+dashboard, with every high and medium finding fixed (see *Security*
+below). Policies written for v0.3 keep working; `ask.webhook.url` must now
+be `https` unless it points at localhost, and a jail started from your home
+directory no longer shares it as the working directory.
 
 ### Added
 
