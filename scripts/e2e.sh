@@ -108,6 +108,35 @@ $BIN approve e2e >/dev/null
 OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?6, ?"result"'
 
+echo "== lock: review on first contact (no tty)"
+cat >"$WORK/rv.yml" <<YML
+name: e2e-review
+network: { mode: none }
+tools: { default: allow }
+lock: { enabled: true, first: review }
+audit: { path: $WORK/audit-review.jsonl }
+sandbox: { disabled: true }
+YML
+OUT=$(run "$WORK/rv.yml" "$INIT" "$LIST" "$READ")
+assert "$OUT" '"id":2,"error":\{"code":-32002,"message":"mcp-jail: tools seen for the first time were not approved \(no tty\)'
+assert "$OUT" '"id":3,"error":\{"code":-32002'                       # nothing from an unreviewed list may be used
+assert "$($BIN diff e2e-review)" 'tools \(seen for the first time, nothing recorded yet\):'
+assert "$($BIN diff e2e-review)" '\+ added +read_file'
+assert "$(cat "$WORK/audit-review.jsonl")" '"kind":"lock","decision":"review","reason":"tools first contact: 3 item\(s\) await review"'
+assert "$(cat "$WORK/audit-review.jsonl")" '"kind":"lock","decision":"blocked","reason":"tools first contact: not approved \(no tty\)"'
+SHOW=$($BIN show --policy "$WORK/rv.yml" -- "$PY" "$WORK/echo-server.py")
+assert "$SHOW" '^sandbox: +disabled'
+assert "$SHOW" '^lock: +on, first contact: review; nothing recorded yet'
+assert "$SHOW" '^  PENDING: +tools: 3 item\(s\) seen for the first time, awaiting review'
+$BIN approve e2e-review >/dev/null
+OUT=$(run "$WORK/rv.yml" "$INIT" "$LIST" "$READ")
+assert "$OUT" '"id": ?2, ?"result"'
+assert "$OUT" '"id": ?3, ?"result"'
+SHOW=$($BIN show e2e-review)                                            # by name: the registry remembers the policy
+assert "$SHOW" '^jail: +e2e-review  not running, last started'
+assert "$SHOW" '^  tools: +3 items, [0-9a-f]{12}, recorded'
+assert "$($BIN show --json e2e-review)" '"first": "review"'
+
 echo "== ask via webhook (no tty)"
 # approver: allow read_*, deny everything else; records what it saw
 $PY -c 'import http.server as h,json,sys

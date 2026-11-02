@@ -124,11 +124,14 @@
       if (s.pending) {
         const p = f("pending");
         p.hidden = false;
-        p.append(el("strong", null, "Pending change"), el("span", "muted small", ` seen ${fmtDate(s.pending.seen_at)}`));
+        const sections = Object.values(s.pending.sections);
+        const firstOnly = sections.length > 0 && sections.every(d => d.first);
+        p.append(el("strong", null, firstOnly ? "First contact: review before use" : "Pending change"), el("span", "muted small", ` seen ${fmtDate(s.pending.seen_at)}`));
         const ul = el("ul");
         for (const [kind, d] of Object.entries(s.pending.sections)) {
           const parts = [];
-          if (d.added.length) parts.push(`+${d.added.length} added`);
+          if (d.first) parts.push(`${d.added.length} seen for the first time`);
+          else if (d.added.length) parts.push(`+${d.added.length} added`);
           if (d.removed.length) parts.push(`−${d.removed.length} removed`);
           if (d.changed.length) parts.push(`~${d.changed.length} changed`);
           const li = el("li", null, `${kind.replace(/_/g, " ")}: ${parts.join(", ")}`);

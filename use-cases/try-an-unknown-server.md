@@ -23,6 +23,7 @@ tools:
 
 lock:
   enabled: true
+  first: review                    # show me the tool list before anything is recorded
 
 audit:
   path: ~/.local/state/mcp-jail/trial.jsonl
@@ -42,8 +43,24 @@ model sends.
 mcp-jail run --policy ~/mcp/trial.yml -- npx -y some-mcp-server
 ```
 
+The first thing you see is the catalog: every tool with the first line of
+its description, and a question. Nothing is recorded until you answer `y`;
+a `n` leaves the list pending, `mcp-jail diff trial` shows it again and
+`mcp-jail approve trial` records it later.
+
+```
+[mcp-jail] trial: 4 tools seen for the first time (5dc4bc0b04d6)
+  fetch_page  —  Fetch a documentation page
+  run_shell  —  Run a shell command
+  search_docs  —  Search the documentation index
+  …
+  record these tools and allow their use? [y/N]
+```
+
 Point Claude Code at it (`claude mcp add trial -- mcp-jail run --policy
 ~/mcp/trial.yml -- npx -y some-mcp-server`) and work with it for an hour.
+`mcp-jail show trial` tells you at any time what the jail enforces and what
+the server can still reach.
 
 ## Then read the report
 

@@ -176,3 +176,30 @@ func TestParsePage(t *testing.T) {
 		t.Fatal("non-string cursor must fail")
 	}
 }
+
+func TestApproveKind(t *testing.T) {
+	t.Setenv("MCP_JAIL_HOME", t.TempDir())
+	if err := SavePending("y", Tools, Section{Hash: "t1", Items: map[string]string{"a": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := SavePending("y", Prompts, Section{Hash: "p1", Items: map[string]string{"p": "1"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApproveKind("y", Resources); err == nil {
+		t.Fatal("approving a kind that is not pending must fail")
+	}
+	f, err := ApproveKind("y", Tools)
+	if err != nil || f.Section(Tools).Hash != "t1" || f.Section(Prompts) != nil {
+		t.Fatalf("approve tools only: %+v %v", f, err)
+	}
+	p, err := LoadPending("y")
+	if err != nil || p == nil || len(p.Sections) != 1 || p.Sections[Prompts].Hash != "p1" {
+		t.Fatalf("prompts must stay pending: %+v %v", p, err)
+	}
+	if _, err := ApproveKind("y", Prompts); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := LoadPending("y"); p != nil {
+		t.Fatal("pending should be cleared once the last section is approved")
+	}
+}

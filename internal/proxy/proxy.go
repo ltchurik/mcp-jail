@@ -498,16 +498,8 @@ func (p *Proxy) setLock(k lock.Kind, verified, tainted bool, items map[string]st
 // ask decides an `ask` call: on the controlling terminal when there is one,
 // otherwise through the webhook when configured, otherwise no.
 func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
-	if p.tty == nil {
-		path := p.TTYPath
-		if path == "" {
-			path = "/dev/tty"
-		}
-		f, err := os.OpenFile(path, os.O_RDWR, 0)
-		if err != nil {
-			return p.askHeadless(tc)
-		}
-		p.tty = f
+	if !p.openTTY() {
+		return p.askHeadless(tc)
 	}
 	args := string(tc.Arguments)
 	if len(args) > 400 {
@@ -524,6 +516,23 @@ func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
 		return true, "tty"
 	}
 	return false, "user"
+}
+
+// openTTY opens the controlling terminal once; false when there is none.
+func (p *Proxy) openTTY() bool {
+	if p.tty != nil {
+		return true
+	}
+	path := p.TTYPath
+	if path == "" {
+		path = "/dev/tty"
+	}
+	f, err := os.OpenFile(path, os.O_RDWR, 0)
+	if err != nil {
+		return false
+	}
+	p.tty = f
+	return true
 }
 
 // fromServer handles one message coming from the jailed server. A line the
@@ -625,6 +634,9 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 		return false
 	}
 	old := cur.Section(k)
+	if old == nil && p.Policy.Lock.First == policy.FirstReview {
+		return p.reviewFirst(k, m, sec, items)
+	}
 	if old == nil {
 		if _, err := lock.Record(p.Policy.Name, k, sec); err != nil {
 			p.Logf("lock: save: %v", err)

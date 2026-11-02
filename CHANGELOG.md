@@ -1,5 +1,23 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `lock.first: review`: a tools, prompts or resources list the lock has never
+  recorded is refused until someone approves it, instead of being trusted on
+  first contact. On a terminal the catalog is printed and `y` records it; with
+  the dashboard open the jail waits up to `ask.timeout` for **Approve** or
+  `mcp-jail approve`; with nobody to ask the list is refused and kept pending.
+  Nothing is recorded before the approve. Default stays `record`.
+- `mcp-jail show <name>` / `show --policy FILE -- <command>`: the effective
+  jail of a server (sandbox kind, every visible path and how, masked state,
+  network mode and enforcement, env, tools, lock sections and pending items,
+  audit), as text or `--json`, without starting anything.
+- `mcp-jail diff` labels a section that was never recorded; the dashboard shows
+  a first-contact review as "First contact: review before use" with its own
+  Approve button, also for a server that has no lock file yet.
+
 ## v0.5.0 — 2026-11-02
 
 Remote MCP servers can now be jailed too. Existing policies keep working unchanged.

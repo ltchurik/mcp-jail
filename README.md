@@ -123,12 +123,15 @@ mcp-jail ui --open
 
 ```sh
 mcp-jail ps                     # running jails: name, pid, uptime, sandbox, network, command (secrets in it shown as ***)
+mcp-jail show filesystem        # the effective jail of one server: mounts, network, env, tools, lock, audit (--json)
 mcp-jail ui                     # prints http://127.0.0.1:PORT/?token=…  (--open launches the browser)
 mcp-jail ui --audit old.jsonl   # also show an audit log from somewhere else
 mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, --server NAME
 ```
 
 `mcp-jail ui` is a local page over everything the other commands know.
+
+`mcp-jail show <name>` prints what one jail actually enforces and what the server can still reach: the sandbox kind, every read-only and read-write path (the policy's lists, the server's toolchain prefix, the working directory, the base system paths), the private tmp, mcp-jail's own files masked inside otherwise visible directories, the network mode with its allowlist and whether the OS or only `HTTP_PROXY` enforces it, the variables passed in, the tools default and rule counts, the lock sections with their age and anything pending, and the audit path. `mcp-jail show --policy FILE -- <command>` does the same for a policy that has not run yet; `--json` for scripts.
 
 **Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, a **Stop** button on a running jail (confirmed in place; the jail sends its server SIGTERM and exits, with a `stop` event in the audit log), and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
 
@@ -208,7 +211,7 @@ Exact tool names beat globs; among globs the longest pattern wins. Globs use `fi
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
-| `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused | **Hard** |
+| `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
 | `server.url` | Remote server over Streamable HTTP: guarded dialer (special address ranges refused), `https` outside localhost, no redirects, strict parsing of every answer; policy, lock, `ask` and audit as above | **Hard** (there is no server process to sandbox) |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
@@ -277,6 +280,16 @@ mcp-jail reset filesystem     # forget everything
 ```
 
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
+
+**First contact.** By default the first list a server ever returns is trusted and recorded (`lock.first: record`), so a malicious description that is there from the start is preserved by the lock, not caught by it. `lock.first: review` closes that gap: a list seen for the first time is saved as pending and refused, together with every use of it, until someone approves it. On a terminal the catalog is printed (name and first line of each description) and a `y` records it; without a terminal, while the dashboard is open, the jail waits up to `ask.timeout` for its **Approve** button or for `mcp-jail approve <name>` from another shell; with nobody to ask, the list is refused at once and stays pending. Nothing is recorded before the approve; the audit log carries `lock`/`review` and then `created` or `blocked`.
+
+```yaml
+lock:
+  enabled: true
+  first: review
+```
+
+`mcp-jail wrap` keeps `record` so a freshly wrapped config starts without interaction; switch the policies you care about to `review` afterwards.
 
 ## Remote servers (Streamable HTTP)
 

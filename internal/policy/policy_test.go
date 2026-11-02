@@ -316,3 +316,19 @@ func TestServerValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestLockFirst(t *testing.T) {
+	for in, want := range map[string]FirstContact{"": FirstRecord, "record": FirstRecord, "review": FirstReview} {
+		text := "name: x\nlock:\n  enabled: true\n"
+		if in != "" {
+			text += "  first: " + in + "\n"
+		}
+		p, err := parse([]byte(text), "t.yml")
+		if err != nil || p.Lock.First != want {
+			t.Errorf("first %q: got %q, %v", in, p.Lock.First, err)
+		}
+	}
+	if _, err := parse([]byte("name: x\nlock:\n  first: maybe\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "lock.first") {
+		t.Errorf("bad lock.first accepted: %v", err)
+	}
+}
