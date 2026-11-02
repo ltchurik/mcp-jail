@@ -143,8 +143,12 @@ func setScalar(n *yaml.Node, value string) {
 	n.Tag, n.Value, n.Style = "!!str", value, 0
 }
 
-// replaceFile writes b over path atomically, keeping the file mode.
+// replaceFile writes b over path atomically, keeping the file mode. A
+// symlinked policy file is replaced at its target, not turned into a file.
 func replaceFile(path string, b []byte) error {
+	if real, err := filepath.EvalSymlinks(path); err == nil {
+		path = real
+	}
 	mode := os.FileMode(0o600)
 	if st, err := os.Stat(path); err == nil {
 		mode = st.Mode().Perm()
@@ -166,4 +170,22 @@ func replaceFile(path string, b []byte) error {
 		return err
 	}
 	return os.Rename(tmp.Name(), path)
+}
+
+// LiteralTool escapes the glob metacharacters of filepath.Match so the
+// returned pattern matches exactly tool and nothing else.
+func LiteralTool(tool string) string {
+	if !strings.ContainsAny(tool, "*?[\\") {
+		return tool
+	}
+	var b strings.Builder
+	for _, r := range tool {
+		switch r {
+		case '*', '?', '[', '\\':
+			b.WriteString("[" + string(r) + "]")
+		default:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
 }

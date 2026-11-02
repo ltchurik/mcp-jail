@@ -141,3 +141,17 @@ func TestBucketFor(t *testing.T) {
 		t.Error("inverted range must be empty")
 	}
 }
+
+func TestCSVNeutralisesFormulas(t *testing.T) {
+	r := Report{Tools: []ToolReport{{Server: "=cmd|' /C calc'!A0", Tool: "+SUM(1)"}}, Hosts: []HostReport{{Host: "@evil"}}}
+	var c strings.Builder
+	if err := r.WriteCSV(&c); err != nil {
+		t.Fatal(err)
+	}
+	out := c.String()
+	for _, want := range []string{"'=cmd", "'+SUM(1)", "'@evil"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("missing %q in:\n%s", want, out)
+		}
+	}
+}

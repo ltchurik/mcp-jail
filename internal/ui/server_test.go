@@ -17,6 +17,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/audit"
 	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/lock"
+	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/registry"
 )
 
@@ -642,5 +643,68 @@ func TestStop(t *testing.T) {
 	}
 	if by := <-stopped; by != "dashboard" {
 		t.Fatalf("by: %s", by)
+	}
+}
+
+func TestSameOrigin(t *testing.T) {
+	ok := map[string]string{
+		"http://127.0.0.1:4000": "127.0.0.1:4000",
+		"http://localhost:4000": "127.0.0.1:4000",
+		"http://[::1]:4000":     "127.0.0.1:4000",
+	}
+	for o, h := range ok {
+		if !sameOrigin(o, h) {
+			t.Errorf("%s vs %s refused", o, h)
+		}
+	}
+	bad := map[string]string{
+		"http://localhost.evil.example:4000": "127.0.0.1:4000",
+		"http://localhost:4001":              "127.0.0.1:4000",
+		"https://localhost:4000":             "127.0.0.1:4000",
+		"http://evil.example":                "127.0.0.1:4000",
+		"http://localhost@evil.example:4000": "127.0.0.1:4000",
+		"null":                               "127.0.0.1:4000",
+		"":                                   "127.0.0.1:4000",
+	}
+	for o, h := range bad {
+		if sameOrigin(o, h) {
+			t.Errorf("%s vs %s accepted", o, h)
+		}
+	}
+}
+
+func TestAnswerRejectsBadID(t *testing.T) {
+	ts := newTestServer(t)
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+	for _, id := range []string{"..", "x", "1%2F2"} {
+		if code, _ := postBody(t, ts.URL+"/api/servers/demo/asks/"+id, ok, `{"decision":"allow"}`); code != http.StatusBadRequest && code != http.StatusNotFound {
+			t.Errorf("id %q: %d", id, code)
+		}
+	}
+}
+
+func TestRulePromotesLiteralToolName(t *testing.T) {
+	ts := newTestServer(t)
+	dir := t.TempDir()
+	pol := filepath.Join(dir, "demo.yml")
+	if err := os.WriteFile(pol, []byte("name: demo\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unreg, err := registry.Register(registry.Entry{Name: "demo", Policy: pol})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unreg()
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+	code, body := postBody(t, ts.URL+"/api/servers/demo/rules", ok, `{"tool":"*","decision":"allow"}`)
+	if code != http.StatusOK {
+		t.Fatalf("%d %s", code, body)
+	}
+	p, err := policy.Load(pol)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Decide("*") != policy.Allow || p.Decide("delete_file") != policy.Ask {
+		t.Fatalf("a tool named * must not become a rule for everything: %+v", p.Tools.Rules)
 	}
 }

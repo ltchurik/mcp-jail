@@ -19,6 +19,22 @@
   page never signals a pid itself. `mcp-jail run` now also escalates to
   SIGKILL when a server ignores the SIGTERM relayed from Ctrl-C.
 
+### Security
+
+- Dashboard: a tool name promoted to a rule is escaped so a server that
+  names a tool `*` cannot turn *Always allow* into a rule for every tool;
+  `Origin` is parsed instead of prefix-matched (`localhost.evil.example` is
+  not localhost); ask ids in URLs are validated; a symlinked policy file is
+  edited at its target.
+- CSV export prefixes cells starting with `=`, `+`, `-`, `@` with an
+  apostrophe (spreadsheet formula injection from server-chosen names).
+- `mcp-jail wrap` no longer puts `/` or the home directory into
+  `read_write` when they appear as server arguments; the generated policy
+  says so in a comment. An already-wrapped entry's note shows the command.
+- The dashboard counts as attached for 12s after its last poll (was 5s,
+  equal to the hidden-tab poll interval, so headless asks could flap to an
+  immediate deny).
+
 ### Changed
 
 - Toolchain: Go 1.27 (`go.mod`, CI, release builds), golangci-lint v2.15 in

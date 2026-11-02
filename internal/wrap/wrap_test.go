@@ -194,3 +194,14 @@ func TestYAMLQuoting(t *testing.T) {
 		t.Errorf("policy with odd name must still load: %v", err)
 	}
 }
+
+func TestPolicySkipsRootAndHome(t *testing.T) {
+	home, _ := os.UserHomeDir()
+	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none")
+	if strings.Contains(out, "- /\n") || strings.Contains(out, "- "+home+"\n") {
+		t.Fatalf("root or home became read_write:\n%s", out)
+	}
+	if !strings.Contains(out, "NOT added: /") || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(out, "read_write: [/tmp") {
+		t.Fatalf("notes/paths:\n%s", out)
+	}
+}

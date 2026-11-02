@@ -310,16 +310,26 @@ func (r Report) WriteCSV(w io.Writer) error {
 	cw := csv.NewWriter(w)
 	rows := [][]string{{"server", "tool", "total", "allow", "deny", "ask_allow", "ask_deny", "errors", "avg_ms"}}
 	for _, t := range r.Tools {
-		rows = append(rows, []string{t.Server, t.Tool, strconv.Itoa(t.Total), strconv.Itoa(t.Allow), strconv.Itoa(t.Deny), strconv.Itoa(t.AskAllow), strconv.Itoa(t.AskDeny), strconv.Itoa(t.Errors), fmtMs(t.AvgMs)})
+		rows = append(rows, []string{cell(t.Server), cell(t.Tool), strconv.Itoa(t.Total), strconv.Itoa(t.Allow), strconv.Itoa(t.Deny), strconv.Itoa(t.AskAllow), strconv.Itoa(t.AskDeny), strconv.Itoa(t.Errors), fmtMs(t.AvgMs)})
 	}
 	rows = append(rows, []string{}, []string{"host", "allowed", "blocked", "servers"})
 	for _, h := range r.Hosts {
-		rows = append(rows, []string{h.Host, strconv.Itoa(h.Allowed), strconv.Itoa(h.Blocked), fmt.Sprint(h.Servers)})
+		rows = append(rows, []string{cell(h.Host), strconv.Itoa(h.Allowed), strconv.Itoa(h.Blocked), cell(fmt.Sprint(h.Servers))})
 	}
 	if err := cw.WriteAll(rows); err != nil {
 		return err
 	}
 	return cw.Error()
+}
+
+// cell neutralises spreadsheet formula injection: a value a server chose
+// (tool or host name) that starts with =, +, -, @ or a tab/CR is prefixed
+// with an apostrophe so Excel and friends show it as text.
+func cell(s string) string {
+	if s != "" && strings.ContainsRune("=+-@\t\r", rune(s[0])) {
+		return "'" + s
+	}
+	return s
 }
 
 func fmtMs(v float64) string {

@@ -169,8 +169,8 @@ func wrapOne(name string, srv map[string]json.RawMessage, o Options, res *Result
 		}
 		return Change{Name: name, Action: "invalid", Note: "no command"}
 	}
-	if filepath.Base(command) == filepath.Base(o.Bin) || (len(args) > 0 && args[0] == "run" && strings.Contains(command, "mcp-jail")) {
-		return Change{Name: name, Action: "already-wrapped"}
+	if alreadyWrapped(command, args, o.Bin) {
+		return Change{Name: name, Action: "already-wrapped", Note: "runs through " + command}
 	}
 	if !validName(name) {
 		return Change{Name: name, Action: "invalid", Note: "server name is not usable as a file name"}
@@ -224,9 +224,16 @@ func Policy(name, command string, args, envKeys []string, network string) string
 	b.WriteString("\n  allow: []             # hostnames or \"*.suffix\" for allowlist mode\n\n")
 
 	var rw, ro []string
+	home, _ := os.UserHomeDir()
 	for _, a := range args {
 		if filepath.IsAbs(a) {
 			if st, err := os.Stat(a); err == nil && st.IsDir() {
+				if a := filepath.Clean(a); a == "/" || a == home || (home != "" && strings.HasPrefix(home, a+"/")) {
+					// the root or the home directory: too much to hand a
+					// server read-write; the user picks a narrower path
+					b.WriteString("  # NOT added: " + a + " is the root or home directory; list a narrower read_write path yourself\n")
+					continue
+				}
 				rw = append(rw, a)
 			}
 		}
@@ -314,4 +321,11 @@ func Validate(text string) error {
 	}
 	_, err = policy.Load(p)
 	return err
+}
+
+// alreadyWrapped reports whether a server entry already starts through
+// mcp-jail: a command named like our binary followed by "run". The change
+// note shows the command, so a look-alike path is visible to the user.
+func alreadyWrapped(command string, args []string, bin string) bool {
+	return len(args) > 0 && args[0] == "run" && filepath.Base(command) == filepath.Base(bin)
 }
