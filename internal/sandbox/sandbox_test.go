@@ -400,21 +400,34 @@ func TestBuildLinuxDoesNotShareHomeAsCwd(t *testing.T) {
 	if err := os.WriteFile(pol, []byte("name: x\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	protect := []string{pol, filepath.Join(home, ".config/mcp-jail/locks")}
+
+	// cwd is $HOME and the policy does not list it: not shared
 	p := policy.Default()
-	p.Filesystem.ReadOnly = []string{home}
-	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, Protect: []string{pol, filepath.Join(home, ".config/mcp-jail/locks")}})
+	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true"}, Protect: protect})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(argv, " ")
-	if strings.Contains(joined, "--ro-bind "+home+" "+home+" --chdir") || !strings.Contains(joined, "--chdir /") {
+	if strings.Contains(joined, "--ro-bind "+home+" "+home) || !strings.Contains(joined, "--chdir /") {
 		t.Errorf("home shared as cwd: %s", joined)
 	}
 	if !strings.Contains(how, "cwd not shared (home)") {
 		t.Errorf("how = %q", how)
 	}
-	// the policy file sits inside read_only home: masked
-	if !strings.Contains(joined, "--ro-bind /dev/null "+pol) {
-		t.Errorf("policy file not masked: %s", joined)
+
+	// the policy lists $HOME read-only on purpose: shared, but the policy
+	// file inside it is masked
+	p.Filesystem.ReadOnly = []string{home}
+	argv, how, _, err = build(p, Spec{Command: []string{"/usr/bin/true"}, Protect: protect})
+	if err != nil {
+		t.Fatal(err)
+	}
+	joined = strings.Join(argv, " ")
+	if !strings.Contains(joined, "--ro-bind "+home+" "+home) || !strings.Contains(joined, "--ro-bind /dev/null "+pol) {
+		t.Errorf("explicit read_only home must be bound with the policy file masked: %s", joined)
+	}
+	if strings.Contains(how, "cwd not shared") {
+		t.Errorf("how = %q", how)
 	}
 }
