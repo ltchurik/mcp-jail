@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
 )
 
@@ -33,9 +34,83 @@ type webhookResponse struct {
 
 const maxWebhookBody = 64 << 10
 
+// askHeadless decides an `ask` without a terminal. Two sources can answer:
+// the webhook, when configured, and an attached dashboard (one that polled
+// the control socket in the last few seconds). With neither, the call is
+// denied at once, as before. Otherwise the first decision wins; a webhook
+// that fails to produce a decision (Slack's "ok", a 500, a timeout) leaves
+// the dashboard until the deadline, and the deadline is a deny.
+func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
+	wh := p.Policy.Ask.Webhook.URL != ""
+	attached := p.Asks != nil && p.Asks.Attached()
+	if !wh && !attached {
+		return false, "no tty"
+	}
+	timeout := p.Policy.Ask.Timeout
+	if timeout <= 0 {
+		timeout = 60 * time.Second
+	}
+	if wh && (!attached || p.Policy.Ask.Webhook.Timeout > timeout) {
+		timeout = p.Policy.Ask.Webhook.Timeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+
+	type result struct {
+		ok     bool
+		reason string
+		final  bool
+	}
+	whc := make(chan result, 1)
+	if wh {
+		go func() {
+			ok, reason, final := p.askWebhook(ctx, tc)
+			whc <- result{ok, reason, final}
+		}()
+	} else {
+		whc = nil
+	}
+	dc := make(chan control.Decision, 1)
+	if p.Asks != nil {
+		pend := p.Asks.Submit(tc.Name, tc.Arguments, time.Now().Add(timeout))
+		defer p.Asks.Remove(pend.ID)
+		go func() {
+			if d, ok := pend.Wait(ctx); ok {
+				dc <- d
+			}
+		}()
+	}
+	whReason := ""
+	for {
+		select {
+		case r := <-whc:
+			if r.final || !attached {
+				return r.ok, r.reason
+			}
+			whReason = r.reason // keep waiting for the dashboard
+			whc = nil
+		case d := <-dc:
+			if d.Allow {
+				return true, d.By
+			}
+			return false, d.By
+		case <-ctx.Done():
+			reason := fmt.Sprintf("no answer within %s", timeout)
+			switch {
+			case whReason != "":
+				reason = whReason + "; " + reason
+			case wh:
+				reason = "webhook: " + reason
+			}
+			return false, reason
+		}
+	}
+}
+
 // askWebhook asks the configured endpoint. Every failure mode is a deny; the
-// returned string is the audit reason.
-func (p *Proxy) askWebhook(tc jsonrpc.ToolCallParams) (bool, string) {
+// returned string is the audit reason. final is true for an explicit allow
+// or deny, false when the endpoint produced no decision.
+func (p *Proxy) askWebhook(ctx context.Context, tc jsonrpc.ToolCallParams) (ok bool, reason string, final bool) {
 	w := p.Policy.Ask.Webhook
 	args := string(tc.Arguments)
 	if len(args) > 400 {
@@ -46,13 +121,11 @@ func (p *Proxy) askWebhook(tc jsonrpc.ToolCallParams) (bool, string) {
 		Text: fmt.Sprintf("[mcp-jail] %s wants to call %s %s", p.Policy.Name, tc.Name, args),
 	})
 	if err != nil {
-		return false, "webhook: encode: " + err.Error()
+		return false, "webhook: encode: " + err.Error(), false
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), w.Timeout)
-	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.URL, bytes.NewReader(body))
 	if err != nil {
-		return false, "webhook: " + err.Error()
+		return false, "webhook: " + err.Error(), false
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "mcp-jail")
@@ -61,33 +134,33 @@ func (p *Proxy) askWebhook(tc jsonrpc.ToolCallParams) (bool, string) {
 	}
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
-			return false, fmt.Sprintf("webhook: no answer within %s", w.Timeout)
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+			return false, fmt.Sprintf("webhook: no answer within %s", w.Timeout), false
 		}
-		return false, "webhook: " + oneLine(err.Error())
+		return false, "webhook: " + oneLine(err.Error()), false
 	}
 	defer func() { _ = resp.Body.Close() }()
 	if resp.StatusCode != http.StatusOK {
-		return false, fmt.Sprintf("webhook: status %d", resp.StatusCode)
+		return false, fmt.Sprintf("webhook: status %d", resp.StatusCode), false
 	}
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxWebhookBody))
 	if err != nil {
-		return false, "webhook: read: " + err.Error()
+		return false, "webhook: read: " + err.Error(), false
 	}
 	var ans webhookResponse
 	if err := json.Unmarshal(raw, &ans); err != nil {
-		return false, "webhook: response is not a decision"
+		return false, "webhook: response is not a decision", false
 	}
 	switch ans.Decision {
 	case "allow":
-		return true, "webhook"
+		return true, "webhook", true
 	case "deny":
 		if ans.Reason != "" {
-			return false, "webhook: " + oneLine(ans.Reason)
+			return false, "webhook: " + oneLine(ans.Reason), true
 		}
-		return false, "webhook"
+		return false, "webhook", true
 	}
-	return false, "webhook: response is not a decision"
+	return false, "webhook: response is not a decision", false
 }
 
 func oneLine(s string) string {

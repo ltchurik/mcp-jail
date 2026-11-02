@@ -234,6 +234,45 @@ assert "$("$BIN" diff e2e-ui)" 'nothing pending'
 OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
 assert "$OUT" '"id": ?2, ?"result"'
 assert "$(http "$BASE/api/events?server=e2e-ui&kind=lock" "$TOKEN")" '"decision":"blocked","reason":"tools added=\[\] removed=\[\] changed=\[probe\]"'
+
+echo "== ask answered from the dashboard (no tty)"
+cat >"$WORK/ask.yml" <<YML
+name: e2e-ask
+network: { mode: none }
+tools: { default: ask, rules: { "read_*": allow } }
+ask: { timeout: 20s }
+lock: { enabled: false }
+audit: { path: $WORK/audit-ask.jsonl }
+sandbox: { disabled: true }
+YML
+DEL2='{"jsonrpc":"2.0","id":14,"method":"tools/call","params":{"name":"delete_file","arguments":{"path":"second"}}}'
+# the dashboard must be polling before the ask arrives, so the feeder pauses after initialize
+( req "$INIT"; sleep 3; req "$DEL"; sleep 1; req "$DEL2"; sleep 30 ) | \
+  "$PY" -c 'import os,sys,subprocess;os.setsid();sys.exit(subprocess.call(sys.argv[1:]))' \
+  "$BIN" run --quiet --policy "$WORK/ask.yml" -- "$PY" "$WORK/echo-server.py" >"$WORK/ask.out" 2>"$WORK/stderr" &
+JAIL=$!
+# answer the first delete_file with allow and the second with deny, through the dashboard API
+"$PY" -c 'import json,sys,time,urllib.request as u
+base,tok=sys.argv[1],sys.argv[2]
+H={"Authorization":"Bearer "+tok,"X-Mcp-Jail":"1","Content-Type":"application/json"}
+seen={}
+deadline=time.time()+25
+while time.time()<deadline and len(seen)<2:
+    r=json.loads(u.urlopen(u.Request(base+"/api/asks",headers=H),timeout=5).read())
+    for a in r["asks"]:
+        if a["id"] in seen or a["tool"]!="delete_file": continue
+        dec="allow" if not seen else "deny"
+        u.urlopen(u.Request(base+"/api/servers/"+a["server"]+"/asks/"+a["id"],data=json.dumps({"decision":dec}).encode(),headers=H,method="POST"),timeout=5).read()
+        seen[a["id"]]=dec
+    time.sleep(0.3)
+print(json.dumps(seen))
+sys.exit(0 if len(seen)==2 else 1)' "$BASE" "$TOKEN" >"$WORK/answers" || { echo "FAIL: dashboard answering"; cat "$WORK/answers" "$WORK/stderr"; exit 1; }
+for _ in $(seq 100); do grep -q '"id": *14' "$WORK/ask.out" && break; sleep 0.1; done
+kill $JAIL 2>/dev/null; wait $JAIL 2>/dev/null || true; JAIL=
+assert "$(cat "$WORK/ask.out")" '"id": ?4, ?"result"'
+assert "$(cat "$WORK/ask.out")" '"id":14,"error":\{"code":-32003,"message":"mcp-jail: tool delete_file not approved \(dashboard\)'
+assert "$(cat "$WORK/audit-ask.jsonl")" '"tool":"delete_file","decision":"ask_allow","reason":"dashboard"'
+assert "$(cat "$WORK/audit-ask.jsonl")" '"tool":"delete_file","decision":"ask_deny","reason":"dashboard"'
 kill $UI; wait $UI 2>/dev/null || true; UI=
 
 if [[ "$(uname -s)" == Linux ]] && command -v bwrap >/dev/null; then

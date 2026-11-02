@@ -92,6 +92,7 @@
         if (s.counts && s.counts[k]) counts.append(el("span", "pill " + k, `${s.counts[k]} ${k.replace("_", " ")}`));
       }
       if (s.counts === undefined) counts.append(el("span", "muted small", "no events in the last 24h"));
+      if (s.asks) counts.append(el("span", "pill ask", `${s.asks} waiting`));
       if (s.pending) {
         const p = f("pending");
         p.hidden = false;
@@ -385,6 +386,60 @@
     try { renderServers(await api("/api/state")); } catch (err) { console.warn(err); }
   }
 
+  // ---- pending asks ------------------------------------------------------
+  // Polled every second while the page is visible. The poll itself matters:
+  // a jail waits for the dashboard only while someone is polling it.
+  const asks = { known: new Map(), timer: null };
+  function renderAsks(list, now) {
+    const box = $("#asks"), wrap = $("#ask-list");
+    const ids = new Set(list.map(a => `${a.server}/${a.id}`));
+    for (const [key, node] of asks.known) if (!ids.has(key)) { node.remove(); asks.known.delete(key); }
+    for (const a of list) {
+      const key = `${a.server}/${a.id}`;
+      let node = asks.known.get(key);
+      if (!node) {
+        node = el("div", "ask");
+        const what = el("div", "what");
+        what.append(el("span", "srv", a.server), "wants to call", el("span", "tool", a.tool), el("span", "muted small left"));
+        const buttons = el("div", "buttons");
+        const allow = el("button", "btn allow", "Allow"), deny = el("button", "btn danger", "Deny");
+        allow.type = deny.type = "button";
+        for (const [btn, decision] of [[allow, "allow"], [deny, "deny"]]) {
+          btn.addEventListener("click", async () => {
+            allow.disabled = deny.disabled = true;
+            try {
+              await mutate(`/api/servers/${encodeURIComponent(a.server)}/asks/${encodeURIComponent(a.id)}`, { decision });
+              toast(`${a.server}: ${a.tool} ${decision === "allow" ? "allowed" : "denied"}`, decision === "allow" ? "" : "deny");
+            } catch (err) {
+              toast(`${a.server}: answer failed · ${err.message}`, "deny");
+              allow.disabled = deny.disabled = false;
+            }
+            loadAsks().catch(() => {});
+          });
+        }
+        buttons.append(allow, deny);
+        node.append(what, buttons);
+        if (a.arguments !== undefined && a.arguments !== null) { const pre = el("pre", "args"); pre.textContent = typeof a.arguments === "string" ? a.arguments : JSON.stringify(a.arguments, null, 1); node.append(pre); }
+        wrap.append(node);
+        asks.known.set(key, node);
+        if (document.hidden) { try { new Notification("mcp-jail", { body: `${a.server} wants to call ${a.tool}` }); } catch { /* no permission */ } }
+      }
+      const left = Math.max(0, Math.round((new Date(a.deadline) - new Date(now)) / 1000));
+      node.querySelector(".left").textContent = a.deadline && left ? `${left}s left` : "";
+    }
+    box.hidden = list.length === 0;
+    if (list.length) document.title = `(${list.length}) mcp-jail`; else if (document.title.startsWith("(")) document.title = "mcp-jail";
+  }
+  async function loadAsks() {
+    const r = await api("/api/asks");
+    renderAsks(r.asks || [], r.now);
+  }
+  function scheduleAsks() {
+    clearTimeout(asks.timer);
+    asks.timer = setTimeout(async () => { try { await loadAsks(); } catch { /* retried next tick */ } scheduleAsks(); }, document.hidden ? 5000 : 1000);
+  }
+  document.addEventListener("visibilitychange", () => { if (!document.hidden) loadAsks().catch(() => {}); });
+
   // ---- tabs --------------------------------------------------------------
   const TAB_KEY = "mcp-jail.tab";
   let unseen = 0;
@@ -411,5 +466,5 @@
   setInterval(() => { $("#clock").textContent = new Date().toLocaleTimeString([], { hour12: false }); }, 1000);
   setInterval(refreshState, 10000);
   showTab(initialTab);
-  refreshState().then(loadEvents).then(loadReport).catch(console.warn).finally(connect);
+  refreshState().then(loadEvents).then(loadReport).catch(console.warn).finally(() => { connect(); loadAsks().catch(() => {}); scheduleAsks(); });
 })();

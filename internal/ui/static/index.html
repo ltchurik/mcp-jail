@@ -23,6 +23,11 @@
   <button type="button" role="tab" class="tab" data-tab="events" aria-selected="false">Events <span class="count" id="events-badge" hidden></span></button>
 </nav>
 
+<section class="asks" id="asks" hidden aria-live="polite" aria-labelledby="h-asks">
+  <h2 id="h-asks">Waiting for your decision <span class="muted small">answers go straight to the jail; no answer before the deadline is a deny</span></h2>
+  <div class="ask-list" id="ask-list"></div>
+</section>
+
 <main id="view-overview" data-view="overview">
   <section class="servers" aria-labelledby="h-servers">
     <h2 id="h-servers">Servers <span class="muted" id="server-count"></span></h2>

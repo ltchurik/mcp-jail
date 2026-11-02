@@ -64,6 +64,10 @@ type Policy struct {
 	} `yaml:"tools"`
 
 	Ask struct {
+		// Timeout bounds how long an `ask` without a terminal waits for the
+		// dashboard (`mcp-jail ui`) before it is denied. Default 60s, max 10m.
+		// A webhook has its own timeout below.
+		Timeout time.Duration `yaml:"timeout"`
 		// Webhook answers `ask` decisions when there is no terminal (headless
 		// clients such as Claude Desktop). mcp-jail POSTs a JSON description of
 		// the call and expects {"decision":"allow"} back within Timeout;
@@ -215,6 +219,12 @@ func (p *Policy) Validate() error {
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
 	p.Filesystem.ReadWrite = expandAll(p.Filesystem.ReadWrite)
 	p.Audit.Path = expand(p.Audit.Path)
+	switch {
+	case p.Ask.Timeout == 0:
+		p.Ask.Timeout = 60 * time.Second
+	case p.Ask.Timeout < 0, p.Ask.Timeout > 10*time.Minute:
+		return fmt.Errorf("ask.timeout: must be between 1s and 10m, got %s", p.Ask.Timeout)
+	}
 	if w := &p.Ask.Webhook; w.URL != "" {
 		u, err := url.Parse(w.URL)
 		if err != nil || (u.Scheme != "https" && u.Scheme != "http") || u.Host == "" {
@@ -438,9 +448,11 @@ tools:
     #   args:
     #     url: { host: [network.allow] }          # host must be in network.allow
 
-# ask without a terminal (Claude Desktop, Cursor): POST the call to a webhook
-# that answers {"decision":"allow"} within the timeout; anything else denies.
+# ask without a terminal (Claude Desktop, Cursor): the call waits up to
+# ask.timeout for an answer from the dashboard (mcp-jail ui) when one is open,
+# and/or POSTs to a webhook that answers {"decision":"allow"}; no answer denies.
 # ask:
+#   timeout: 60s
 #   webhook:
 #     url: https://approvals.example.internal/mcp-jail
 #     timeout: 60s

@@ -11,6 +11,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
@@ -108,5 +109,124 @@ func TestNoTTYNoWebhookDenies(t *testing.T) {
 	m := s.call(callReq)
 	if m.Error == nil || m.Error.Code != jsonrpc.CodeAskRejected || !strings.Contains(m.Error.Message, "no tty") {
 		t.Fatalf("got %s", m.Raw)
+	}
+}
+
+// attach simulates an open dashboard: it polls the broker like `mcp-jail ui`.
+func attach(b *control.Broker) { b.List() }
+
+func startDashboard(t *testing.T, p *policy.Policy) (*session, *control.Broker) {
+	t.Helper()
+	sIn, sOut := fakeServer(t, toolsV1, nil)
+	cInR, cInW := io.Pipe()
+	cOutR, cOutW := io.Pipe()
+	b := control.NewBroker(p.Name)
+	px := &Proxy{Policy: p, Logf: t.Logf, TTYPath: filepath.Join(t.TempDir(), "no-such-tty"), Asks: b}
+	done := make(chan error, 1)
+	go func() { done <- px.Run(cInR, cOutW, sIn, sOut); _ = cOutW.Close() }()
+	s := &session{t: t, toCli: cInW, fromCl: newReader(cOutR), done: done}
+	s.call(`{"jsonrpc":"2.0","id":0,"method":"tools/list"}`)
+	return s, b
+}
+
+// answerWhenAsked waits for the ask to show up on the broker and answers it.
+func answerWhenAsked(t *testing.T, b *control.Broker, allow bool) {
+	t.Helper()
+	go func() {
+		for i := 0; i < 200; i++ {
+			if l := b.List(); len(l) == 1 {
+				_ = b.Answer(l[0].ID, control.Decision{Allow: allow, By: "dashboard"})
+				return
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+	}()
+}
+
+func TestDashboardAnswers(t *testing.T) {
+	p := askPolicy(t, "", 0)
+	p.Ask.Timeout = 2 * time.Second
+	s, b := startDashboard(t, p)
+	defer s.close()
+	attach(b)
+	answerWhenAsked(t, b, true)
+	if m := s.call(callReq); m.Error != nil {
+		t.Fatalf("dashboard allow: %+v", m.Error)
+	}
+	attach(b)
+	answerWhenAsked(t, b, false)
+	m := s.call(callReq)
+	if m.Error == nil || m.Error.Code != jsonrpc.CodeAskRejected || !strings.Contains(m.Error.Message, "(dashboard)") {
+		t.Fatalf("dashboard deny: %s", m.Raw)
+	}
+	if len(b.List()) != 0 {
+		t.Fatal("settled asks must be removed")
+	}
+}
+
+func TestDashboardTimeoutDenies(t *testing.T) {
+	p := askPolicy(t, "", 0)
+	p.Ask.Timeout = 200 * time.Millisecond
+	s, b := startDashboard(t, p)
+	defer s.close()
+	attach(b)
+	start := time.Now()
+	m := s.call(callReq)
+	if m.Error == nil || m.Error.Code != jsonrpc.CodeAskRejected || !strings.Contains(m.Error.Message, "no answer within 200ms") {
+		t.Fatalf("timeout: %s", m.Raw)
+	}
+	if time.Since(start) < 200*time.Millisecond || time.Since(start) > 2*time.Second {
+		t.Fatalf("waited %s", time.Since(start))
+	}
+}
+
+func TestDashboardNotAttachedDeniesAtOnce(t *testing.T) {
+	p := askPolicy(t, "", 0)
+	p.Ask.Timeout = 5 * time.Second
+	s, _ := startDashboard(t, p) // broker exists but nobody polled it
+	defer s.close()
+	start := time.Now()
+	m := s.call(callReq)
+	if m.Error == nil || !strings.Contains(m.Error.Message, "no tty") || time.Since(start) > time.Second {
+		t.Fatalf("got %s after %s", m.Raw, time.Since(start))
+	}
+}
+
+func TestWebhookNonDecisionLeavesDashboardTime(t *testing.T) {
+	// Slack-style endpoint: answers "ok" immediately, which is not a decision.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") }))
+	defer srv.Close()
+	p := askPolicy(t, srv.URL, time.Second)
+	p.Ask.Timeout = 2 * time.Second
+	s, b := startDashboard(t, p)
+	defer s.close()
+	attach(b)
+	answerWhenAsked(t, b, true)
+	if m := s.call(callReq); m.Error != nil {
+		t.Fatalf("dashboard should still be able to allow: %+v", m.Error)
+	}
+	// nobody answers: the deny names both
+	attach(b)
+	p.Ask.Timeout = 300 * time.Millisecond
+	m := s.call(callReq)
+	if m.Error == nil || !strings.Contains(m.Error.Message, "webhook: response is not a decision; no answer within") {
+		t.Fatalf("got %s", m.Raw)
+	}
+}
+
+func TestWebhookExplicitDenyIsFinal(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = io.WriteString(w, `{"decision":"deny","reason":"policy says no"}`)
+	}))
+	defer srv.Close()
+	p := askPolicy(t, srv.URL, time.Second)
+	p.Ask.Timeout = 5 * time.Second
+	s, b := startDashboard(t, p)
+	defer s.close()
+	attach(b)
+	start := time.Now()
+	m := s.call(callReq)
+	if m.Error == nil || !strings.Contains(m.Error.Message, "policy says no") || time.Since(start) > 2*time.Second {
+		t.Fatalf("got %s after %s", m.Raw, time.Since(start))
 	}
 }

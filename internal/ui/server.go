@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
+	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/registry"
 )
@@ -84,6 +85,8 @@ func New(token, version string, extra []string) (*Server, error) {
 	s.mux.Handle("GET /api/stream", s.requireAuth(http.HandlerFunc(s.handleStream)))
 	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
 	s.mux.Handle("POST /api/servers/{name}/approve", s.requireMutation(http.HandlerFunc(s.handleApprove)))
+	s.mux.Handle("GET /api/asks", s.requireAuth(http.HandlerFunc(s.handleAsks)))
+	s.mux.Handle("POST /api/servers/{name}/asks/{id}", s.requireMutation(http.HandlerFunc(s.handleAnswer)))
 	return s, nil
 }
 
@@ -244,6 +247,93 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, resp)
 }
 
+// asksOf lists the pending asks of one running jail; a jail that does not
+// answer has none (and cannot be answered either).
+func (s *Server) asksOf(e registry.Entry) []control.Pending {
+	if e.Control == "" {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	l, err := control.Dial(e.Control).List(ctx)
+	if err != nil {
+		return nil
+	}
+	return l
+}
+
+// AsksResponse is the /api/asks document: every pending ask of every
+// running jail, oldest first. Polling it is what makes a jail wait for the
+// dashboard instead of denying a headless `ask` at once.
+type AsksResponse struct {
+	Asks []control.Pending `json:"asks"`
+	Now  time.Time         `json:"now"`
+}
+
+func (s *Server) handleAsks(w http.ResponseWriter, _ *http.Request) {
+	resp := AsksResponse{Asks: []control.Pending{}, Now: s.Now().UTC()}
+	live, _ := registry.List()
+	for _, e := range live {
+		resp.Asks = append(resp.Asks, s.asksOf(e)...)
+	}
+	sort.SliceStable(resp.Asks, func(i, j int) bool { return resp.Asks[i].Since.Before(resp.Asks[j].Since) })
+	writeJSON(w, resp)
+}
+
+// handleAnswer forwards an allow/deny for one ask to the jail's control
+// socket. The proxy audits the decision as ask_allow/ask_deny "dashboard".
+func (s *Server) handleAnswer(w http.ResponseWriter, r *http.Request) {
+	name, id := r.PathValue("name"), r.PathValue("id")
+	var body struct {
+		Decision string `json:"decision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	var allow bool
+	switch body.Decision {
+	case "allow":
+		allow = true
+	case "deny":
+	default:
+		http.Error(w, `decision must be "allow" or "deny"`, http.StatusBadRequest)
+		return
+	}
+	live, err := registry.List()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	var entry *registry.Entry
+	for i := range live {
+		if live[i].Name == name && live[i].Control != "" {
+			entry = &live[i]
+			break
+		}
+	}
+	if entry == nil {
+		http.Error(w, "no running jail named "+name+" with a control socket", http.StatusNotFound)
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+	defer cancel()
+	if err := control.Dial(entry.Control).Answer(ctx, id, allow, "dashboard"); err != nil {
+		code := http.StatusBadGateway
+		if errors.Is(err, control.ErrUnknown) {
+			code = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	dec := "denied"
+	if allow {
+		dec = "allowed"
+	}
+	s.Logf("%s: ask %s %s from the dashboard", name, id, dec)
+	writeJSON(w, map[string]any{"ok": true, "name": name, "id": id, "allow": allow})
+}
+
 // handleIndex exchanges ?token= for a cookie, then serves the page.
 func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
 	if t := r.URL.Query().Get("token"); t != "" {
@@ -284,6 +374,8 @@ type ServerState struct {
 	Command   []string       `json:"command,omitempty"`
 	Counts    map[string]int `json:"counts,omitempty"` // decision -> events in the last 24h
 	LastEvent *time.Time     `json:"last_event,omitempty"`
+	Control   bool           `json:"control"` // asks can be answered from here
+	Asks      int            `json:"asks"`    // pending asks right now
 	Error     string         `json:"error,omitempty"`
 }
 
@@ -349,6 +441,10 @@ func (s *Server) state() State {
 		v.Running, v.PID, v.StartedAt = true, e.PID, &sa
 		v.How, v.Network, v.Default, v.LockOn = e.How, e.Network, e.Default, e.Lock
 		v.Audit, v.Policy, v.Command = e.Audit, e.Policy, e.Command
+		if e.Control != "" {
+			v.Control = true
+			v.Asks = len(s.asksOf(e))
+		}
 	}
 	// locks may exist for servers that never registered (v0.2 runs)
 	if ents, err := fs.ReadDir(osDirFS(lock.Dir()), "."); err == nil {
