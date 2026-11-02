@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"github.com/ltchurik/mcp-jail/internal/netguard"
 )
 
 // Allower decides whether a host may be reached.
@@ -24,9 +26,11 @@ type Observer func(host string, allowed bool)
 
 // Proxy is a filtering forward proxy.
 type Proxy struct {
-	allow   Allower
-	observe Observer
-	ln      net.Listener
+	allow     Allower
+	observe   Observer
+	ln        net.Listener
+	dialer    *net.Dialer
+	transport *http.Transport
 }
 
 // Listen starts the proxy on 127.0.0.1:0 and returns it.
@@ -36,6 +40,18 @@ func Listen(allow Allower, observe Observer) (*Proxy, error) {
 		return nil, err
 	}
 	p := &Proxy{allow: allow, observe: observe, ln: ln}
+	// Both paths dial through a guard on the resolved address: an allowed
+	// name must not resolve to the host's loopback or a private network.
+	// The transport ignores the host's own HTTP_PROXY settings.
+	p.dialer = netguard.Dialer(15*time.Second, allow.HostAllowed)
+	p.transport = &http.Transport{
+		Proxy:                 nil,
+		DialContext:           p.dialer.DialContext,
+		TLSHandshakeTimeout:   10 * time.Second,
+		ResponseHeaderTimeout: 60 * time.Second,
+		MaxIdleConns:          16,
+		IdleConnTimeout:       30 * time.Second,
+	}
 	go p.serve()
 	return p, nil
 }
@@ -83,8 +99,7 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
-	var d net.Dialer
-	up, err := d.DialContext(ctx, "tcp", r.Host)
+	up, err := p.dialer.DialContext(ctx, "tcp", r.Host)
 	if err != nil {
 		http.Error(w, "dial: "+err.Error(), http.StatusBadGateway)
 		return
@@ -114,7 +129,7 @@ func (p *Proxy) forward(w http.ResponseWriter, r *http.Request) {
 	out := r.Clone(r.Context())
 	out.RequestURI = ""
 	stripHop(out.Header)
-	resp, err := http.DefaultTransport.RoundTrip(out)
+	resp, err := p.transport.RoundTrip(out)
 	if err != nil {
 		http.Error(w, "upstream: "+err.Error(), http.StatusBadGateway)
 		return

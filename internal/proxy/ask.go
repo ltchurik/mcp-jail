@@ -34,6 +34,10 @@ type webhookResponse struct {
 
 const maxWebhookBody = 64 << 10
 
+// webhookClient never follows redirects: the configured headers (tokens)
+// go to the configured URL only, and a 3xx is not a decision.
+var webhookClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+
 // askHeadless decides an `ask` without a terminal. Two sources can answer:
 // the webhook, when configured, and an attached dashboard (one that polled
 // the control socket in the last few seconds). With neither, the call is
@@ -132,7 +136,7 @@ func (p *Proxy) askWebhook(ctx context.Context, tc jsonrpc.ToolCallParams) (ok b
 	for k, v := range w.Headers {
 		req.Header.Set(k, v)
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := webhookClient.Do(req)
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
 			return false, fmt.Sprintf("webhook: no answer within %s", w.Timeout), false

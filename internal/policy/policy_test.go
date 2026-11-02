@@ -262,3 +262,20 @@ func TestValidateName(t *testing.T) {
 		t.Error("control character in a path accepted")
 	}
 }
+
+func TestWebhookPlainHTTPOnlyForLoopback(t *testing.T) {
+	for _, u := range []string{"http://approvals.internal.example/x", "http://10.0.0.5:8765/", "http://[fe80::1]/"} {
+		p := Default()
+		p.Ask.Webhook.URL = u
+		if err := p.Validate(); err == nil {
+			t.Errorf("%s accepted", u)
+		}
+	}
+	for _, u := range []string{"http://127.0.0.1:8765/", "http://localhost:8765/", "http://[::1]:8765/", "https://approvals.internal.example/x"} {
+		p := Default()
+		p.Ask.Webhook.URL = u
+		if err := p.Validate(); err != nil {
+			t.Errorf("%s: %v", u, err)
+		}
+	}
+}
