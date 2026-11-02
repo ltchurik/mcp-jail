@@ -11,6 +11,7 @@ import (
 	"os"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/ltchurik/mcp-jail/internal/audit"
@@ -24,6 +25,9 @@ const maxLine = 64 << 20 // 64 MiB per JSON-RPC line
 
 // Proxy holds the broker state.
 type Proxy struct {
+	// Policy is the policy the jail started with. Its tools and ask
+	// sections can be replaced at runtime by Reload; everything else
+	// (sandbox, network, lock, audit) is fixed for the life of the jail.
 	Policy *policy.Policy
 	Audit  *audit.Logger
 	Logf   func(format string, args ...any) // stderr logger
@@ -33,6 +37,10 @@ type Proxy struct {
 	// Asks, when set, lets an attached dashboard answer `ask` decisions that
 	// have no terminal (see package control). nil: terminal or webhook only.
 	Asks *control.Broker
+
+	// live is the policy in force: Policy with the tools/ask sections of
+	// the latest successful Reload. nil until the first Reload.
+	live atomic.Pointer[policy.Policy]
 
 	client io.Writer // to MCP client
 	server io.Writer // to jailed server
@@ -194,11 +202,40 @@ func (p *Proxy) allowUse(m *jsonrpc.Message) bool {
 	return true
 }
 
+// rules is the policy in force for tool decisions and asks.
+func (p *Proxy) rules() *policy.Policy {
+	if l := p.live.Load(); l != nil {
+		return l
+	}
+	return p.Policy
+}
+
+// Reload takes the tools and ask sections of np into use for every call
+// from now on. The rest of np is ignored: the sandbox and the lock were set
+// up at start and cannot change under a running server. A policy for a
+// different server name is refused.
+func (p *Proxy) Reload(np *policy.Policy) error {
+	if np == nil {
+		return fmt.Errorf("reload: no policy")
+	}
+	if np.Name != p.Policy.Name {
+		return fmt.Errorf("reload: policy is for %q, this jail is %q", np.Name, p.Policy.Name)
+	}
+	cp := *p.Policy
+	cp.Tools = np.Tools
+	cp.Ask = np.Ask
+	p.live.Store(&cp)
+	p.Audit.Log(audit.Event{Kind: "reload", Reason: fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))})
+	p.Logf("policy reloaded: tools.default=%s, %d rule(s)", cp.Tools.Default, len(cp.Tools.Rules))
+	return nil
+}
+
 // allowCall applies tools policy. Returns false if the call was answered
 // with an error and must not be forwarded.
 func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
+	pol := p.rules()
 	var args json.RawMessage
-	if p.Policy.Audit.Args {
+	if pol.Audit.Args {
 		args = tc.Arguments
 	}
 	if why := p.waitVerified(lock.Tools); why != "" {
@@ -207,9 +244,9 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
 		return false
 	}
-	d := p.Policy.Decide(tc.Name)
+	d := pol.Decide(tc.Name)
 	if d != policy.Deny {
-		if err := p.Policy.CheckArgs(tc.Name, tc.Arguments); err != nil {
+		if err := pol.CheckArgs(tc.Name, tc.Arguments); err != nil {
 			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: "args: " + err.Error(), Args: args})
 			p.Logf("deny tools/call %s (%v)", tc.Name, err)
 			p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodePolicyDenied, "mcp-jail: tool "+tc.Name+" denied by policy: "+err.Error()))

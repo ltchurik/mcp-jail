@@ -231,10 +231,19 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
-	// control socket: the dashboard answers `ask` decisions through it
+	// control socket: the dashboard answers `ask` decisions through it and
+	// asks for a policy reload after it edited the file
 	asks := control.NewBroker(p.Name)
+	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf}
+	hooks := control.Hooks{Reload: func() error {
+		np, err := policy.Load(*pol)
+		if err != nil {
+			return err
+		}
+		return px.Reload(np)
+	}}
 	controlPath := ""
-	if cs, err := control.Listen(control.SocketPath(registry.Dir(), p.Name, os.Getpid()), asks); err != nil {
+	if cs, err := control.Listen(control.SocketPath(registry.Dir(), p.Name, os.Getpid()), asks, hooks); err != nil {
 		logf("control socket: %v (the dashboard cannot answer asks for this jail)", err)
 		asks = nil
 	} else {
@@ -258,7 +267,7 @@ func cmdRun(args []string) error {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 	}()
 
-	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Asks: asks}
+	px.Asks = asks
 	runErr := px.Run(os.Stdin, os.Stdout, sin, sout)
 	_ = sin.Close()
 	waitErr := cmd.Wait()

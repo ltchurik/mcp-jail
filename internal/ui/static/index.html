@@ -83,7 +83,7 @@
         <select name="server" aria-label="server"><option value="">all servers</option></select>
         <select name="kind" aria-label="kind">
           <option value="">all kinds</option>
-          <option>tool_call</option><option>tool_result</option><option>net</option><option>dns</option><option>lock</option><option>start</option><option>exit</option>
+          <option>tool_call</option><option>tool_result</option><option>net</option><option>dns</option><option>lock</option><option>start</option><option>reload</option><option>exit</option>
         </select>
         <select name="decision" aria-label="decision">
           <option value="">all decisions</option>
@@ -112,6 +112,7 @@
 
 <aside class="drawer" id="drawer" hidden aria-labelledby="drawer-title">
   <div class="drawer-head"><h3 id="drawer-title">Event</h3><button type="button" class="close" id="drawer-close" aria-label="close">×</button></div>
+  <div class="drawer-actions" id="drawer-actions"></div>
   <pre id="drawer-body"></pre>
 </aside>
 

@@ -58,6 +58,9 @@ type Policy struct {
 		Tmp bool `yaml:"tmp"`
 	} `yaml:"filesystem"`
 
+	// Tools and Ask are the sections a running jail reloads when the
+	// dashboard promotes a rule (SetRule + control /reload); the rest is
+	// fixed at start.
 	Tools struct {
 		Default Decision        `yaml:"default"`
 		Rules   map[string]Rule `yaml:"rules"` // exact name or glob (filepath.Match)
@@ -162,6 +165,11 @@ func Load(path string) (*Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	return parse(b, path)
+}
+
+// parse decodes and validates policy text; path only labels errors.
+func parse(b []byte, path string) (*Policy, error) {
 	p := Default()
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	dec.KnownFields(true)

@@ -58,6 +58,31 @@
   }
 
   // ---- servers -----------------------------------------------------------
+  // promote writes tools.rules[tool] = decision into the server's policy
+  // file and reports whether the running jail took it live.
+  async function promote(server, tool, decision) {
+    const r = await mutate(`/api/servers/${encodeURIComponent(server)}/rules`, { tool, decision });
+    const where = tilde(r.policy);
+    if (r.live) toast(`${server}: ${tool} → ${decision} saved to ${where}, in force now`, decision === "deny" ? "deny" : "");
+    else toast(`${server}: ${tool} → ${decision} saved to ${where} · ${r.warning || "applies on the next start"}`, "ask");
+    return r;
+  }
+  // arm turns a button into a two-click action: the first click asks for
+  // confirmation in place, the second runs it; a click elsewhere resets.
+  function arm(btn, confirmText, run) {
+    const label = btn.textContent;
+    let armed = false;
+    const reset = () => { armed = false; btn.textContent = label; btn.classList.remove("armed"); document.removeEventListener("click", away, true); };
+    const away = (ev) => { if (!btn.contains(ev.target)) reset(); };
+    btn.addEventListener("click", async () => {
+      if (!armed) { armed = true; btn.textContent = confirmText; btn.classList.add("armed"); setTimeout(() => document.addEventListener("click", away, true), 0); return; }
+      reset();
+      btn.disabled = true;
+      try { await run(); } finally { btn.disabled = false; }
+    });
+    return btn;
+  }
+
   function renderServers(st) {
     if (state.confirming) return; // an inline confirmation is open: do not pull the card from under the user
     state.servers = st.servers || [];
@@ -350,6 +375,20 @@
   function openDrawer(e) {
     $("#drawer-title").textContent = `${e.kind || "event"} ${target(e)} ${e.decision || ""}`.trim();
     $("#drawer-body").textContent = JSON.stringify(e, null, 2);
+    const act = $("#drawer-actions");
+    act.replaceChildren();
+    if (e.kind === "tool_call" && e.tool && e.server) {
+      // promote this tool's decision into the policy; glob tools stay as logged
+      const mk = (decision, cls) => {
+        const b = el("button", "btn " + cls, `Always ${decision} ${e.tool}`);
+        b.type = "button";
+        b.title = `write "${e.tool}: ${decision}" into ${e.server}'s policy file`;
+        return arm(b, `Confirm: ${e.tool} → ${decision} in the policy`, async () => {
+          try { await promote(e.server, e.tool, decision); } catch (err) { toast(`${e.server}: rule failed · ${err.message}`, "deny"); }
+        });
+      };
+      act.append(el("span", "muted small", "From now on:"), mk("allow", "allow"), mk("deny", "danger"));
+    }
     $("#drawer").hidden = false;
   }
   $("#drawer-close").addEventListener("click", () => { $("#drawer").hidden = true; });
@@ -406,21 +445,28 @@
         what.append(el("span", "srv", a.server), "wants to call", el("span", "tool", a.tool), el("span", "muted small left"));
         const buttons = el("div", "buttons");
         const allow = el("button", "btn allow", "Allow"), deny = el("button", "btn danger", "Deny");
-        allow.type = deny.type = "button";
-        for (const [btn, decision] of [[allow, "allow"], [deny, "deny"]]) {
-          btn.addEventListener("click", async () => {
-            allow.disabled = deny.disabled = true;
-            try {
-              await mutate(`/api/servers/${encodeURIComponent(a.server)}/asks/${encodeURIComponent(a.id)}`, { decision });
-              toast(`${a.server}: ${a.tool} ${decision === "allow" ? "allowed" : "denied"}`, decision === "allow" ? "" : "deny");
-            } catch (err) {
-              toast(`${a.server}: answer failed · ${err.message}`, "deny");
-              allow.disabled = deny.disabled = false;
-            }
-            loadAsks().catch(() => {});
-          });
-        }
-        buttons.append(allow, deny);
+        const always = el("button", "btn", "Always allow"), never = el("button", "btn", "Always deny");
+        always.title = `write "${a.tool}: allow" into the policy file, then allow this call`;
+        never.title = `write "${a.tool}: deny" into the policy file, then deny this call`;
+        const all = [allow, deny, always, never];
+        for (const b of all) b.type = "button";
+        const answer = async (decision, remember) => {
+          for (const b of all) b.disabled = true;
+          try {
+            if (remember) await promote(a.server, a.tool, decision); // the rule first: if it fails, the ask stays open
+            await mutate(`/api/servers/${encodeURIComponent(a.server)}/asks/${encodeURIComponent(a.id)}`, { decision });
+            toast(`${a.server}: ${a.tool} ${decision === "allow" ? "allowed" : "denied"}`, decision === "allow" ? "" : "deny");
+          } catch (err) {
+            toast(`${a.server}: ${remember ? "rule" : "answer"} failed · ${err.message}`, "deny");
+            for (const b of all) b.disabled = false;
+          }
+          loadAsks().catch(() => {});
+        };
+        allow.addEventListener("click", () => answer("allow", false));
+        deny.addEventListener("click", () => answer("deny", false));
+        always.addEventListener("click", () => answer("allow", true));
+        never.addEventListener("click", () => answer("deny", true));
+        buttons.append(allow, always, deny, never);
         node.append(what, buttons);
         if (a.arguments !== undefined && a.arguments !== null) { const pre = el("pre", "args"); pre.textContent = typeof a.arguments === "string" ? a.arguments : JSON.stringify(a.arguments, null, 1); node.append(pre); }
         wrap.append(node);

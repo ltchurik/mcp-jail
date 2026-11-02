@@ -32,6 +32,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/audit"
 	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/lock"
+	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/registry"
 )
 
@@ -86,6 +87,7 @@ func New(token, version string, extra []string) (*Server, error) {
 	s.mux.Handle("GET /api/stream", s.requireAuth(http.HandlerFunc(s.handleStream)))
 	s.mux.Handle("GET /api/report", s.requireAuth(http.HandlerFunc(s.handleReport)))
 	s.mux.Handle("POST /api/servers/{name}/approve", s.requireMutation(http.HandlerFunc(s.handleApprove)))
+	s.mux.Handle("POST /api/servers/{name}/rules", s.requireMutation(http.HandlerFunc(s.handleRule)))
 	s.mux.Handle("GET /api/asks", s.requireAuth(http.HandlerFunc(s.handleAsks)))
 	s.mux.Handle("POST /api/servers/{name}/asks/{id}", s.requireMutation(http.HandlerFunc(s.handleAnswer)))
 	return s, nil
@@ -246,6 +248,86 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	}
 	s.Logf("approved %s from the dashboard: %d section(s)", name, len(pend.Sections))
 	writeJSON(w, resp)
+}
+
+// RuleResponse answers POST /api/servers/{name}/rules.
+type RuleResponse struct {
+	Name     string `json:"name"`
+	Tool     string `json:"tool"`
+	Decision string `json:"decision"`
+	Policy   string `json:"policy"`            // the file that was edited
+	Live     bool   `json:"live"`              // the running jail uses the new rule already
+	Warning  string `json:"warning,omitempty"` // written, but the running jail could not reload
+}
+
+// handleRule promotes a tool decision into the server's policy file
+// (`tools.rules[tool] = allow|deny|ask`), then asks the running jail, if
+// any, to reload. The policy path comes from the registry, never from the
+// request. A file that would not load afterwards is not written.
+func (s *Server) handleRule(w http.ResponseWriter, r *http.Request) {
+	name := r.PathValue("name")
+	var body struct {
+		Tool     string `json:"tool"`
+		Decision string `json:"decision"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4096)).Decode(&body); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	}
+	d := policy.Decision(body.Decision)
+	switch d {
+	case policy.Allow, policy.Deny, policy.Ask:
+	default:
+		http.Error(w, `decision must be "allow", "deny" or "ask"`, http.StatusBadRequest)
+		return
+	}
+	path, controlPath := s.policyOf(name)
+	if path == "" {
+		http.Error(w, "no policy file known for "+name, http.StatusNotFound)
+		return
+	}
+	if err := policy.SetRule(path, body.Tool, d); err != nil {
+		code := http.StatusBadRequest
+		if !errors.Is(err, os.ErrNotExist) && !strings.HasPrefix(err.Error(), "tool") {
+			code = http.StatusConflict
+		}
+		http.Error(w, err.Error(), code)
+		return
+	}
+	resp := RuleResponse{Name: name, Tool: body.Tool, Decision: string(d), Policy: path}
+	if controlPath == "" {
+		resp.Warning = "no running jail: the rule applies on the next start"
+	} else {
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		defer cancel()
+		if err := control.Dial(controlPath).Reload(ctx); err != nil {
+			resp.Warning = "written, but the running jail did not reload: " + err.Error()
+		} else {
+			resp.Live = true
+		}
+	}
+	s.Logf("%s: rule %s=%s written to %s from the dashboard (live=%v)", name, body.Tool, d, path, resp.Live)
+	writeJSON(w, resp)
+}
+
+// policyOf finds the policy file of a server, preferring a running jail
+// (which also gives its control socket) over the history.
+func (s *Server) policyOf(name string) (path, controlPath string) {
+	if live, err := registry.List(); err == nil {
+		for _, e := range live {
+			if e.Name == name && e.Policy != "" {
+				return e.Policy, e.Control
+			}
+		}
+	}
+	if known, err := registry.ListKnown(); err == nil {
+		for _, k := range known {
+			if k.Name == name && k.Policy != "" {
+				return k.Policy, ""
+			}
+		}
+	}
+	return "", ""
 }
 
 // asksOf lists the pending asks of one running jail; a jail that does not

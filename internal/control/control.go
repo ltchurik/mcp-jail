@@ -13,6 +13,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
@@ -125,9 +126,18 @@ func (b *Broker) Answer(id string, d Decision) error {
 	return nil
 }
 
+// Hooks are the actions a jail offers over its control socket besides
+// answering asks. A nil hook is "not supported" (501).
+type Hooks struct {
+	// Reload re-reads the policy file and takes its tools/ask sections
+	// into use. An error leaves the running policy as it was.
+	Reload func() error
+}
+
 // Server serves a Broker over a Unix socket.
 type Server struct {
 	Broker *Broker
+	Hooks  Hooks
 	l      net.Listener
 	srv    *http.Server
 	path   string
@@ -161,7 +171,7 @@ const maxSocketPath = 100
 // Listen creates the socket at path (replacing a stale one) and serves b.
 // A path too long for a Unix socket is replaced by one of the same name in
 // a per-user directory under the temp dir; Path reports what was used.
-func Listen(path string, b *Broker) (*Server, error) {
+func Listen(path string, b *Broker, h Hooks) (*Server, error) {
 	if len(path) > maxSocketPath {
 		path = filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()), filepath.Base(path))
 		if len(path) > maxSocketPath {
@@ -180,7 +190,7 @@ func Listen(path string, b *Broker) (*Server, error) {
 		_ = l.Close()
 		return nil, fmt.Errorf("control: %w", err)
 	}
-	s := &Server{Broker: b, l: l, path: path}
+	s := &Server{Broker: b, Hooks: h, l: l, path: path}
 	s.srv = &http.Server{Handler: s.handler(), ReadHeaderTimeout: 5 * time.Second}
 	go func() { _ = s.srv.Serve(l) }()
 	return s, nil
@@ -200,13 +210,26 @@ func (s *Server) Close() error {
 
 // Handler exposes the broker for tests and for serving over other listeners.
 func (s *Server) handler() http.Handler {
-	return Handler(s.Broker)
+	return Handler(s.Broker, s.Hooks)
 }
 
 // Handler serves a broker: GET /asks lists, POST /asks/{id} answers with a
-// JSON body {"decision":"allow"|"deny","by":"…"}.
-func Handler(b *Broker) http.Handler {
+// JSON body {"decision":"allow"|"deny","by":"…"}; POST /reload runs the
+// Reload hook.
+func Handler(b *Broker, h Hooks) http.Handler {
 	mux := http.NewServeMux()
+	mux.HandleFunc("POST /reload", func(w http.ResponseWriter, _ *http.Request) {
+		if h.Reload == nil {
+			http.Error(w, "reload not supported by this jail", http.StatusNotImplemented)
+			return
+		}
+		if err := h.Reload(); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"ok":true}` + "\n"))
+	})
 	mux.HandleFunc("GET /asks", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(b.List())
@@ -320,4 +343,26 @@ func (c *Client) Answer(ctx context.Context, id string, allow bool, by string) e
 	default:
 		return fmt.Errorf("control: status %d", resp.StatusCode)
 	}
+}
+
+// Reload asks the jail to re-read its policy file. The error carries the
+// jail's reason when it refuses (for example a policy that does not load).
+func (c *Client) Reload(ctx context.Context) error {
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://jail/reload", nil)
+	if err != nil {
+		return err
+	}
+	resp, err := c.hc.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode == http.StatusOK {
+		return nil
+	}
+	msg, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+	if m := strings.TrimSpace(string(msg)); m != "" {
+		return fmt.Errorf("control: %s", m)
+	}
+	return fmt.Errorf("control: status %d", resp.StatusCode)
 }

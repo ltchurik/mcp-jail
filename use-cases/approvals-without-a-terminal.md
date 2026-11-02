@@ -32,6 +32,16 @@ it. The audit log says who decided:
 With the page closed nothing waits: the call is denied immediately, as
 before, so a forgotten `ask` cannot stall an agent for two minutes per call.
 
+The third and fourth buttons, **Always allow** and **Always deny**, are for
+the calls you keep answering the same way. They write the rule into the
+policy file first (`send_email: allow` under `tools.rules`, comments and
+order intact), the running jail reloads it, and only then is the pending
+call answered. The same two actions are on every `tool_call` row of the
+Events tab, so a deny you regret can become `allow` without opening an
+editor, and a `read_*` you never want can become `deny`. A policy that would
+not load afterwards is never written; the jail audits a `reload` event when
+it takes a new rule into use.
+
 ## Or a webhook
 
 ```yaml

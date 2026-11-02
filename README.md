@@ -128,9 +128,9 @@ mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, -
 
 **Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
 
-**Waiting for your decision.** Headless `ask` calls (Claude Desktop and Cursor have no terminal) appear at the top of the page with their arguments and a countdown. **Allow** sends the call on, **Deny** refuses it, the deadline refuses it. See [Headless approvals](#headless-approvals).
+**Waiting for your decision.** Headless `ask` calls (Claude Desktop and Cursor have no terminal) appear at the top of the page with their arguments and a countdown. **Allow** sends the call on, **Deny** refuses it, the deadline refuses it. **Always allow** / **Always deny** first write the rule into the policy file, then answer. See [Headless approvals](#headless-approvals).
 
-**Events.** The audit logs, live: filter by server, kind, decision, time range or text, click a row for the full JSON, and watch new lines arrive as they are written. Denies, blocks and lock events pop up as notifications on either tab.
+**Events.** The audit logs, live: filter by server, kind, decision, time range or text, click a row for the full JSON, and watch new lines arrive as they are written. Denies, blocks and lock events pop up as notifications on either tab. A `tool_call` row offers **Always allow** / **Always deny** for that tool: a confirmed click writes `tools.rules.<tool>: allow|deny` into that server's policy file, keeping its comments and order, and a running jail takes the new rule into use at once (a `reload` event marks the moment). Only the `tools` and `ask` sections can change under a running server; sandbox, network and lock settings need a restart.
 
 <p align="center">
   <img src="docs/dashboard-events.jpg" alt="mcp-jail dashboard, Events tab: the audit log as a live table with filters, showing allowed and denied tool calls, a blocked lock change and the sandbox each server started with" width="100%">
@@ -352,7 +352,8 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] Per-tool argument constraints (v0.2)
 - [x] `mcp-jail wrap`: rewrite an existing client config in place (v0.2)
 - [x] Dashboard: monitor, reports, lock approval and `ask` answers (v0.3)
-- [ ] Promote a rule to allow/deny and stop a jail from the dashboard
+- [x] Promote a rule to allow/deny from the dashboard (v0.4)
+- [ ] Stop a jail from the dashboard
 - [ ] Streamable HTTP transport (wrap remote servers the same way)
 - [ ] Windows sandbox
 
