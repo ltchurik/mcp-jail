@@ -5,7 +5,7 @@ set -euo pipefail
 cd "$(dirname "$0")/.."
 IMG=mcp-jail-e2e
 docker build -q -t "$IMG" - <<'DOCKERFILE'
-FROM golang:1.24-bookworm
+FROM golang:1.27-bookworm
 RUN apt-get update && apt-get install -y --no-install-recommends bubblewrap python3 && rm -rf /var/lib/apt/lists/*
 RUN useradd -m -u 1001 dev
 USER dev

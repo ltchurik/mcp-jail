@@ -11,9 +11,15 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: "1.24" }
+        with: { go-version: "1.27" }
       - uses: golangci/golangci-lint-action@v9
-        with: { version: v2.1 }
+        with: { version: v2.15 }
+  vuln:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+      - uses: golang/govulncheck-action@v1
+        with: { go-version-input: "1.27", go-package: ./... }
   test:
     strategy:
       fail-fast: false
@@ -23,14 +29,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: "1.24" }
+        with: { go-version: "1.27" }
       - run: go test -race -cover ./...
   e2e-bwrap:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
       - uses: actions/setup-go@v7
-        with: { go-version: "1.24" }
+        with: { go-version: "1.27" }
       - run: sudo apt-get install -y bubblewrap
       # Ubuntu 24.04 restricts unprivileged user namespaces by default.
       - run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0 || true

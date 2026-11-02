@@ -13,7 +13,7 @@ scripts/e2e-docker.sh   # same, plus the bubblewrap/egress parts, from macOS
 cd examples && ../bin/mcp-jail run --policy echo-policy.yml -- python3 echo-server.py
 ```
 
-Go 1.24+. Standard library only, plus `gopkg.in/yaml.v3` — please don't add
+Go 1.27+. Standard library only, plus `gopkg.in/yaml.v3` — please don't add
 dependencies without an issue first; a security tool should be auditable.
 
 ## Ground rules
