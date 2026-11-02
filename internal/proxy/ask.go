@@ -41,17 +41,17 @@ const maxWebhookBody = 64 << 10
 // that fails to produce a decision (Slack's "ok", a 500, a timeout) leaves
 // the dashboard until the deadline, and the deadline is a deny.
 func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
-	wh := p.Policy.Ask.Webhook.URL != ""
+	wh := p.rules().Ask.Webhook.URL != ""
 	attached := p.Asks != nil && p.Asks.Attached()
 	if !wh && !attached {
 		return false, "no tty"
 	}
-	timeout := p.Policy.Ask.Timeout
+	timeout := p.rules().Ask.Timeout
 	if timeout <= 0 {
 		timeout = 60 * time.Second
 	}
-	if wh && (!attached || p.Policy.Ask.Webhook.Timeout > timeout) {
-		timeout = p.Policy.Ask.Webhook.Timeout
+	if wh && (!attached || p.rules().Ask.Webhook.Timeout > timeout) {
+		timeout = p.rules().Ask.Webhook.Timeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
@@ -111,7 +111,7 @@ func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
 // returned string is the audit reason. final is true for an explicit allow
 // or deny, false when the endpoint produced no decision.
 func (p *Proxy) askWebhook(ctx context.Context, tc jsonrpc.ToolCallParams) (ok bool, reason string, final bool) {
-	w := p.Policy.Ask.Webhook
+	w := p.rules().Ask.Webhook
 	args := string(tc.Arguments)
 	if len(args) > 400 {
 		args = args[:400] + "…"

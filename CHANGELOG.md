@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Added
+
+- The dashboard can **promote a rule**: *Always allow* / *Always deny* on a
+  pending ask and on any `tool_call` event write `tools.rules.<tool>` into
+  the server's policy file (comments and key order preserved, atomic
+  replace, never written if the result would not load) and a running jail
+  reloads its `tools` and `ask` sections at once over the control socket
+  (`POST /reload`), auditing a `reload` event. `POST
+  /api/servers/{name}/rules` with `{"tool","decision"}`; the response says
+  whether the rule is live or applies on the next start.
+
 ### Changed
 
 - README rewritten with dashboard screenshots, a feature table and a table

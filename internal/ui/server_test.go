@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -431,7 +432,7 @@ func TestAsks(t *testing.T) {
 	}
 	defer func() { _ = os.RemoveAll(dir) }()
 	b := control.NewBroker("demo")
-	cs, err := control.Listen(filepath.Join(dir, "demo.sock"), b)
+	cs, err := control.Listen(filepath.Join(dir, "demo.sock"), b, control.Hooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -523,4 +524,78 @@ func postBody(t *testing.T, url string, hdr map[string]string, body string) (int
 	defer func() { _ = r.Body.Close() }()
 	b, _ := io.ReadAll(r.Body)
 	return r.StatusCode, string(b)
+}
+
+func TestRule(t *testing.T) {
+	ts := newTestServer(t)
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	pol := filepath.Join(dir, "demo.yml")
+	if err := os.WriteFile(pol, []byte("# demo\nname: demo\ntools:\n  default: ask\n  rules:\n    \"read_*\": allow # fast\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	reloads := 0
+	var reloadErr error
+	cs, err := control.Listen(filepath.Join(dir, "demo.sock"), control.NewBroker("demo"), control.Hooks{Reload: func() error { reloads++; return reloadErr }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = cs.Close() }()
+	unreg, err := registry.Register(registry.Entry{Name: "demo", Policy: pol, Control: cs.Path()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unreg()
+	// a server that only ran in the past: edit the file, nothing to reload
+	oldPol := filepath.Join(dir, "old.yml")
+	if err := os.WriteFile(oldPol, []byte("name: old\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unreg2, _ := registry.Register(registry.Entry{Name: "old", PID: os.Getpid(), Policy: oldPol})
+	unreg2() // gone from the live list, stays in the history
+
+	ok := map[string]string{"Authorization": "Bearer " + tok, mutationHeader: "1"}
+	url := ts.URL + "/api/servers/demo/rules"
+	if code, _ := postBody(t, url, map[string]string{"Authorization": "Bearer " + tok}, `{"tool":"x","decision":"allow"}`); code != http.StatusForbidden {
+		t.Errorf("no header: %d", code)
+	}
+	for _, bad := range []string{`{"tool":"x","decision":"maybe"}`, `{"tool":"","decision":"allow"}`, `{"tool":"a b","decision":"deny"}`, `nope`} {
+		if code, _ := postBody(t, url, ok, bad); code != http.StatusBadRequest {
+			t.Errorf("%s: %d", bad, code)
+		}
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/nobody/rules", ok, `{"tool":"x","decision":"allow"}`); code != http.StatusNotFound {
+		t.Errorf("unknown server: %d", code)
+	}
+	if reloads != 0 {
+		t.Fatalf("refused requests reloaded: %d", reloads)
+	}
+	code, body := postBody(t, url, ok, `{"tool":"delete_file","decision":"deny"}`)
+	var rr RuleResponse
+	if err := json.Unmarshal([]byte(body), &rr); err != nil || code != http.StatusOK || !rr.Live || rr.Policy != pol || rr.Warning != "" || reloads != 1 {
+		t.Fatalf("rule: %d %s (reloads=%d err=%v)", code, body, reloads, err)
+	}
+	b, _ := os.ReadFile(pol)
+	if s := string(b); !strings.Contains(s, "# demo\n") || !strings.Contains(s, `"read_*": allow # fast`) || !strings.Contains(s, "    delete_file: deny\n") {
+		t.Fatalf("file:\n%s", s)
+	}
+	// the jail refuses the reload: the file is written, the response says so
+	reloadErr = errors.New("control: boom")
+	code, body = postBody(t, url, ok, `{"tool":"send_mail","decision":"allow"}`)
+	_ = json.Unmarshal([]byte(body), &rr)
+	if code != http.StatusOK || rr.Live || !strings.Contains(rr.Warning, "boom") {
+		t.Fatalf("reload failure: %d %s", code, body)
+	}
+	// history-only server: written, not live
+	code, body = postBody(t, ts.URL+"/api/servers/old/rules", ok, `{"tool":"x","decision":"ask"}`)
+	_ = json.Unmarshal([]byte(body), &rr)
+	if code != http.StatusOK || rr.Live || !strings.Contains(rr.Warning, "next start") {
+		t.Fatalf("history: %d %s", code, body)
+	}
+	if b, _ := os.ReadFile(oldPol); !strings.Contains(string(b), "x: ask") {
+		t.Fatalf("old.yml:\n%s", b)
+	}
 }

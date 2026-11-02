@@ -3,6 +3,8 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -57,7 +59,7 @@ func TestBroker(t *testing.T) {
 func TestHandler(t *testing.T) {
 	b := NewBroker("srv")
 	p := b.Submit("rm", json.RawMessage(`{}`), time.Now().Add(time.Minute))
-	ts := httptest.NewServer(Handler(b))
+	ts := httptest.NewServer(Handler(b, Hooks{}))
 	defer ts.Close()
 
 	r, err := http.Get(ts.URL + "/asks")
@@ -98,7 +100,7 @@ func TestHandler(t *testing.T) {
 
 func TestLongPathFallsBackToTempDir(t *testing.T) {
 	long := filepath.Join(t.TempDir(), strings.Repeat("deep/", 30), "x.sock")
-	s, err := Listen(long, NewBroker("x"))
+	s, err := Listen(long, NewBroker("x"), Hooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -126,7 +128,7 @@ func TestSocketRoundTrip(t *testing.T) {
 	if err := os.WriteFile(path, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	s, err := Listen(path, b)
+	s, err := Listen(path, b, Hooks{})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,5 +169,62 @@ func TestSocketRoundTrip(t *testing.T) {
 	}
 	if _, err := c.List(ctx); err == nil {
 		t.Fatal("list after close must fail")
+	}
+}
+
+func TestReloadHook(t *testing.T) {
+	calls := 0
+	var fail error
+	h := Hooks{Reload: func() error { calls++; return fail }}
+	ts := httptest.NewServer(Handler(NewBroker("srv"), h))
+	defer ts.Close()
+	post := func(url string) (int, string) {
+		r, err := http.Post(url, "application/json", nil) //nolint:gosec // test server URL
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, _ := io.ReadAll(r.Body)
+		_ = r.Body.Close()
+		return r.StatusCode, string(b)
+	}
+	if c, b := post(ts.URL + "/reload"); c != http.StatusOK || calls != 1 || !strings.Contains(b, `"ok":true`) {
+		t.Fatalf("ok: %d %s calls=%d", c, b, calls)
+	}
+	fail = errors.New("policy.yml: tools.default: bad")
+	if c, b := post(ts.URL + "/reload"); c != http.StatusConflict || !strings.Contains(b, "tools.default: bad") {
+		t.Fatalf("refused: %d %s", c, b)
+	}
+	none := httptest.NewServer(Handler(NewBroker("srv"), Hooks{}))
+	defer none.Close()
+	if c, _ := post(none.URL + "/reload"); c != http.StatusNotImplemented {
+		t.Fatalf("no hook: %d", c)
+	}
+	if r, err := http.Get(ts.URL + "/reload"); err == nil {
+		_ = r.Body.Close()
+		if r.StatusCode == http.StatusOK {
+			t.Fatal("GET /reload must not reload")
+		}
+	}
+}
+
+func TestClientReload(t *testing.T) {
+	dir, err := os.MkdirTemp("", "cs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = os.RemoveAll(dir) }()
+	var fail error
+	s, err := Listen(filepath.Join(dir, "r.sock"), NewBroker("srv"), Hooks{Reload: func() error { return fail }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = s.Close() }()
+	c := Dial(s.Path())
+	if err := c.Reload(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	fail = errors.New("nope: unparsable")
+	if err := c.Reload(context.Background()); err == nil || !strings.Contains(err.Error(), "unparsable") {
+		t.Fatalf("error not relayed: %v", err)
 	}
 }

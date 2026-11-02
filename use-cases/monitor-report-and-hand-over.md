@@ -24,9 +24,10 @@ token). **Overview** has a card per server, running or not: sandbox, network
 mode, lock sections and a **Pending change** box when a rug-pull was caught,
 plus the report for the chosen range. Headless `ask` calls appear at the
 top with Allow / Deny while the page is open. **Events** is the audit log, live:
-filter by server, kind, decision or text, click a row for the full JSON,
-and watch denies and blocks arrive as toasts. Leave it open on a second
-screen.
+filter by server, kind, decision or text, click a row for the full JSON
+(and, for a tool call, an *Always allow* / *Always deny* button that writes
+the rule into the policy), and watch denies and blocks arrive as toasts.
+Leave it open on a second screen.
 
 ## This week: `report`
 
