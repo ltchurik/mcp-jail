@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- README and SECURITY state that the macOS profile restricts file and network
+  operations only: Mach IPC, `sysctl` and other system services stay reachable.
+
 ## v0.6.1 — 2026-11-03
 
 ### Fixed
