@@ -372,7 +372,7 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 
 `sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
 
-macOS notes: `sandbox-exec` is deprecated by Apple but still ships and works on current releases. The profile is an *allow by default, hide the sensitive trees* design: the server keeps access to system frameworks and its toolchain, but `/Users`, `$HOME`, the per-user temp dir and (with `filesystem.tmp: true`) `/tmp` are invisible unless listed, and nothing outside `filesystem.read_write` is writable. There is no PID or mount isolation and no transparent egress (a server that ignores `HTTP_PROXY` simply has no network in allowlist mode).
+macOS notes: `sandbox-exec` is deprecated by Apple but still ships and works on current releases. The profile is an *allow by default, hide the sensitive trees* design: the server keeps access to system frameworks and its toolchain, but `/Users`, `$HOME`, the per-user temp dir and (with `filesystem.tmp: true`) `/tmp` are invisible unless listed, and nothing outside `filesystem.read_write` is writable. There is no PID or mount isolation and no transparent egress (a server that ignores `HTTP_PROXY` simply has no network in allowlist mode). The profile restricts file and network operations only: Mach IPC, `sysctl` and other system services stay reachable, so a macOS jail is a filesystem and network scope, not a namespace.
 
 ## Use cases
 

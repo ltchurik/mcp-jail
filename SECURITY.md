@@ -38,7 +38,8 @@ Known limitations, documented in the README and **not** vulnerabilities:
   on the host, except loopback, link-local, private and other special ranges,
   which are refused unless the literal address is in `network.allow`
 - the macOS sandbox scopes the filesystem and the network only: no PID or
-  mount isolation, and system locations outside `/Users` stay readable
+  mount isolation, system locations outside `/Users` stay readable, and Mach
+  IPC, `sysctl` and other system services are not restricted
 - no sandbox on Windows yet; policy, lock and audit still apply
 - a hostile MCP *client* is out of scope
 
