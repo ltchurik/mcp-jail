@@ -1,4 +1,4 @@
-# mcp-jail
+# mcp-jail by [Ľubomír Tchurik](https://lubomirtchurik.sk)
 
 **Run any MCP server in a jail.** Egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, and a local dashboard to watch and approve what your servers do.
 
