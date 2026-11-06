@@ -6,6 +6,7 @@
 
 - README and SECURITY state that the macOS profile restricts file and network
   operations only: Mach IPC, `sysctl` and other system services stay reachable.
+- The README title names the author; the roadmap lists the v0.6 items.
 
 ## v0.6.1 — 2026-11-03
 
