@@ -18,6 +18,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/audit"
 	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/policy"
 	"github.com/ltchurik/mcp-jail/internal/scan"
@@ -43,6 +44,8 @@ type Proxy struct {
 	// Asks, when set, lets an attached dashboard answer `ask` decisions that
 	// have no terminal (see package control). nil: terminal or webhook only.
 	Asks *control.Broker
+	// Limits enforces the policy's call and argument budgets; nil: none.
+	Limits *limits.Limiter
 	// MaxPending bounds the requests awaiting a server response; past it
 	// the oldest is dropped and answered with CodeNoResponse, so a server
 	// that stops answering cannot grow the proxy without bound. 0: 1024.
@@ -381,6 +384,15 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: "args: " + err.Error(), Args: args})
 			p.Logf("deny tools/call %s (%v)", tc.Name, err)
 			p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodePolicyDenied, "mcp-jail: tool "+tc.Name+" denied by policy: "+err.Error()))
+			return false
+		}
+	}
+	if d != policy.Deny {
+		pat, _ := p.Policy.ToolLimit(tc.Name)
+		if why := p.Limits.Call(pat, len(tc.Arguments)); why != "" {
+			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
+			p.Logf("deny tools/call %s (%s)", tc.Name, why)
+			p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeLimit, "mcp-jail: tool "+tc.Name+" over budget ("+strings.TrimPrefix(why, "limit: ")+")"))
 			return false
 		}
 	}

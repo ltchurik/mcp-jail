@@ -39,6 +39,9 @@ type Options struct {
 	// Observe is told about protocol trouble (an HTTP error, an unusable
 	// body, a lost session) so it can be audited. May be nil.
 	Observe func(reason string)
+	// Egress, when set, is asked before each POST whether n more bytes may
+	// leave; a no fails the message as over budget.
+	Egress func(n int) bool
 }
 
 // Conn is one connection to a remote server: a writer for the proxy's
@@ -49,6 +52,7 @@ type Conn struct {
 	client  *http.Client
 	logf    func(string, ...any)
 	observe func(string)
+	egress  func(int) bool
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -97,7 +101,7 @@ func Dial(o Options) (*Conn, error) {
 		ForceAttemptHTTP2:     true,
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	c := &Conn{url: u, headers: o.Headers, logf: o.Logf, observe: o.Observe, ctx: ctx, cancel: cancel, initc: make(chan struct{})}
+	c := &Conn{url: u, headers: o.Headers, logf: o.Logf, observe: o.Observe, egress: o.Egress, ctx: ctx, cancel: cancel, initc: make(chan struct{})}
 	c.client = &http.Client{Transport: tr, CheckRedirect: func(*http.Request, []*http.Request) error {
 		// A redirect would carry the headers to another host. Refuse.
 		return http.ErrUseLastResponse
@@ -232,6 +236,10 @@ func (c *Conn) post(line []byte) {
 	session, protocol, lost := c.state()
 	if lost && !isInit {
 		c.fail(m, "remote session expired; restart the client")
+		return
+	}
+	if c.egress != nil && !c.egress(len(line)) {
+		c.fail(m, "egress budget exceeded (limits.egress_bytes)")
 		return
 	}
 	req, err := http.NewRequestWithContext(c.ctx, http.MethodPost, c.url.String(), bytes.NewReader(line))

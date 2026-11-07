@@ -416,3 +416,29 @@ func TestServerRequests(t *testing.T) {
 		}
 	}
 }
+
+func TestLimitsSection(t *testing.T) {
+	p, err := parse([]byte("network: { mode: allowlist, allow: [a.example] }\nlimits: { calls: 60/1m, tools: { \"send_*\": 5/1h, send_mail: 2/1h, \"*\": 100/1h }, args_bytes: 1MB/1h, egress_bytes: 50MB/1h }"), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.Limits.Calls.String() != "60/1m" || p.Limits.ArgsBytes.String() != "1MB/1h" || p.Limits.EgressBytes.String() != "50MB/1h" {
+		t.Fatalf("%+v", p.Limits)
+	}
+	for tool, want := range map[string]string{"send_mail": "send_mail", "send_x": "send_*", "other": "*"} {
+		if pat, _ := p.ToolLimit(tool); pat != want {
+			t.Errorf("ToolLimit(%s) = %q, want %q", tool, pat, want)
+		}
+	}
+	if pat, r := Default().ToolLimit("x"); pat != "" || !r.Zero() {
+		t.Fatalf("no limits: %q %v", pat, r)
+	}
+	for _, bad := range []string{"limits: { calls: 60 }", "limits: { calls: 1/1y }", "limits: { tools: { \"\": 1/1m } }", "network: { mode: all }\nlimits: { egress_bytes: 1MB/1h }"} {
+		if _, err := parse([]byte(bad), "p"); err == nil {
+			t.Fatalf("%s must be refused", bad)
+		}
+	}
+	if _, err := parse([]byte("server: { url: https://x.example/mcp }\nlimits: { egress_bytes: 1MB/1h }"), "p"); err != nil {
+		t.Fatalf("remote egress budget: %v", err)
+	}
+}

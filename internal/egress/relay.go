@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/netguard"
 )
 
@@ -25,6 +26,9 @@ type Observer func(kind, host string, allowed bool)
 
 // Relay is the host side: it listens on a Unix socket for the shim.
 type Relay struct {
+	// Limits meters the bytes relayed towards the network; nil: no budget.
+	Limits *limits.Limiter
+
 	allow   Allower
 	observe Observer
 	ln      net.Listener
@@ -106,6 +110,11 @@ func (r *Relay) handle(c net.Conn) {
 		_ = c.Close()
 		return
 	}
+	if !r.Limits.Egress(req.Host, 0) {
+		_, _ = fmt.Fprintf(c, "ERR egress budget exceeded: %s\n", req.Host)
+		_ = c.Close()
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	up, err := r.dial(ctx, "tcp", net.JoinHostPort(req.Host, strconv.Itoa(req.Port)))
 	cancel()
@@ -119,7 +128,7 @@ func (r *Relay) handle(c net.Conn) {
 		_ = c.Close()
 		return
 	}
-	pipe(up, bufConn{Reader: br, Conn: c})
+	pipe(r.Limits.Wrap(up, req.Host), bufConn{Reader: br, Conn: c})
 }
 
 // bufConn replays bytes the header reader buffered ahead of the payload.

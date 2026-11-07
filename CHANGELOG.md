@@ -20,6 +20,13 @@
   `==`, a deno remote module, a docker image without a digest, `sh -c "curl …
   | sh"`. The warning shows the pinned form; `wrap` writes it into the policy
   header; `run` audits it (`policy` / `warn`).
+- `limits`: token-bucket budgets per window. `calls` (tools/call overall),
+  `tools` (per exact name or glob), `args_bytes` (bytes of tools/call
+  arguments) deny a call with error `-32007` before it reaches the server,
+  audited as `deny` with `reason: limit: …`; a refused call is not charged.
+  `egress_bytes` is enforced on the Linux relay, the `HTTP_PROXY` filter and
+  every POST to a remote server: a connection past its budget ends (`net` /
+  `blocked`). `mcp-jail show` lists the budgets.
 - `lint.results`: the same content heuristics on what the server returns
   (`tools/call` results, `resources/read` contents, `prompts/get` messages,
   `notifications/message`), limited to the rules that make sense for data

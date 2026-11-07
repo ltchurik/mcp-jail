@@ -23,6 +23,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/egress"
 	"github.com/ltchurik/mcp-jail/internal/launcher"
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
 	"github.com/ltchurik/mcp-jail/internal/policy"
@@ -171,6 +172,14 @@ func cmdRun(args []string) error {
 	}
 	defer func() { _ = al.Close() }()
 
+	// budgets: calls and argument bytes are charged in the proxy, egress
+	// bytes on the relay / HTTP_PROXY or on each POST to a remote server
+	lim := limits.New(p.Limits.Calls, p.Limits.ArgsBytes, p.Limits.EgressBytes, p.Limits.Tools, nil)
+	lim.OnEgress = func(host, why string) {
+		logf("net: blocked %s (%s)", host, why)
+		al.Log(audit.Event{Kind: "net", Host: host, Decision: "blocked", Reason: why})
+	}
+
 	var (
 		sin  io.WriteCloser
 		sout io.Reader
@@ -179,10 +188,10 @@ func cmdRun(args []string) error {
 		wait func() int // exit code once the proxy is done
 	)
 	if p.Remote() {
-		sin, sout, how, stop, wait, err = startRemote(p, al)
+		sin, sout, how, stop, wait, err = startRemote(p, al, lim)
 	} else {
 		var cleanup func()
-		sin, sout, how, stop, wait, cleanup, err = startLocal(p, *pol, cmdline, al)
+		sin, sout, how, stop, wait, cleanup, err = startLocal(p, *pol, cmdline, al, lim)
 		if cleanup != nil {
 			defer cleanup()
 		}
@@ -203,7 +212,7 @@ func cmdRun(args []string) error {
 	// control socket: the dashboard answers `ask` decisions through it and
 	// asks for a policy reload after it edited the file
 	asks := control.NewBroker(p.Name)
-	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf}
+	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Limits: lim}
 	stopc := make(chan string, 1)
 	hooks := control.Hooks{
 		Reload: func() error {
@@ -270,7 +279,7 @@ func cmdRun(args []string) error {
 
 // startLocal starts the server command in its sandbox. cleanup releases
 // the relay, proxy and work directory and must run after the proxy ends.
-func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, cleanup func(), err error) {
+func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger, lim *limits.Limiter) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, cleanup func(), err error) {
 	var cleanups []func()
 	cleanup = func() {
 		for i := len(cleanups) - 1; i >= 0; i-- {
@@ -303,6 +312,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		if err != nil {
 			return fail(fmt.Errorf("egress relay: %w", err))
 		}
+		relay.Limits = lim
 		cleanups = append(cleanups, func() { _ = relay.Close() })
 		resolv := filepath.Join(relay.Dir(), "resolv.conf")
 		if err := os.WriteFile(resolv, []byte(egress.ResolvConf), 0o600); err != nil {
@@ -327,6 +337,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		if err != nil {
 			return fail(fmt.Errorf("netproxy: %w", err))
 		}
+		np.Limits = lim
 		cleanups = append(cleanups, func() { _ = np.Close() })
 		spec.ProxyPort = np.Port()
 		for _, k := range []string{"HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy"} {
@@ -380,12 +391,14 @@ func protectPaths(p *policy.Policy, pol string) []string {
 // startRemote connects to a Streamable HTTP server named by server.url.
 // There is nothing to sandbox: the jail itself is the only thing talking to
 // the server, over a guarded dialer, with the policy's headers.
-func startRemote(p *policy.Policy, al *audit.Logger) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, err error) {
+func startRemote(p *policy.Policy, al *audit.Logger, lim *limits.Limiter) (sin io.WriteCloser, sout io.Reader, how string, stop func(), wait func() int, err error) {
 	if p.Network.Mode != policy.NetNone || len(p.Filesystem.ReadOnly)+len(p.Filesystem.ReadWrite) > 0 || p.Sandbox.Disabled {
 		logf("server.url is set: the sandbox, filesystem and network sections do not apply to a remote server")
 	}
+	u, _ := url.Parse(p.Server.URL)
 	conn, err := remote.Dial(remote.Options{URL: p.Server.URL, Headers: p.Server.Headers, Logf: logf,
-		Observe: func(reason string) { al.Log(audit.Event{Kind: "protocol", Decision: "blocked", Reason: reason}) }})
+		Observe: func(reason string) { al.Log(audit.Event{Kind: "protocol", Decision: "blocked", Reason: reason}) },
+		Egress:  func(n int) bool { return lim.Egress(u.Hostname(), int64(n)) }})
 	if err != nil {
 		return nil, nil, "", nil, nil, err
 	}
