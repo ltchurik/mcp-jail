@@ -31,6 +31,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/registry"
 	"github.com/ltchurik/mcp-jail/internal/remote"
 	"github.com/ltchurik/mcp-jail/internal/sandbox"
+	"github.com/ltchurik/mcp-jail/internal/scan"
 	"github.com/ltchurik/mcp-jail/internal/ui"
 	"github.com/ltchurik/mcp-jail/internal/wrap"
 )
@@ -212,7 +213,7 @@ func cmdRun(args []string) error {
 	// control socket: the dashboard answers `ask` decisions through it and
 	// asks for a policy reload after it edited the file
 	asks := control.NewBroker(p.Name)
-	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Limits: lim}
+	px := &proxy.Proxy{Policy: p, Audit: al, Logf: logf, Limits: lim, EnvSecrets: scan.EnvSecrets(os.Environ())}
 	stopc := make(chan string, 1)
 	hooks := control.Hooks{
 		Reload: func() error {

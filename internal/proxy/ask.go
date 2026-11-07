@@ -21,6 +21,9 @@ type webhookRequest struct {
 	Tool      string          `json:"tool"`
 	Arguments json.RawMessage `json:"arguments,omitempty"`
 	Time      time.Time       `json:"ts"`
+	// Note says why the call is asked about beyond the rule, e.g. a
+	// credential in the arguments; empty otherwise.
+	Note string `json:"note,omitempty"`
 	// Text is a one-line human summary so that chat webhooks (Slack, Mattermost,
 	// Discord-compatible) show something useful.
 	Text string `json:"text"`
@@ -44,7 +47,7 @@ var webhookClient = &http.Client{CheckRedirect: func(*http.Request, []*http.Requ
 // denied at once, as before. Otherwise the first decision wins; a webhook
 // that fails to produce a decision (Slack's "ok", a 500, a timeout) leaves
 // the dashboard until the deadline, and the deadline is a deny.
-func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
+func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams, note string) (bool, string) {
 	wh := p.rules().Ask.Webhook.URL != ""
 	attached := p.Asks != nil && p.Asks.Attached()
 	if !wh && !attached {
@@ -68,7 +71,7 @@ func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
 	whc := make(chan result, 1)
 	if wh {
 		go func() {
-			ok, reason, final := p.askWebhook(ctx, tc)
+			ok, reason, final := p.askWebhook(ctx, tc, note)
 			whc <- result{ok, reason, final}
 		}()
 	} else {
@@ -114,15 +117,19 @@ func (p *Proxy) askHeadless(tc jsonrpc.ToolCallParams) (bool, string) {
 // askWebhook asks the configured endpoint. Every failure mode is a deny; the
 // returned string is the audit reason. final is true for an explicit allow
 // or deny, false when the endpoint produced no decision.
-func (p *Proxy) askWebhook(ctx context.Context, tc jsonrpc.ToolCallParams) (ok bool, reason string, final bool) {
+func (p *Proxy) askWebhook(ctx context.Context, tc jsonrpc.ToolCallParams, note string) (ok bool, reason string, final bool) {
 	w := p.rules().Ask.Webhook
 	args := string(tc.Arguments)
 	if len(args) > 400 {
 		args = args[:400] + "…"
 	}
+	text := fmt.Sprintf("[mcp-jail] %s wants to call %s %s", p.Policy.Name, tc.Name, args)
+	if note != "" {
+		text += " (" + note + ")"
+	}
 	body, err := json.Marshal(webhookRequest{
-		Server: p.Policy.Name, Tool: tc.Name, Arguments: tc.Arguments, Time: time.Now().UTC(),
-		Text: fmt.Sprintf("[mcp-jail] %s wants to call %s %s", p.Policy.Name, tc.Name, args),
+		Server: p.Policy.Name, Tool: tc.Name, Arguments: tc.Arguments, Time: time.Now().UTC(), Note: note,
+		Text: text,
 	})
 	if err != nil {
 		return false, "webhook: encode: " + err.Error(), false

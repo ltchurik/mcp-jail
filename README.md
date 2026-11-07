@@ -33,6 +33,7 @@ Claude / Cursor / Claude Code ──stdio──▶ mcp-jail ──stdio──▶
 - [What each layer does](#what-each-layer-does)
 - [Hard egress allowlist](#hard-egress-allowlist)
 - [Headless approvals](#headless-approvals)
+- [Secrets in arguments](#secrets-in-arguments)
 - [Budgets](#budgets)
 - [Server-initiated requests](#server-initiated-requests)
 - [Rug-pull lock](#rug-pull-lock)
@@ -179,6 +180,7 @@ tools:
       decision: allow
       args:
         url: { host: [network.allow] }       # host in network.allow (or list patterns)
+  secrets: warn             # off | warn | deny | ask: an argument that looks like a credential
 
 ask:                        # how `ask` is answered without a terminal
   timeout: 60s              # how long to wait for the dashboard (mcp-jail ui)
@@ -236,6 +238,7 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
+| `tools.secrets` | A `tools/call` argument that looks like a credential (AWS key, private key, JWT, vendor tokens, `Bearer …`, `user:password@`, `password = …`, the value of a secret-looking variable in mcp-jail's environment) is audited, refused or asked about; the value never reaches the log | **Hard** (`deny` / `ask`) or hint (`warn`) |
 | `limits` | Token-bucket budgets: `tools/call` overall and per pattern, bytes of arguments, bytes out to the network (relay / `HTTP_PROXY` / remote POSTs). Over budget ⇒ the call is answered with `-32007` before the server sees it; a connection past its budget ends | **Hard** |
 | `server_requests` | A request the *server* sends to the client (`sampling/createMessage`: generate text under a prompt the server wrote; `elicitation/create`: a form for the user; `roots/list`; `ping`) is decided like a tool call, allow / deny / ask, and a denied one is answered to the server with a JSON-RPC error without reaching the client. Default: `ping` and `roots/list` allowed, everything else denied | **Hard** |
 | `lint.lists` | Content heuristics on every list the lock has yet to approve: hidden markup and invisible characters, text addressed to the model, sensitive paths, fetch-and-run and exfiltration phrases, tool names of your other servers. Findings are logged, audited and shown with the list; `deny` holds a first-contact list for review, see [Content lint](#content-lint) | Hint (`warn`) or **Hard** gate on first contact (`deny`); the lock stays the decision |
@@ -278,6 +281,18 @@ Claude Desktop and Cursor start servers without a terminal, so `ask` would alway
 ```
 
 The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else (a timeout, a non-200 status, a redirect, a body that is not a decision, a connection error) denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is not a decision, so on its own that is a deny. With the dashboard open as well, a non-decision from the webhook leaves the call waiting for the page until the deadline: Slack pings you, you click Allow. An explicit webhook `deny` is final. A terminal, when there is one, still takes precedence over both. The URL must be `https`, except for a listener on localhost; the payload carries the full tool arguments, so point it only at an endpoint you trust with them.
+
+## Secrets in arguments
+
+The model should never need to hand a server an AWS key, a private key, a JWT or the value of `$GITHUB_TOKEN`. When a `tools/call` argument looks like one, `tools.secrets` decides: `warn` (the default) audits it (`kind: secret`) and lets the call through, `deny` refuses it (`-32001`), `ask` asks even when the rule says `allow` (the terminal and the webhook see why), `off` skips the check. The shapes recognised are AWS access keys, PEM private keys, JWTs, GitHub / GitLab / Slack / Google / OpenAI / Anthropic / Stripe / SendGrid / npm / PyPI tokens, `Bearer …`, `user:password@` in a URL and `password = …` assignments, plus the **values** of secret-looking variables in mcp-jail's own environment (`*_TOKEN`, `*_SECRET`, `*PASSWORD*`, `*API_KEY*`…, 12 bytes or longer), whatever they look like. The audit names the rule, the argument path and the length, never the value. A tool that legitimately takes a credential gets its own `secrets:` on the rule; `tools.secrets_ignore` drops a rule globally.
+
+```yaml
+tools:
+  secrets: deny
+  secrets_ignore: [password-assignment]
+  rules:
+    set_api_token: { decision: ask, secrets: off }
+```
 
 ## Budgets
 

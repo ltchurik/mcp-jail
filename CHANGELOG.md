@@ -20,6 +20,16 @@
   `==`, a deno remote module, a docker image without a digest, `sh -c "curl …
   | sh"`. The warning shows the pinned form; `wrap` writes it into the policy
   header; `run` audits it (`policy` / `warn`).
+- `tools.secrets`: a `tools/call` argument that looks like a credential (AWS
+  access key, PEM private key, JWT, GitHub / GitLab / Slack / Google / OpenAI
+  / Anthropic / Stripe / SendGrid / npm / PyPI tokens, `Bearer …`,
+  `user:password@` in a URL, `password = …`, or the value of a
+  secret-looking variable in mcp-jail's own environment) is audited (`kind:
+  secret`, default `warn`), refused (`deny`), or asked about even under an
+  allow rule (`ask`; the terminal prompt and the webhook carry the reason as
+  `note`). The audit names the rule, the argument path and the length, never
+  the value. A rule's own `secrets:` overrides; `tools.secrets_ignore` drops
+  rules.
 - `limits`: token-bucket budgets per window. `calls` (tools/call overall),
   `tools` (per exact name or glob), `args_bytes` (bytes of tools/call
   arguments) deny a call with error `-32007` before it reaches the server,

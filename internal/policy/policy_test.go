@@ -442,3 +442,21 @@ func TestLimitsSection(t *testing.T) {
 		t.Fatalf("remote egress budget: %v", err)
 	}
 }
+
+func TestSecretsSettings(t *testing.T) {
+	p, err := parse([]byte("tools: { secrets: deny, secrets_ignore: [bearer], rules: { set_token: { decision: allow, secrets: off }, \"read_*\": allow } }"), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if p.SecretsFor("set_token") != SecretsOff || p.SecretsFor("read_x") != SecretsDeny || p.SecretsFor("other") != SecretsDeny {
+		t.Fatalf("%+v", p.Tools)
+	}
+	if p, err := parse([]byte("name: x"), "p"); err != nil || p.SecretsFor("x") != SecretsWarn {
+		t.Fatalf("default must be warn: %v %v", p, err)
+	}
+	for _, bad := range []string{"tools: { secrets: maybe }", "tools: { secrets_ignore: [nope] }", "tools: { rules: { x: { decision: allow, secrets: loud } } }"} {
+		if _, err := parse([]byte(bad), "p"); err == nil {
+			t.Fatalf("%s must be refused", bad)
+		}
+	}
+}
