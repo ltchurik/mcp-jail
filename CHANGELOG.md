@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.7.0 — 2026-11-07
+
+What a server *says* and *returns* is now checked, not only what it may call: content lint on definitions and results, a policy for server-initiated requests, budgets, credential detection, and a warning for launchers that fetch their program at start. Existing policies keep working unchanged; the new defaults are `warn`.
 
 ### Added
 
