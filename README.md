@@ -198,7 +198,7 @@ audit:
 
 sandbox:
   disabled: false           # true = policy/lock/audit only, no namespaces
-  env: [PATH, HOME, LANG]   # env vars passed into the jail
+  env: [PATH, HOME, LANG]   # NAME passes the host's value through, NAME=value sets one
 
 exec:                       # optional: pin what a launcher may exec outside the system paths
   allow: [~/.local/bin/some-server]
@@ -365,6 +365,10 @@ filesystem:
 ```
 
 Or install the server once (`npm i -g`) and point `command` at the binary; then nothing beyond the toolchain is needed.
+
+**Pin the version.** `npx -y @scope/server` runs whatever version the registry serves *today*; the lock catches a changed tool list and `exec.sha256` a changed file, but neither helps when a new release behaves the same on the surface. `mcp-jail run`, `mcp-jail show` and `mcp-jail wrap` warn about a launcher that resolves its program at start: an npx / bunx / pnpm dlx / yarn dlx package without an exact version (`@latest`, a range or nothing), a uvx / pipx package without `==`, a deno remote module, a docker image without a digest, or `sh -c "curl … | sh"`. The warning shows the pinned form (`@scope/server@1.2.3`, `pkg==1.2.3`, `image@sha256:…`); `wrap` also writes it into the policy header. The audit log carries it as `kind: policy`, `decision: warn`.
+
+**Update checks and telemetry.** Every jail starts with `DO_NOT_TRACK=1`, `NO_UPDATE_NOTIFIER=1` and `npm_config_update_notifier=false`, the opt-outs package managers and most CLIs honour, so a launcher does not phone home or look for a newer version on its own (the egress allowlist stops it anyway on Linux). `sandbox.env` accepts `NAME=value` to set more: `npm_config_ignore_scripts=true` skips the install scripts of an npx package, for instance. An entry with the same name overrides a default.
 
 **Launchers that exec a second binary.** Some packages are only a shim: `npx some-server` resolves to a few lines of JavaScript that exec a binary installed elsewhere (`~/.local/bin/some-server`, `~/.cargo/bin/…`). The jail pins the *jail*, not the program: whatever the shim execs runs inside the same namespaces, but it is trusted as whatever is on disk, and a directory you share whole to make it visible makes every neighbour executable too. `exec.allow` lists the files instead: on Linux each one is bound read-only on its own, so its siblings are simply absent; on macOS nothing under the hidden trees may exec except the listed files and the directories the policy shares. `exec.sha256` pins the content, and a changed file refuses to start:
 

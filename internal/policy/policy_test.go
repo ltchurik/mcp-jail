@@ -375,3 +375,14 @@ func TestLintSection(t *testing.T) {
 		}
 	}
 }
+
+func TestSandboxEnvEntries(t *testing.T) {
+	if _, err := parse([]byte("sandbox: { env: [PATH, npm_config_ignore_scripts=true, X_1=a=b] }"), "p"); err != nil {
+		t.Fatal(err)
+	}
+	for _, bad := range []string{"sandbox: { env: [1X] }", "sandbox: { env: [\"=v\"] }", "sandbox: { env: [\"A B\"] }", "sandbox: { env: [\"A=\\u0001\"] }"} {
+		if _, err := parse([]byte(bad), "p"); err == nil {
+			t.Fatalf("%s must be refused", bad)
+		}
+	}
+}

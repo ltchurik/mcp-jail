@@ -37,7 +37,7 @@ func TestExplain(t *testing.T) {
 	if len(plan.ReadOnly) != 1 || plan.ReadOnly[0] != "/srv/ro" || len(plan.ReadWrite) != 1 || !plan.Tmp {
 		t.Fatalf("filesystem: %+v", plan)
 	}
-	if plan.Network != "allowlist" || len(plan.Allow) != 1 || len(plan.Env) != 1 || plan.Env[0] != "PATH" {
+	if plan.Network != "allowlist" || len(plan.Allow) != 1 || len(plan.Env) != 4 || plan.Env[3] != "PATH" || plan.Env[0] != "DO_NOT_TRACK" {
 		t.Fatalf("network/env: %+v", plan)
 	}
 

@@ -31,6 +31,8 @@ def probe(args):
             out["dns"] = socket.gethostbyname(args["dns"])
         except OSError as e:
             out["dns"] = "error:" + type(e).__name__
+    if args.get("env"):  # environment as the server sees it
+        out["env"] = {k: os.environ.get(k) for k in args["env"]}
     if args.get("exec"):  # can the server run this program?
         import subprocess
         try:
