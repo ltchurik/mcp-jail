@@ -53,6 +53,24 @@ const (
 	FirstReview FirstContact = "review"
 )
 
+// SecretsMode is what a credential found in tool arguments does.
+type SecretsMode string
+
+const (
+	SecretsOff  SecretsMode = "off"
+	SecretsWarn SecretsMode = "warn"
+	SecretsDeny SecretsMode = "deny"
+	SecretsAsk  SecretsMode = "ask"
+)
+
+func checkSecretsMode(m SecretsMode) error {
+	switch m {
+	case SecretsOff, SecretsWarn, SecretsDeny, SecretsAsk:
+		return nil
+	}
+	return fmt.Errorf("must be off|warn|deny|ask, got %q", m)
+}
+
 // LintMode is what a lint finding does.
 type LintMode string
 
@@ -87,6 +105,16 @@ type Policy struct {
 	Tools struct {
 		Default Decision        `yaml:"default"`
 		Rules   map[string]Rule `yaml:"rules"` // exact name or glob (filepath.Match)
+		// Secrets is what happens when a tools/call argument looks like a
+		// credential (an AWS key, a private key, a JWT, a bearer token, a
+		// password assignment, the value of a secret-looking variable in
+		// mcp-jail's own environment; see scan.Secrets): "warn" (default)
+		// audits it (kind secret), "deny" refuses the call, "ask" asks even
+		// when the rule says allow, "off" skips the check. A rule's own
+		// secrets field overrides it for that tool.
+		Secrets SecretsMode `yaml:"secrets"`
+		// SecretsIgnore lists secrets rule ids (scan.SecretRules) to skip.
+		SecretsIgnore []string `yaml:"secrets_ignore"`
 	} `yaml:"tools"`
 
 	Ask struct {
@@ -233,6 +261,8 @@ var reservedHeaders = map[string]bool{
 type Rule struct {
 	Decision Decision                 `yaml:"decision"`
 	Args     map[string]ArgConstraint `yaml:"args"`
+	// Secrets overrides tools.secrets for this rule; "" inherits.
+	Secrets SecretsMode `yaml:"secrets"`
 }
 
 // ArgConstraint restricts one tool argument. A constrained argument that is
@@ -275,6 +305,7 @@ func Default() *Policy {
 	p.Lock.First = FirstRecord
 	p.Lint.Lists = LintWarn
 	p.Lint.Results = LintWarn
+	p.Tools.Secrets = SecretsWarn
 	p.ServerRequests.Default = Deny
 	return p
 }
@@ -377,9 +408,25 @@ func (p *Policy) Validate() error {
 			return fmt.Errorf("lint.ignore: unknown rule %q (rules: %s)", r, strings.Join(scan.Rules, ", "))
 		}
 	}
+	if p.Tools.Secrets == "" {
+		p.Tools.Secrets = SecretsWarn
+	}
+	if err := checkSecretsMode(p.Tools.Secrets); err != nil {
+		return fmt.Errorf("tools.secrets: %w", err)
+	}
+	for _, r := range p.Tools.SecretsIgnore {
+		if !knownSecretRule(r) {
+			return fmt.Errorf("tools.secrets_ignore: unknown rule %q (rules: %s)", r, strings.Join(scan.SecretRules, ", "))
+		}
+	}
 	for k, r := range p.Tools.Rules {
 		if err := checkDecision(r.Decision); err != nil {
 			return fmt.Errorf("tools.rules[%s]: %w", k, err)
+		}
+		if r.Secrets != "" {
+			if err := checkSecretsMode(r.Secrets); err != nil {
+				return fmt.Errorf("tools.rules[%s].secrets: %w", k, err)
+			}
 		}
 		for arg, c := range r.Args {
 			if len(c.Under) == 0 && len(c.Host) == 0 {
@@ -587,6 +634,24 @@ func (p *Policy) Rule(tool string) Rule {
 		return r
 	}
 	return Rule{Decision: p.Tools.Default}
+}
+
+func knownSecretRule(id string) bool {
+	for _, r := range scan.SecretRules {
+		if r == id {
+			return true
+		}
+	}
+	return false
+}
+
+// SecretsFor returns the secrets mode in force for a tool: the matching
+// rule's own, else tools.secrets.
+func (p *Policy) SecretsFor(tool string) SecretsMode {
+	if m := p.Rule(tool).Secrets; m != "" {
+		return m
+	}
+	return p.Tools.Secrets
 }
 
 // ToolLimit returns the limits.tools pattern that governs tool and its
@@ -832,6 +897,12 @@ tools:
     #   decision: allow
     #   args:
     #     url: { host: [network.allow] }          # host must be in network.allow
+  # An argument that looks like a credential (AWS key, private key, JWT, bearer
+  # token, password assignment, the value of a secret-looking variable in
+  # mcp-jail's environment): warn audits it, deny refuses the call, ask asks
+  # even when the rule says allow. A rule may set its own "secrets:".
+  secrets: warn
+  # secrets_ignore: [password-assignment]
 
 # Budgets per window (a burst up to the limit passes, a steady drip above it
 # does not). A call over budget is denied; a connection over budget ends.

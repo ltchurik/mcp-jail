@@ -46,6 +46,10 @@ type Proxy struct {
 	Asks *control.Broker
 	// Limits enforces the policy's call and argument budgets; nil: none.
 	Limits *limits.Limiter
+	// EnvSecrets maps secret-looking variables of mcp-jail's own
+	// environment to their values (scan.EnvSecrets); an argument carrying
+	// one is a credential leaving the machine.
+	EnvSecrets map[string]string
 	// MaxPending bounds the requests awaiting a server response; past it
 	// the oldest is dropped and answered with CodeNoResponse, so a server
 	// that stops answering cannot grow the proxy without bound. 0: 1024.
@@ -396,6 +400,31 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 			return false
 		}
 	}
+	note := ""
+	if d != policy.Deny {
+		if mode := pol.SecretsFor(tc.Name); mode != policy.SecretsOff {
+			if found := scan.Secrets(tc.Arguments, scan.SecretOptions{Env: p.EnvSecrets, Ignore: pol.Tools.SecretsIgnore}); len(found) > 0 {
+				why := "argument looks like a credential: " + joinFindings(found)
+				dec := "warn"
+				switch mode {
+				case policy.SecretsDeny:
+					dec = "deny"
+				case policy.SecretsAsk:
+					dec = "ask"
+				}
+				p.Audit.Log(audit.Event{Kind: "secret", Tool: tc.Name, Decision: dec, Reason: why})
+				p.Logf("secret: tools/call %s: %s", tc.Name, why)
+				switch mode {
+				case policy.SecretsDeny:
+					p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: "secret", Args: args})
+					p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodePolicyDenied, "mcp-jail: tool "+tc.Name+" denied by policy: "+why))
+					return false
+				case policy.SecretsAsk:
+					d, note = policy.Ask, why
+				}
+			}
+		}
+	}
 	switch d {
 	case policy.Allow:
 		p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "allow", Args: args})
@@ -406,7 +435,7 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodePolicyDenied, "mcp-jail: tool "+tc.Name+" denied by policy"))
 		return false
 	default: // ask
-		ok, how := p.ask(tc)
+		ok, how := p.ask(tc, note)
 		if ok {
 			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "ask_allow", Reason: how, Args: args})
 			return true
@@ -513,17 +542,36 @@ func (p *Proxy) setLock(k lock.Kind, verified, tainted bool, items map[string]st
 	p.lmu.Unlock()
 }
 
+// joinFindings renders findings as "where: rule (detail); …", at most five.
+func joinFindings(fs []scan.Finding) string {
+	parts := make([]string, 0, len(fs))
+	for i, f := range fs {
+		if i == 5 {
+			parts = append(parts, fmt.Sprintf("and %d more", len(fs)-5))
+			break
+		}
+		parts = append(parts, f.String())
+	}
+	return strings.Join(parts, "; ")
+}
+
 // ask decides an `ask` call: on the controlling terminal when there is one,
-// otherwise through the webhook when configured, otherwise no.
-func (p *Proxy) ask(tc jsonrpc.ToolCallParams) (bool, string) {
+// otherwise through the webhook when configured, otherwise no. note, when
+// set, is why the call is being asked about beyond the rule (a credential
+// in the arguments) and is shown with the question.
+func (p *Proxy) ask(tc jsonrpc.ToolCallParams, note string) (bool, string) {
 	if !p.openTTY() {
-		return p.askHeadless(tc)
+		return p.askHeadless(tc, note)
 	}
 	args := string(tc.Arguments)
 	if len(args) > 400 {
 		args = fmt.Sprintf("%s… (+%d bytes)", args[:400], len(args)-400)
 	}
-	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n  allow? [y/N] ", p.Policy.Name, printable(tc.Name), printable(args))
+	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s wants to call %s\n  args: %s\n", p.Policy.Name, printable(tc.Name), printable(args))
+	if note != "" {
+		_, _ = fmt.Fprintf(p.tty, "  note: %s\n", printable(note))
+	}
+	_, _ = fmt.Fprint(p.tty, "  allow? [y/N] ")
 	rd := bufio.NewReader(p.tty)
 	ans, err := rd.ReadString('\n')
 	if err != nil {
@@ -687,7 +735,7 @@ func (p *Proxy) allowServerRequest(m *jsonrpc.Message) bool {
 	case policy.Deny:
 		return refuse(jsonrpc.CodePolicyDenied, "deny", "denied by policy")
 	}
-	ok, how := p.ask(jsonrpc.ToolCallParams{Name: m.Method, Arguments: m.Params})
+	ok, how := p.ask(jsonrpc.ToolCallParams{Name: m.Method, Arguments: m.Params}, "")
 	if ok {
 		p.Audit.Log(audit.Event{Kind: "server_request", Tool: m.Method, Decision: "ask_allow", Reason: how, Args: args})
 		return true
