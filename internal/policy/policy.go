@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/scan"
 	"gopkg.in/yaml.v3"
 )
@@ -130,6 +131,19 @@ type Policy struct {
 		Default Decision            `yaml:"default"`
 		Rules   map[string]Decision `yaml:"rules"`
 	} `yaml:"server_requests"`
+
+	// Limits are budgets per window (token buckets, see package limits):
+	// tools/call overall and per rule pattern, bytes of tools/call
+	// arguments, bytes written to the network (relay, HTTP_PROXY, or the
+	// request bodies of a remote server). A call over budget is denied
+	// before it reaches the server; a connection over budget ends. Fixed
+	// at start.
+	Limits struct {
+		Calls       limits.Rate            `yaml:"calls"`
+		Tools       map[string]limits.Rate `yaml:"tools"` // exact name or glob
+		ArgsBytes   limits.Rate            `yaml:"args_bytes"`
+		EgressBytes limits.Rate            `yaml:"egress_bytes"`
+	} `yaml:"limits"`
 
 	// Lint applies content heuristics (package scan) to what the server
 	// defines: hidden markup and invisible characters, text addressed to
@@ -318,6 +332,14 @@ func (p *Policy) Validate() error {
 	case FirstRecord, FirstReview:
 	default:
 		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
+	}
+	for pat := range p.Limits.Tools {
+		if pat == "" || hasControl(pat) {
+			return fmt.Errorf("limits.tools: %q is not a tool name or glob", pat)
+		}
+	}
+	if !p.Limits.EgressBytes.Zero() && p.Network.Mode == NetAll && !p.Remote() {
+		return errors.New("limits.egress_bytes needs network.mode: allowlist (the budget is enforced on the relay or proxy) or a remote server")
 	}
 	if p.ServerRequests.Default == "" {
 		p.ServerRequests.Default = Deny
@@ -567,6 +589,31 @@ func (p *Policy) Rule(tool string) Rule {
 	return Rule{Decision: p.Tools.Default}
 }
 
+// ToolLimit returns the limits.tools pattern that governs tool and its
+// rate, matched like a rule; "" when none.
+func (p *Policy) ToolLimit(tool string) (string, limits.Rate) {
+	type pr struct {
+		pat  string
+		rate limits.Rate
+	}
+	rules := make(map[string]pr, len(p.Limits.Tools))
+	for pat, r := range p.Limits.Tools {
+		rules[pat] = pr{pat, r}
+	}
+	// every pattern is equally strict: ties go to the longest, then the
+	// first in sorted order so the outcome does not depend on map order
+	if r, ok := rules[tool]; ok {
+		return r.pat, r.rate
+	}
+	best := pr{}
+	for pat, r := range rules {
+		if ok, _ := filepath.Match(pat, tool); ok && (len(pat) > len(best.pat) || (len(pat) == len(best.pat) && pat < best.pat)) {
+			best = r
+		}
+	}
+	return best.pat, best.rate
+}
+
 // ServerRequest returns the decision for a request the server sends to
 // the client, matched like a tool rule.
 func (p *Policy) ServerRequest(method string) Decision {
@@ -785,6 +832,14 @@ tools:
     #   decision: allow
     #   args:
     #     url: { host: [network.allow] }          # host must be in network.allow
+
+# Budgets per window (a burst up to the limit passes, a steady drip above it
+# does not). A call over budget is denied; a connection over budget ends.
+# limits:
+#   calls: 60/1m                 # tools/call, all tools
+#   tools: { "send_*": 5/1h }    # per tool (exact name or glob)
+#   args_bytes: 1MB/1h           # bytes of tools/call arguments
+#   egress_bytes: 50MB/1h        # bytes out to the network (allowlist mode or a remote server)
 
 # Requests the server sends to the client: sampling/createMessage (the server
 # asks the model to generate text under its own prompt), elicitation/create

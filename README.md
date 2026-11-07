@@ -33,6 +33,7 @@ Claude / Cursor / Claude Code ──stdio──▶ mcp-jail ──stdio──▶
 - [What each layer does](#what-each-layer-does)
 - [Hard egress allowlist](#hard-egress-allowlist)
 - [Headless approvals](#headless-approvals)
+- [Budgets](#budgets)
 - [Server-initiated requests](#server-initiated-requests)
 - [Rug-pull lock](#rug-pull-lock)
 - [Servers started with npx / uvx](#servers-started-with-npx--uvx)
@@ -198,6 +199,12 @@ server_requests:            # what the server may ask the client: sampling, elic
   default: deny
   rules: { ping: allow, roots/list: allow, sampling/createMessage: ask }
 
+limits:                     # budgets per window; over budget = denied / connection ends
+  calls: 60/1m
+  tools: { "send_*": 5/1h }
+  args_bytes: 1MB/1h
+  egress_bytes: 50MB/1h     # allowlist mode or a remote server
+
 audit:
   path: ~/.local/state/mcp-jail/filesystem.jsonl
   args: false               # log tool arguments too (may contain secrets)
@@ -229,6 +236,7 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
+| `limits` | Token-bucket budgets: `tools/call` overall and per pattern, bytes of arguments, bytes out to the network (relay / `HTTP_PROXY` / remote POSTs). Over budget ⇒ the call is answered with `-32007` before the server sees it; a connection past its budget ends | **Hard** |
 | `server_requests` | A request the *server* sends to the client (`sampling/createMessage`: generate text under a prompt the server wrote; `elicitation/create`: a form for the user; `roots/list`; `ping`) is decided like a tool call, allow / deny / ask, and a denied one is answered to the server with a JSON-RPC error without reaching the client. Default: `ping` and `roots/list` allowed, everything else denied | **Hard** |
 | `lint.lists` | Content heuristics on every list the lock has yet to approve: hidden markup and invisible characters, text addressed to the model, sensitive paths, fetch-and-run and exfiltration phrases, tool names of your other servers. Findings are logged, audited and shown with the list; `deny` holds a first-contact list for review, see [Content lint](#content-lint) | Hint (`warn`) or **Hard** gate on first contact (`deny`); the lock stays the decision |
 | `server.url` | Remote server over Streamable HTTP: guarded dialer (special address ranges refused), `https` outside localhost, no redirects, strict parsing of every answer; policy, lock, `ask` and audit as above | **Hard** (there is no server process to sandbox) |
@@ -270,6 +278,20 @@ Claude Desktop and Cursor start servers without a terminal, so `ask` would alway
 ```
 
 The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else (a timeout, a non-200 status, a redirect, a body that is not a decision, a connection error) denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is not a decision, so on its own that is a deny. With the dashboard open as well, a non-decision from the webhook leaves the call waiting for the page until the deadline: Slack pings you, you click Allow. An explicit webhook `deny` is final. A terminal, when there is one, still takes precedence over both. The URL must be `https`, except for a listener on localhost; the payload carries the full tool arguments, so point it only at an endpoint you trust with them.
+
+## Budgets
+
+An allowed tool is still a channel: a `fetch` that may reach exactly one host can post your whole project there, one request at a time, and a `send_email` rule that says `allow` says nothing about how often. `limits` puts a budget on each channel, per window:
+
+```yaml
+limits:
+  calls: 60/1m                # tools/call, all tools together
+  tools: { "send_*": 5/1h }   # per tool, exact name or glob (longest pattern wins)
+  args_bytes: 1MB/1h          # bytes of tools/call arguments: what the model hands the server
+  egress_bytes: 50MB/1h       # bytes the server writes to the network
+```
+
+A budget is a token bucket: the whole window's worth is available at once and refills continuously, so a burst up to the limit passes and a steady drip above it does not. A call over budget is answered with error `-32007` before it reaches the server and audited as `deny` with `reason: limit: …`; a refused call is not charged. `egress_bytes` is enforced where the bytes leave: on the Linux relay and the `HTTP_PROXY` filter (so it needs `network.mode: allowlist`), and on every POST to a remote server; a connection that runs out mid-stream ends and the audit shows `kind: net`, `decision: blocked`, `reason: egress_bytes … exceeded`. Units `KB`, `MB`, `GB` are 1024-based; windows take `s`, `m`, `h`, `d`. `mcp-jail show` lists the budgets in force.
 
 ## Server-initiated requests
 

@@ -44,7 +44,8 @@ type showDoc struct {
 		Default string            `json:"default"`
 		Rules   map[string]string `json:"rules"`
 	} `json:"server_requests"`
-	Lock struct {
+	Limits map[string]string `json:"limits,omitempty"` // budget -> rate
+	Lock   struct {
 		Enabled  bool          `json:"enabled"`
 		First    string        `json:"first"`
 		Sections []showSection `json:"sections"`
@@ -165,6 +166,21 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 	}
 	doc.Ask.Timeout = p.Ask.Timeout.String()
 	doc.Ask.Webhook = p.Ask.Webhook.URL
+	doc.Limits = map[string]string{}
+	if !p.Limits.Calls.Zero() {
+		doc.Limits["calls"] = p.Limits.Calls.String()
+	}
+	if !p.Limits.ArgsBytes.Zero() {
+		doc.Limits["args_bytes"] = p.Limits.ArgsBytes.String()
+	}
+	if !p.Limits.EgressBytes.Zero() {
+		doc.Limits["egress_bytes"] = p.Limits.EgressBytes.String()
+	}
+	for pat, r := range p.Limits.Tools {
+		if !r.Zero() {
+			doc.Limits["tools["+pat+"]"] = r.String()
+		}
+	}
 	doc.ServerRequests.Default = string(p.ServerRequests.Default)
 	doc.ServerRequests.Rules = map[string]string{}
 	for m, d := range p.ServerRequests.Rules {
@@ -299,6 +315,13 @@ func (d *showDoc) write(w io.Writer) error {
 		srq = append(srq, m+" "+d.ServerRequests.Rules[m])
 	}
 	pr("from server", "default %s; %s", d.ServerRequests.Default, strings.Join(append(srq, ""), ", ")+"(sampling, elicitation, roots, ping)")
+	if len(d.Limits) > 0 {
+		lim := []string{}
+		for _, k := range sortedKeys(d.Limits) {
+			lim = append(lim, k+" "+d.Limits[k])
+		}
+		pr("limits", "%s", strings.Join(lim, ", "))
+	}
 	lk := "off"
 	if d.Lock.Enabled {
 		lk = "on, first contact: " + d.Lock.First

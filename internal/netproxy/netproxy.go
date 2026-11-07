@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/netguard"
 )
 
@@ -26,6 +27,9 @@ type Observer func(host string, allowed bool)
 
 // Proxy is a filtering forward proxy.
 type Proxy struct {
+	// Limits meters the bytes sent towards the network; nil: no budget.
+	Limits *limits.Limiter
+
 	allow     Allower
 	observe   Observer
 	ln        net.Listener
@@ -90,13 +94,35 @@ func (p *Proxy) handle(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.Method == http.MethodConnect {
-		p.tunnel(w, r)
+		if !p.Limits.Egress(host, 0) {
+			http.Error(w, "mcp-jail: egress budget exceeded", http.StatusForbidden)
+			return
+		}
+		p.tunnel(w, r, host)
 		return
+	}
+	// a plain request is charged up front for its line, headers and a
+	// body of known length; a body of unknown length is metered as read
+	n := int64(len(r.Method) + len(r.URL.String()) + 12)
+	for k, vs := range r.Header {
+		for _, v := range vs {
+			n += int64(len(k) + len(v) + 4)
+		}
+	}
+	if r.ContentLength > 0 {
+		n += r.ContentLength
+	}
+	if !p.Limits.Egress(host, n) {
+		http.Error(w, "mcp-jail: egress budget exceeded", http.StatusForbidden)
+		return
+	}
+	if r.ContentLength < 0 && r.Body != nil {
+		r.Body = io.NopCloser(p.Limits.Reader(r.Body, host))
 	}
 	p.forward(w, r)
 }
 
-func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
+func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request, host string) {
 	ctx, cancel := context.WithTimeout(r.Context(), 15*time.Second)
 	defer cancel()
 	up, err := p.dialer.DialContext(ctx, "tcp", r.Host)
@@ -116,7 +142,7 @@ func (p *Proxy) tunnel(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	_, _ = fmt.Fprint(cl, "HTTP/1.1 200 Connection Established\r\n\r\n")
-	go pipe(up, readerOf(buf, cl))
+	go pipe(p.Limits.Wrap(up, host), readerOf(buf, cl))
 	pipe(cl, up)
 	_ = up.Close()
 }
