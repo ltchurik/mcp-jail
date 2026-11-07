@@ -103,6 +103,20 @@ func (s *session) call(req string) *jsonrpc.Message {
 	return m
 }
 
+// read returns the next message from the proxy without sending anything.
+func (s *session) read() *jsonrpc.Message {
+	s.t.Helper()
+	line, err := s.fromCl.ReadString('\n')
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	m, err := jsonrpc.Parse([]byte(strings.TrimSpace(line)))
+	if err != nil {
+		s.t.Fatal(err)
+	}
+	return m
+}
+
 func (s *session) close() {
 	_ = s.toCli.Close()
 	<-s.done //nolint:errcheck // result is irrelevant once both pumps stop

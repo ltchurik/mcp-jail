@@ -33,6 +33,7 @@ Claude / Cursor / Claude Code ──stdio──▶ mcp-jail ──stdio──▶
 - [What each layer does](#what-each-layer-does)
 - [Hard egress allowlist](#hard-egress-allowlist)
 - [Headless approvals](#headless-approvals)
+- [Server-initiated requests](#server-initiated-requests)
 - [Rug-pull lock](#rug-pull-lock)
 - [Servers started with npx / uvx](#servers-started-with-npx--uvx)
 - [Audit log](#audit-log)
@@ -192,6 +193,10 @@ lint:
   lists: warn               # off | warn | deny: content heuristics on new or changed definitions
   # ignore: [encoded]       # rule ids to skip
 
+server_requests:            # what the server may ask the client: sampling, elicitation, roots, ping
+  default: deny
+  rules: { ping: allow, roots/list: allow, sampling/createMessage: ask }
+
 audit:
   path: ~/.local/state/mcp-jail/filesystem.jsonl
   args: false               # log tool arguments too (may contain secrets)
@@ -223,6 +228,7 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
+| `server_requests` | A request the *server* sends to the client (`sampling/createMessage`: generate text under a prompt the server wrote; `elicitation/create`: a form for the user; `roots/list`; `ping`) is decided like a tool call, allow / deny / ask, and a denied one is answered to the server with a JSON-RPC error without reaching the client. Default: `ping` and `roots/list` allowed, everything else denied | **Hard** |
 | `lint.lists` | Content heuristics on every list the lock has yet to approve: hidden markup and invisible characters, text addressed to the model, sensitive paths, fetch-and-run and exfiltration phrases, tool names of your other servers. Findings are logged, audited and shown with the list; `deny` holds a first-contact list for review, see [Content lint](#content-lint) | Hint (`warn`) or **Hard** gate on first contact (`deny`); the lock stays the decision |
 | `server.url` | Remote server over Streamable HTTP: guarded dialer (special address ranges refused), `https` outside localhost, no redirects, strict parsing of every answer; policy, lock, `ask` and audit as above | **Hard** (there is no server process to sandbox) |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
@@ -263,6 +269,19 @@ Claude Desktop and Cursor start servers without a terminal, so `ask` would alway
 ```
 
 The endpoint has `timeout` to answer `{"decision":"allow"}` (optionally `{"decision":"deny","reason":"..."}`). Anything else (a timeout, a non-200 status, a redirect, a body that is not a decision, a connection error) denies the call, and the reason lands in the audit log and in the error the client sees. Because the payload carries `text`, a Slack or Mattermost incoming webhook URL works as a notification channel out of the box; it answers `ok`, which is not a decision, so on its own that is a deny. With the dashboard open as well, a non-decision from the webhook leaves the call waiting for the page until the deadline: Slack pings you, you click Allow. An explicit webhook `deny` is final. A terminal, when there is one, still takes precedence over both. The URL must be `https`, except for a listener on localhost; the payload carries the full tool arguments, so point it only at an endpoint you trust with them.
+
+## Server-initiated requests
+
+MCP is not one-directional. A server may send the client `sampling/createMessage` (please run the model on *this* prompt and give me the answer), `elicitation/create` (please show the user *this* form), `roots/list` or `ping`. Sampling and elicitation are a channel through which a server puts words in the model's mouth or asks the user for a token, in the client's own UI, without any tool having been called. `server_requests` decides them like tool calls, exact method or glob, `allow` / `deny` / `ask` (terminal, dashboard, webhook, as for tools). A denied or unapproved request is answered to the server with a JSON-RPC error (`-32001` / `-32003`) and never reaches the client; the audit log carries it as `kind: server_request`. Without rules, `ping` and `roots/list` are allowed and everything else denied; listing rules replaces those defaults. The section is reloaded with `tools` and `ask`.
+
+```yaml
+server_requests:
+  default: deny
+  rules:
+    ping: allow
+    roots/list: allow
+    sampling/createMessage: ask   # the prompt is shown; y lets it through
+```
 
 ## Rug-pull lock
 

@@ -40,6 +40,10 @@ type showDoc struct {
 		Timeout string `json:"timeout"`
 		Webhook string `json:"webhook,omitempty"`
 	} `json:"ask"`
+	ServerRequests struct {
+		Default string            `json:"default"`
+		Rules   map[string]string `json:"rules"`
+	} `json:"server_requests"`
 	Lock struct {
 		Enabled  bool          `json:"enabled"`
 		First    string        `json:"first"`
@@ -161,6 +165,11 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 	}
 	doc.Ask.Timeout = p.Ask.Timeout.String()
 	doc.Ask.Webhook = p.Ask.Webhook.URL
+	doc.ServerRequests.Default = string(p.ServerRequests.Default)
+	doc.ServerRequests.Rules = map[string]string{}
+	for m, d := range p.ServerRequests.Rules {
+		doc.ServerRequests.Rules[m] = string(d)
+	}
 	doc.Lock.Enabled, doc.Lock.First = p.Lock.Enabled, string(p.Lock.First)
 	doc.Lock.Sections = []showSection{}
 	if f, err := lock.Load(p.Name); err == nil && f != nil {
@@ -285,6 +294,11 @@ func (d *showDoc) write(w io.Writer) error {
 		ask += ", webhook " + d.Ask.Webhook
 	}
 	pr("ask", "%s", ask)
+	srq := []string{}
+	for _, m := range sortedKeys(d.ServerRequests.Rules) {
+		srq = append(srq, m+" "+d.ServerRequests.Rules[m])
+	}
+	pr("from server", "default %s; %s", d.ServerRequests.Default, strings.Join(append(srq, ""), ", ")+"(sampling, elicitation, roots, ping)")
 	lk := "off"
 	if d.Lock.Enabled {
 		lk = "on, first contact: " + d.Lock.First
@@ -318,6 +332,15 @@ func lintCount(sec lock.Section) string {
 		return ""
 	}
 	return fmt.Sprintf(", %d lint finding(s)", len(sec.Lint))
+}
+
+func sortedKeys(m map[string]string) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func orNone(l []string) string {

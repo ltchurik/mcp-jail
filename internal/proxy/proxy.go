@@ -347,6 +347,7 @@ func (p *Proxy) Reload(np *policy.Policy) error {
 	cp := *p.Policy
 	cp.Tools = np.Tools
 	cp.Ask = np.Ask
+	cp.ServerRequests = np.ServerRequests
 	p.live.Store(&cp)
 	p.Audit.Log(audit.Event{Kind: "reload", Reason: fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))})
 	p.Logf("policy reloaded: tools.default=%s, %d rule(s)", cp.Tools.Default, len(cp.Tools.Rules))
@@ -549,6 +550,9 @@ func (p *Proxy) fromServer(line []byte) {
 		p.Logf("dropped server message: %v", err)
 		return
 	}
+	if m.IsRequest() && !p.allowServerRequest(m) {
+		return
+	}
 	if m.IsResponse() {
 		p.pmu.Lock()
 		pr, ok := p.pending[m.IDKey()]
@@ -594,6 +598,40 @@ func (p *Proxy) fromServer(line []byte) {
 		}
 	}
 	p.toClient(line)
+}
+
+// allowServerRequest applies server_requests to a request the server sends
+// to the client (sampling/createMessage, elicitation/create, roots/list,
+// ping). A denied or unapproved request is answered to the server with a
+// JSON-RPC error and never reaches the client. Returns false when the
+// request was answered here.
+func (p *Proxy) allowServerRequest(m *jsonrpc.Message) bool {
+	pol := p.rules()
+	var args json.RawMessage
+	if pol.Audit.Args {
+		args = m.Params
+	}
+	refuse := func(code int, dec, why string) bool {
+		p.Audit.Log(audit.Event{Kind: "server_request", Tool: m.Method, Decision: dec, Reason: why, Args: args})
+		p.Logf("deny server request %s (%s)", printable(m.Method), why)
+		// off this goroutine: a server that writes without reading its
+		// stdin must not stall the pump that reads it
+		go p.toServer(jsonrpc.NewErrorResponse(m.ID, code, "mcp-jail: server request "+m.Method+" "+why))
+		return false
+	}
+	switch pol.ServerRequest(m.Method) {
+	case policy.Allow:
+		p.Audit.Log(audit.Event{Kind: "server_request", Tool: m.Method, Decision: "allow", Args: args})
+		return true
+	case policy.Deny:
+		return refuse(jsonrpc.CodePolicyDenied, "deny", "denied by policy")
+	}
+	ok, how := p.ask(jsonrpc.ToolCallParams{Name: m.Method, Arguments: m.Params})
+	if ok {
+		p.Audit.Log(audit.Event{Kind: "server_request", Tool: m.Method, Decision: "ask_allow", Reason: how, Args: args})
+		return true
+	}
+	return refuse(jsonrpc.CodeAskRejected, "ask_deny", "not approved ("+how+")")
 }
 
 // checkLock enforces rug-pull protection on a list response of kind k. A
