@@ -193,7 +193,7 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
-	for _, w := range p.Lint() {
+	for _, w := range p.MountWarnings() {
 		if !*quiet {
 			logf("warning: %s", w)
 		}
@@ -537,6 +537,9 @@ func cmdDiff(args []string) error {
 		for _, n := range d.Changed {
 			fmt.Println("  ~ changed", n)
 		}
+		for _, l := range sec.Lint {
+			fmt.Println("  ! lint   ", printable(l))
+		}
 	}
 	fmt.Println("\nreview the server, then: mcp-jail approve", name)
 	return nil
@@ -731,6 +734,17 @@ func browse(url string) error {
 		c = exec.Command("xdg-open", url)
 	}
 	return c.Start()
+}
+
+// printable replaces control characters in text a server chose, so a lint
+// line cannot redraw the terminal.
+func printable(s string) string {
+	return strings.Map(func(r rune) rune {
+		if r < 0x20 || r == 0x7f || r == 0x2028 || r == 0x2029 || (r >= 0x80 && r < 0xa0) {
+			return '?'
+		}
+		return r
+	}, s)
 }
 
 type stringList []string

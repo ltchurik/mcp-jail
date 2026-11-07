@@ -362,7 +362,7 @@ func (r Report) Text() string {
 		return b.String()
 	}
 	p("decisions:")
-	for _, k := range []string{"allow", "deny", "ask_allow", "ask_deny", "blocked", "created", "approved"} {
+	for _, k := range []string{"allow", "deny", "ask_allow", "ask_deny", "blocked", "created", "approved", "review", "warn"} {
 		if n := r.Decisions[k]; n > 0 {
 			p("  %s %d", k, n)
 		}

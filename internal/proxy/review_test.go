@@ -137,12 +137,18 @@ func TestRecordIsDefault(t *testing.T) {
 
 func TestCatalog(t *testing.T) {
 	items := rawItems(`[{"name":"b","description":"Second\nline two"},{"name":"a","description":"` + strings.Repeat("x", 150) + `"},{"name":"c"}]`)
-	got := catalog(lock.Tools, items, 2)
+	got := catalog(lock.Tools, items, nil, 2)
 	if len(got) != 3 || !strings.HasPrefix(got[0], "a  —  "+strings.Repeat("x", 100)+"…") || got[1] != "b  —  Second" || got[2] != "… and 1 more" {
 		t.Fatalf("catalog = %q", got)
 	}
-	if got := catalog(lock.Resources, rawItems(`[{"uri":"file:///r","description":"R"}]`), 10); len(got) != 1 || got[0] != "file:///r  —  R" {
+	if got := catalog(lock.Resources, rawItems(`[{"uri":"file:///r","description":"R"}]`), nil, 10); len(got) != 1 || got[0] != "file:///r  —  R" {
 		t.Fatalf("resources catalog = %q", got)
+	}
+	// lint findings follow their item, marked with "!"
+	lint := []string{"a: description: sensitive-path (.ssh)", "b: description: instruction (ignore previous instructions)", "c: inputSchema.x: hidden-unicode (U+200B)"}
+	got = catalog(lock.Tools, items, lint, 10)
+	if len(got) != 6 || got[1] != "  ! description: sensitive-path (.ssh)" || got[3] != "  ! description: instruction (ignore previous instructions)" || got[5] != "  ! inputSchema.x: hidden-unicode (U+200B)" {
+		t.Fatalf("catalog with lint = %q", got)
 	}
 }
 

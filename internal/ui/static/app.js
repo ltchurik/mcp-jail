@@ -136,6 +136,13 @@
           if (d.changed.length) parts.push(`~${d.changed.length} changed`);
           const li = el("li", null, `${kind.replace(/_/g, " ")}: ${parts.join(", ")}`);
           li.title = [...d.added.map(x => "+ " + x), ...d.removed.map(x => "- " + x), ...d.changed.map(x => "~ " + x)].join("\n");
+          if (d.lint && d.lint.length) {
+            // the content findings: what to look at before approving
+            li.append(" ", el("span", "pill blocked", `${d.lint.length} lint finding${d.lint.length === 1 ? "" : "s"}`));
+            const lul = el("ul", "lint");
+            for (const x of d.lint) lul.append(el("li", null, x));
+            li.append(lul);
+          }
           ul.append(li);
         }
         p.append(ul);

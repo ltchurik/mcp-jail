@@ -122,7 +122,7 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		plan.Notes = append(plan.Notes, "no sandbox on "+runtime.GOOS+": policy, lock and audit only")
 		return plan
 	}
-	plan.Notes = append(plan.Notes, p.Lint()...)
+	plan.Notes = append(plan.Notes, p.MountWarnings()...)
 	bound := append(append([]string{}, p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...)
 	if len(s.Command) > 0 {
 		if prefix, note := toolchainBind(s.Command[0], s.Protect); prefix != "" && !covered(prefix, p) {

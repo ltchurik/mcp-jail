@@ -553,6 +553,9 @@ type PendingSection struct {
 	Removed []string `json:"removed"`
 	Changed []string `json:"changed"`
 	First   bool     `json:"first,omitempty"`
+	// Lint lists the content findings the list had when it was seen
+	// ("<item>: <where>: <rule> (<detail>)"), from the lint.lists scan.
+	Lint []string `json:"lint,omitempty"`
 }
 
 // State is the /api/state document.
@@ -640,7 +643,7 @@ func (s *Server) state() State {
 					old, first = o.Items, false
 				}
 				d := lock.Compare(old, sec.Items)
-				ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed), First: first}
+				ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed), First: first, Lint: sec.Lint}
 			}
 			v.Pending = ps
 		}

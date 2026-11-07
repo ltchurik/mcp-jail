@@ -17,7 +17,7 @@ func TestLint(t *testing.T) {
 		"delete":     {Decision: Deny, Args: map[string]ArgConstraint{"path": {Under: []string{"/etc"}}}},
 		"fetch":      {Decision: Allow, Args: map[string]ArgConstraint{"url": {Host: []string{"network.allow"}}}},
 	}
-	got := p.Lint()
+	got := p.MountWarnings()
 	want := []string{
 		"tools.rules[fetch_to].args.dest: /var/data is not shared into the jail",
 		"tools.rules[read_file].args.path: /home/u/projects is read-only inside the jail",
@@ -38,12 +38,12 @@ func TestLint(t *testing.T) {
 	}
 
 	p.Sandbox.Disabled = true
-	if w := p.Lint(); w != nil {
+	if w := p.MountWarnings(); w != nil {
 		t.Errorf("disabled sandbox: got %v, want none", w)
 	}
 	p.Sandbox.Disabled = false
 	p.Server.URL = "https://mcp.example.com/mcp"
-	if w := p.Lint(); w != nil {
+	if w := p.MountWarnings(); w != nil {
 		t.Errorf("remote server: got %v, want none", w)
 	}
 }

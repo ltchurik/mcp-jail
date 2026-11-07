@@ -203,3 +203,24 @@ func TestApproveKind(t *testing.T) {
 		t.Fatal("pending should be cleared once the last section is approved")
 	}
 }
+
+func TestOtherToolsAndLint(t *testing.T) {
+	t.Setenv("MCP_JAIL_HOME", t.TempDir())
+	a, _ := Compute(Tools, []json.RawMessage{json.RawMessage(`{"name":"send_email"}`)})
+	a.Lint = []string{"send_email: description: instruction (x)"}
+	if _, err := Record("gmail", Tools, a); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := Compute(Tools, []json.RawMessage{json.RawMessage(`{"name":"read_file"}`)})
+	if _, err := Record("fs", Tools, b); err != nil {
+		t.Fatal(err)
+	}
+	got := OtherTools("fs")
+	if len(got) != 1 || got["send_email"] != "gmail" {
+		t.Fatalf("OtherTools = %v", got)
+	}
+	f, err := Load("gmail")
+	if err != nil || len(f.Section(Tools).Lint) != 1 {
+		t.Fatalf("lint not kept with the tools section: %+v %v", f, err)
+	}
+}

@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -62,10 +63,14 @@ func listField(k Kind) string {
 	return string(k)
 }
 
-// Section is one locked list: an overall hash and a per-item hash.
+// Section is one locked list: an overall hash and a per-item hash. Lint
+// keeps the content findings (package scan) the list had when it was seen,
+// one line per finding, so that diff, show and the dashboard can repeat
+// them without the items themselves.
 type Section struct {
 	Hash  string            `json:"hash"`
 	Items map[string]string `json:"items"`
+	Lint  []string          `json:"lint,omitempty"`
 }
 
 // File is the on-disk lock. Tools keep their original top-level fields so
@@ -74,6 +79,7 @@ type File struct {
 	Name      string            `json:"name"`
 	Hash      string            `json:"hash,omitempty"`
 	Tools     map[string]string `json:"tools,omitempty"`
+	ToolsLint []string          `json:"tools_lint,omitempty"`
 	Sections  map[Kind]Section  `json:"sections,omitempty"`
 	CreatedAt time.Time         `json:"created_at"`
 	UpdatedAt time.Time         `json:"updated_at"`
@@ -88,7 +94,7 @@ func (f *File) Section(k Kind) *Section {
 		if f.Tools == nil {
 			return nil
 		}
-		return &Section{Hash: f.Hash, Items: f.Tools}
+		return &Section{Hash: f.Hash, Items: f.Tools, Lint: f.ToolsLint}
 	}
 	s, ok := f.Sections[k]
 	if !ok {
@@ -100,7 +106,7 @@ func (f *File) Section(k Kind) *Section {
 // Set records a section.
 func (f *File) Set(k Kind, s Section) {
 	if k == Tools {
-		f.Hash, f.Tools = s.Hash, s.Items
+		f.Hash, f.Tools, f.ToolsLint = s.Hash, s.Items, s.Lint
 		return
 	}
 	if f.Sections == nil {
@@ -346,6 +352,33 @@ func approve(name string, only Kind) (*File, error) {
 		return f, nil
 	}
 	return f, writeAtomic(pending(name), p)
+}
+
+// OtherTools maps every tool name recorded in the locks of servers other
+// than exclude to the server that owns it, for the shadowing rule of
+// package scan. Unreadable locks are skipped: this is a hint, not a gate.
+func OtherTools(exclude string) map[string]string {
+	ents, err := os.ReadDir(Dir())
+	if err != nil {
+		return nil
+	}
+	out := map[string]string{}
+	for _, e := range ents {
+		name, ok := strings.CutSuffix(e.Name(), ".lock.json")
+		if !ok || name == exclude {
+			continue
+		}
+		f, err := Load(name)
+		if err != nil || f == nil {
+			continue
+		}
+		for n := range f.Tools {
+			if _, dup := out[n]; !dup {
+				out[n] = name
+			}
+		}
+	}
+	return out
 }
 
 // Reset deletes lock and pending for name.
