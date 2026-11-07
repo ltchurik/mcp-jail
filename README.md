@@ -188,6 +188,10 @@ ask:                        # how `ask` is answered without a terminal
 lock:
   enabled: true             # refuse to run if tool definitions change
 
+lint:
+  lists: warn               # off | warn | deny: content heuristics on new or changed definitions
+  # ignore: [encoded]       # rule ids to skip
+
 audit:
   path: ~/.local/state/mcp-jail/filesystem.jsonl
   args: false               # log tool arguments too (may contain secrets)
@@ -219,6 +223,7 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
 | `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
+| `lint.lists` | Content heuristics on every list the lock has yet to approve: hidden markup and invisible characters, text addressed to the model, sensitive paths, fetch-and-run and exfiltration phrases, tool names of your other servers. Findings are logged, audited and shown with the list; `deny` holds a first-contact list for review, see [Content lint](#content-lint) | Hint (`warn`) or **Hard** gate on first contact (`deny`); the lock stays the decision |
 | `server.url` | Remote server over Streamable HTTP: guarded dialer (special address ranges refused), `https` outside localhost, no redirects, strict parsing of every answer; policy, lock, `ask` and audit as above | **Hard** (there is no server process to sandbox) |
 | `audit` | JSONL: every call, decision, duration, blocked host | — |
 
@@ -297,6 +302,29 @@ lock:
 ```
 
 `mcp-jail wrap` keeps `record` so a freshly wrapped config starts without interaction; switch the policies you care about to `review` afterwards.
+
+### Content lint
+
+The lock tells you *that* a definition changed, not what to look at. Whenever it has something new to decide (a first contact or a change), mcp-jail scans every string of every item, including the descriptions buried in `inputSchema`, with a handful of heuristics:
+
+| Rule | What it flags |
+|---|---|
+| `hidden-unicode` | zero-width and bidi characters, Unicode tags, private-use and control characters: text the model reads and you do not see |
+| `hidden-markup` | `<IMPORTANT>`, `<system>`, HTML comments, chat-template tokens (`<\|im_start\|>`, `[INST]`) |
+| `instruction` | text addressed to the model: "ignore previous instructions", "do not tell the user", "before using this tool…", "pass its contents as…", "skip asking for confirmation" |
+| `sensitive-path` | `~/.ssh`, `id_rsa`, `.aws/credentials`, `.env`, `.netrc`, `/etc/shadow`, keychains and the like |
+| `fetch-and-run` | "download … https://", `curl … \| sh`, "auto-update" |
+| `exfiltration` | "send/upload/post … to https://…" or to an e-mail address |
+| `encoded` | a base64 blob a human cannot read |
+| `shadowing` | a tool name recorded in the lock of *another* server on this machine (`send_email of gmail`): the classic cross-server shadowing attack |
+
+A finding is a hint, never a verdict. With `lint.lists: warn` (the default) each one goes to stderr and to the audit log (`kind: lint`), and is kept with the pending or recorded section, so `mcp-jail diff` (`! lint …`), `mcp-jail show` and the dashboard repeat it, and the terminal review prints it under the item it belongs to. With `lint.lists: deny` a list seen for the first time that has any finding is held for review as if `lock.first` were `review`, whatever `lock.first` says; a changed list is refused by the lock anyway. `off` skips the scan; `lint.ignore: [encoded]` drops a rule that is noisy for one server. An unchanged list is never scanned again, so an approved finding does not nag.
+
+```yaml
+lint:
+  lists: deny
+  ignore: [encoded]
+```
 
 ## Remote servers (Streamable HTTP)
 

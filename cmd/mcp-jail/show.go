@@ -57,6 +57,8 @@ type showSection struct {
 	Count   int       `json:"count"`
 	Hash    string    `json:"hash"`
 	Updated time.Time `json:"updated"`
+	// Lint lists the content findings the list had when it was approved.
+	Lint []string `json:"lint,omitempty"`
 }
 
 func cmdShow(args []string) error {
@@ -164,7 +166,7 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 	if f, err := lock.Load(p.Name); err == nil && f != nil {
 		for _, k := range lock.Kinds {
 			if sec := f.Section(k); sec != nil {
-				doc.Lock.Sections = append(doc.Lock.Sections, showSection{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash), Updated: f.UpdatedAt})
+				doc.Lock.Sections = append(doc.Lock.Sections, showSection{Kind: string(k), Count: len(sec.Items), Hash: lock.Short(sec.Hash), Updated: f.UpdatedAt, Lint: sec.Lint})
 			}
 		}
 		if pend, err := lock.LoadPending(p.Name); err == nil && pend != nil {
@@ -174,16 +176,16 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 					continue
 				}
 				if o := f.Section(k); o != nil {
-					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String())
+					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String()+lintCount(sec))
 				} else {
-					doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review", k, len(sec.Items)))
+					doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review%s", k, len(sec.Items), lintCount(sec)))
 				}
 			}
 		}
 	} else if pend, err := lock.LoadPending(p.Name); err == nil && pend != nil {
 		for _, k := range lock.Kinds {
 			if sec, ok := pend.Sections[k]; ok {
-				doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review", k, len(sec.Items)))
+				doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review%s", k, len(sec.Items), lintCount(sec)))
 			}
 		}
 	}
@@ -292,7 +294,7 @@ func (d *showDoc) write(w io.Writer) error {
 	}
 	pr("lock", "%s", lk)
 	for _, sec := range d.Lock.Sections {
-		pr("  "+strings.ReplaceAll(sec.Kind, "_", " "), "%d items, %s, recorded %s", sec.Count, sec.Hash, sec.Updated.Local().Format("2006-01-02 15:04"))
+		pr("  "+strings.ReplaceAll(sec.Kind, "_", " "), "%d items, %s, recorded %s%s", sec.Count, sec.Hash, sec.Updated.Local().Format("2006-01-02 15:04"), lintCount(lock.Section{Lint: sec.Lint}))
 	}
 	for _, p := range d.Lock.Pending {
 		pr("  PENDING", "%s", p)
@@ -307,6 +309,15 @@ func (d *showDoc) write(w io.Writer) error {
 		pr("audit", "%s  (%s)", d.Audit.Path, args)
 	}
 	return nil
+}
+
+// lintCount renders ", N lint finding(s) (mcp-jail diff NAME)" for a
+// section that had content findings when it was seen; "" otherwise.
+func lintCount(sec lock.Section) string {
+	if len(sec.Lint) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(", %d lint finding(s)", len(sec.Lint))
 }
 
 func orNone(l []string) string {

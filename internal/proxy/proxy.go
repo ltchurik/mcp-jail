@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -19,6 +20,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/policy"
+	"github.com/ltchurik/mcp-jail/internal/scan"
 )
 
 const (
@@ -636,7 +638,12 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 		return false
 	}
 	old := cur.Section(k)
-	if old == nil && p.Policy.Lock.First == policy.FirstReview {
+	if old != nil && old.Hash == sec.Hash {
+		p.setLock(k, true, false, sec.Items)
+		return true
+	}
+	held := p.lintList(k, items, &sec, old == nil)
+	if old == nil && (p.Policy.Lock.First == policy.FirstReview || held) {
 		return p.reviewFirst(k, m, sec, items)
 	}
 	if old == nil {
@@ -645,10 +652,6 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 		}
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: string(k) + " " + lock.Short(sec.Hash)})
 		p.Logf("lock: recorded %d %s (%s)", len(sec.Items), k, lock.Short(sec.Hash))
-		p.setLock(k, true, false, sec.Items)
-		return true
-	}
-	if old.Hash == sec.Hash {
 		p.setLock(k, true, false, sec.Items)
 		return true
 	}
@@ -662,6 +665,86 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull,
 		"mcp-jail: "+string(k)+" changed since last approval ("+d.String()+"); run `mcp-jail approve "+p.Policy.Name+"`"))
 	return false
+}
+
+// maxLintLines bounds the findings kept for one list.
+const maxLintLines = 200
+
+// lintList scans a list the lock has not approved yet (first contact or a
+// change) and keeps the findings in sec.Lint, one line per finding, so the
+// pending record, diff, show and the dashboard can repeat them. Each
+// finding is logged and audited (kind lint). It reports whether lint.lists:
+// deny holds a first-contact list for review.
+func (p *Proxy) lintList(k lock.Kind, items []json.RawMessage, sec *lock.Section, first bool) bool {
+	mode := p.Policy.Lint.Lists
+	if mode == policy.LintOff {
+		return false
+	}
+	opts := scan.Options{Ignore: p.Policy.Lint.Ignore}
+	if k == lock.Tools {
+		opts.Foreign = lock.OtherTools(p.Policy.Name)
+		opts.Own = make(map[string]bool, len(sec.Items))
+		for name := range sec.Items {
+			opts.Own[name] = true
+		}
+	}
+	sec.Lint = lintItems(k, items, opts)
+	if len(sec.Lint) == 0 {
+		return false
+	}
+	hold := mode == policy.LintDeny && first
+	dec := "warn"
+	if hold {
+		dec = "blocked"
+	}
+	for _, line := range sec.Lint {
+		key, rest, _ := strings.Cut(line, ": ")
+		p.Audit.Log(audit.Event{Kind: "lint", Tool: key, Decision: dec, Reason: string(k) + ": " + rest})
+		p.Logf("lint: %s: %s", k, printable(line))
+	}
+	if hold {
+		p.Logf("lint.lists: deny: %d finding(s) in %s seen for the first time; held for review", len(sec.Lint), k)
+	}
+	return hold
+}
+
+// lintItems scans every item of a list and renders "<key>: <where>: <rule>
+// (<detail>)" lines, sorted by key, at most maxLintLines.
+func lintItems(k lock.Kind, items []json.RawMessage, opts scan.Options) []string {
+	var out []string
+	for _, raw := range items {
+		key := itemKey(k, raw)
+		for _, f := range scan.Item(raw, opts) {
+			out = append(out, key+": "+f.String())
+		}
+	}
+	sort.Strings(out)
+	if len(out) > maxLintLines {
+		out = append(out[:maxLintLines], fmt.Sprintf("… and %d more", len(out)-maxLintLines))
+	}
+	return out
+}
+
+// itemKey is the name (tools, prompts), uri (resources) or uriTemplate of
+// an item; "?" when it has none.
+func itemKey(k lock.Kind, raw json.RawMessage) string {
+	var v struct {
+		Name        string `json:"name"`
+		URI         string `json:"uri"`
+		URITemplate string `json:"uriTemplate"`
+	}
+	_ = json.Unmarshal(raw, &v)
+	key := v.Name
+	switch k {
+	case lock.Resources:
+		key = v.URI
+	case lock.ResourceTemplates:
+		key = v.URITemplate
+	}
+	if key == "" {
+		key = "?"
+	}
+	return key
 }
 
 // printable replaces control characters (terminal escapes among them)

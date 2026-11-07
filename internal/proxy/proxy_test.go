@@ -3,6 +3,7 @@ package proxy
 import (
 	"bufio"
 	"encoding/json"
+	"fmt"
 	"io"
 	"path/filepath"
 	"strings"
@@ -63,17 +64,28 @@ func start(t *testing.T, p *policy.Policy, tools string) *session {
 }
 
 func startWith(t *testing.T, p *policy.Policy, tools string, extra map[string]string) *session {
+	return startFull(t, p, tools, extra, t.Logf)
+}
+
+// startLog is start with a logger the test can inspect.
+func startLog(t *testing.T, p *policy.Policy, tools string, logf func(string, ...any)) *session {
+	return startFull(t, p, tools, nil, logf)
+}
+
+func startFull(t *testing.T, p *policy.Policy, tools string, extra map[string]string, logf func(string, ...any)) *session {
 	t.Helper()
 	sIn, sOut := fakeServer(t, tools, extra)
 	cInR, cInW := io.Pipe()
 	cOutR, cOutW := io.Pipe()
-	px := &Proxy{Policy: p, Logf: t.Logf, TTYPath: filepath.Join(t.TempDir(), "no-such-tty")}
+	px := &Proxy{Policy: p, Logf: logf, TTYPath: filepath.Join(t.TempDir(), "no-such-tty")}
 	done := make(chan error, 1)
 	go func() { done <- px.Run(cInR, cOutW, sIn, sOut); _ = cOutW.Close() }()
 	return &session{t: t, toCli: cInW, fromCl: newReader(cOutR), done: done}
 }
 
 func newReader(r io.Reader) *bufio.Reader { return bufio.NewReader(r) }
+
+func sprintf(format string, a ...any) string { return fmt.Sprintf(format, a...) }
 
 func (s *session) call(req string) *jsonrpc.Message {
 	s.t.Helper()

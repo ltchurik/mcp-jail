@@ -360,3 +360,18 @@ func TestExecValidate(t *testing.T) {
 		}
 	}
 }
+
+func TestLintSection(t *testing.T) {
+	p, err := parse([]byte("lint: { lists: deny, ignore: [encoded, shadowing] }"), "p")
+	if err != nil || p.Lint.Lists != LintDeny || len(p.Lint.Ignore) != 2 {
+		t.Fatalf("%+v %v", p, err)
+	}
+	if p, err := parse([]byte("name: x"), "p"); err != nil || p.Lint.Lists != LintWarn {
+		t.Fatalf("default must be warn: %+v %v", p, err)
+	}
+	for _, bad := range []string{"lint: { lists: maybe }", "lint: { ignore: [nope] }"} {
+		if _, err := parse([]byte(bad), "p"); err == nil {
+			t.Fatalf("%s must be refused", bad)
+		}
+	}
+}

@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/ltchurik/mcp-jail/internal/scan"
 	"gopkg.in/yaml.v3"
 )
 
@@ -49,6 +50,15 @@ const (
 	// FirstReview refuses the first list until someone has looked at it and
 	// approved it; nothing is recorded before that.
 	FirstReview FirstContact = "review"
+)
+
+// LintMode is what a lint finding does.
+type LintMode string
+
+const (
+	LintOff  LintMode = "off"
+	LintWarn LintMode = "warn"
+	LintDeny LintMode = "deny"
 )
 
 // Policy is the on-disk policy document.
@@ -107,6 +117,21 @@ type Policy struct {
 		// approve`); until then the list and its uses are refused.
 		First FirstContact `yaml:"first"`
 	} `yaml:"lock"`
+
+	// Lint applies content heuristics (package scan) to what the server
+	// defines: hidden markup and invisible characters, text addressed to
+	// the model, sensitive paths, fetch-and-run and exfiltration phrases.
+	// A finding is a hint for the person approving, not a verdict.
+	Lint struct {
+		// Lists covers tools/list, prompts/list and resources(/templates)/list
+		// whenever the lock has something new to decide (first contact or a
+		// change): "warn" (default) logs and audits the findings, "deny"
+		// also holds a first-contact list for review as if lock.first were
+		// review, "off" skips the scan.
+		Lists LintMode `yaml:"lists"`
+		// Ignore lists rule ids (scan.Rules) that are not reported.
+		Ignore []string `yaml:"ignore"`
+	} `yaml:"lint"`
 
 	Audit struct {
 		// Path of the JSONL audit log. Empty disables it. Supports ~ expansion.
@@ -209,6 +234,7 @@ func Default() *Policy {
 	p.Tools.Default = Ask
 	p.Lock.Enabled = true
 	p.Lock.First = FirstRecord
+	p.Lint.Lists = LintWarn
 	return p
 }
 
@@ -265,6 +291,18 @@ func (p *Policy) Validate() error {
 	case FirstRecord, FirstReview:
 	default:
 		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
+	}
+	switch p.Lint.Lists {
+	case "":
+		p.Lint.Lists = LintWarn
+	case LintOff, LintWarn, LintDeny:
+	default:
+		return fmt.Errorf("lint.lists must be off|warn|deny, got %q", p.Lint.Lists)
+	}
+	for _, r := range p.Lint.Ignore {
+		if !scan.Known(r) {
+			return fmt.Errorf("lint.ignore: unknown rule %q (rules: %s)", r, strings.Join(scan.Rules, ", "))
+		}
 	}
 	for k, r := range p.Tools.Rules {
 		if err := checkDecision(r.Decision); err != nil {
@@ -672,6 +710,15 @@ lock:
   # review – show the first list and record it only after you approve it
   #          (terminal prompt, Approve in the dashboard, or mcp-jail approve)
   first: record
+
+# Content heuristics on what the server defines, applied whenever the lock
+# has something new to decide: hidden markup or invisible characters, text
+# addressed to the model, sensitive paths, fetch-and-run or exfiltration
+# phrases. warn logs them; deny also holds a first-contact list for review.
+lint:
+  lists: warn     # off | warn | deny
+  # ignore: [encoded]   # rule ids to skip: hidden-unicode hidden-markup instruction
+                        # sensitive-path fetch-and-run exfiltration encoded shadowing
 
 audit:
   path: ~/.local/state/mcp-jail/my-server.jsonl

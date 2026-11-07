@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+### Added
+
+- `lint.lists`: content heuristics on every tools, prompts or resources list
+  the lock has yet to approve (first contact or a change): hidden markup and
+  invisible characters, text addressed to the model, sensitive paths,
+  fetch-and-run and exfiltration phrases, base64 blobs, and tool names
+  recorded for another server on this machine (shadowing). Findings go to
+  stderr and the audit log (`kind: lint`), are kept with the pending or
+  recorded section, and are shown by `mcp-jail diff` (`! lint`), `mcp-jail
+  show`, the dashboard and the terminal review. `warn` (default) reports;
+  `deny` holds a first-contact list with findings for review regardless of
+  `lock.first`; `lint.ignore` drops rules.
+
 ### Changed
 
 - README and SECURITY state that the macOS profile restricts file and network

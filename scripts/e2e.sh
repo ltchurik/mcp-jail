@@ -91,8 +91,43 @@ assert "$OUT" '"id":2,"error":\{"code":-32002'
 assert "$OUT" '"id":3,"error":\{"code":-32002'
 assert "$OUT" '"id": ?7, ?"result"'   # prompts are untouched and still usable
 assert "$($BIN diff e2e)" 'changed read_file'
+# the changed description names a sensitive path: the lint says so in the audit and in diff
+assert "$(cat "$WORK/audit.jsonl")" '"kind":"lint","tool":"read_file","decision":"warn","reason":"tools: description: sensitive-path \(/.ssh\)"'
+assert "$($BIN diff e2e)" '! lint +read_file: description: sensitive-path \(/.ssh\)'
 $BIN approve e2e >/dev/null
 OUT=$(run "$WORK/p.yml")
+assert "$OUT" '"id": ?2, ?"result"'
+assert "$($BIN show e2e)" '^  tools: +3 items, [0-9a-f]{12}, recorded .*, 1 lint finding\(s\)'
+
+echo "== lint: deny holds a first contact with findings"
+cat >"$WORK/lint.yml" <<YML
+name: e2e-lint
+network: { mode: none }
+tools: { default: allow }
+lock: { enabled: true, first: record }
+lint: { lists: deny }
+audit: { path: $WORK/audit-lint.jsonl }
+sandbox: { disabled: true }
+YML
+OUT=$(run "$WORK/lint.yml" "$INIT" "$LIST" "$READ")
+assert "$OUT" '"id":2,"error":\{"code":-32002,"message":"mcp-jail: tools seen for the first time were not approved \(no tty\)'
+assert "$OUT" '"id":3,"error":\{"code":-32002'
+assert "$(cat "$WORK/audit-lint.jsonl")" '"kind":"lint","tool":"read_file","decision":"blocked","reason":"tools: description: sensitive-path \(/.ssh\)"'
+assert "$($BIN diff e2e-lint)" '! lint +read_file: description: sensitive-path'
+assert "$($BIN show e2e-lint)" 'PENDING: +tools: 3 item\(s\) seen for the first time, awaiting review, 1 lint finding\(s\)'
+$BIN approve e2e-lint >/dev/null
+OUT=$(run "$WORK/lint.yml" "$INIT" "$LIST" "$READ")
+assert "$OUT" '"id": ?2, ?"result"'
+assert "$OUT" '"id": ?3, ?"result"'
+# a clean list under lint.lists: deny is recorded without interaction
+cat >"$WORK/lint2.yml" <<YML
+name: e2e-lint-clean
+network: { mode: none }
+tools: { default: allow }
+lint: { lists: deny, ignore: [sensitive-path] }
+sandbox: { disabled: true }
+YML
+OUT=$(run "$WORK/lint2.yml" "$INIT" "$LIST" "$READ")
 assert "$OUT" '"id": ?2, ?"result"'
 
 echo "== rug-pull: prompts"
@@ -269,17 +304,17 @@ STATE=$(http "$BASE/api/state" "$TOKEN")
 assert "$STATE" '^200$'
 assert "$STATE" '"name":"e2e-ui","running":true,"pid":[0-9]+'
 assert "$STATE" '"tools_default":"deny","lock_enabled":true,"lock":\[\{"kind":"tools","count":3'
-assert "$STATE" '"counts":\{"allow":1,"created":1,"deny":1\}'
+assert "$STATE" '"counts":\{"allow":1,"created":1,"deny":1,"warn":1\}'
 EV=$(http "$BASE/api/events?server=e2e-ui&decision=deny" "$TOKEN")
 assert "$EV" '"server":"e2e-ui","kind":"tool_call","tool":"delete_file","decision":"deny"'
 refute "$EV" '"tool":"read_file"'
 assert "$(http "$BASE/api/events?since=nonsense" "$TOKEN")" '^400$'
 REP=$(http "$BASE/api/report?since=1h&server=e2e-ui" "$TOKEN")
-assert "$REP" '"decisions":\{"allow":1,"created":1,"deny":1\}'
+assert "$REP" '"decisions":\{"allow":1,"created":1,"deny":1,"warn":1\}'
 assert "$REP" '"tool":"delete_file","allow":0,"deny":1'
 assert "$(http "$BASE/api/report?format=csv&server=e2e-ui" "$TOKEN")" '^e2e-ui,delete_file,1,0,1,0,0,0,$'
 TXT=$("$BIN" report --since 1h --server e2e-ui)
-assert "$TXT" 'decisions: +allow 1 +deny 1 +created 1'
+assert "$TXT" 'decisions: +allow 1 +deny 1 +created 1 +warn 1'
 assert "$TXT" '^delete_file +e2e-ui +1 +0 +1 +0'
 assert "$("$BIN" report --json --server e2e-ui)" '"hosts": \[\]'
 "$BIN" report --since never 2>"$WORK/rep.err" && { echo "FAIL: bad --since accepted"; exit 1; }
@@ -310,7 +345,7 @@ assert "$(http "$BASE/api/state" "$TOKEN")" '"name":"e2e-ui","running":false,"la
 edit 's/Report what the server can see/Report what the server sees/'
 OUT=$(run "$WORK/ui.yml" "$INIT" "$LIST")
 assert "$OUT" '"id":2,"error":\{"code":-32002'
-assert "$(http "$BASE/api/state" "$TOKEN")" '"pending":\{"seen_at":"[^"]*","sections":\{"tools":\{"added":\[\],"removed":\[\],"changed":\["probe"\]\}\}\}'
+assert "$(http "$BASE/api/state" "$TOKEN")" '"pending":\{"seen_at":"[^"]*","sections":\{"tools":\{"added":\[\],"removed":\[\],"changed":\["probe"\],"lint":\["read_file: description: sensitive-path \(/.ssh\)"\]\}\}\}'
 assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN")" '^403'                                   # no same-origin proof
 assert "$(post "$BASE/api/servers/e2e-ui/approve" "$TOKEN" "X-Mcp-Jail: 1" "Sec-Fetch-Site: cross-site")" '^403'
 assert "$("$BIN" diff e2e-ui)" 'changed probe'                                                           # refusals changed nothing

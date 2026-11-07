@@ -95,8 +95,11 @@ func (p *Proxy) reviewDecision(k lock.Kind, sec lock.Section, items []json.RawMe
 // pending section into the lock.
 func (p *Proxy) reviewOnTTY(k lock.Kind, sec lock.Section, items []json.RawMessage) (bool, string) {
 	_, _ = fmt.Fprintf(p.tty, "\n[mcp-jail] %s: %d %s seen for the first time (%s)\n", p.Policy.Name, len(sec.Items), k, lock.Short(sec.Hash))
-	for _, line := range catalog(k, items, maxCatalog) {
+	for _, line := range catalog(k, items, sec.Lint, maxCatalog) {
 		_, _ = fmt.Fprintf(p.tty, "  %s\n", printable(line))
+	}
+	if n := len(sec.Lint); n > 0 {
+		_, _ = fmt.Fprintf(p.tty, "  %d lint finding(s) marked with !: look at them before you approve\n", n)
 	}
 	_, _ = fmt.Fprintf(p.tty, "  record these %s and allow their use? [y/N] ", k)
 	ans, err := bufio.NewReader(p.tty).ReadString('\n')
@@ -116,8 +119,9 @@ func (p *Proxy) reviewOnTTY(k lock.Kind, sec lock.Section, items []json.RawMessa
 
 // catalog renders one line per item: its key and the first line of its
 // description, sorted by key, at most limit lines (plus one saying how many
-// were left out).
-func catalog(k lock.Kind, items []json.RawMessage, limit int) []string {
+// were left out). The lint findings of an item ("<key>: …" lines) follow
+// it, marked with "!".
+func catalog(k lock.Kind, items []json.RawMessage, lint []string, limit int) []string {
 	type entry struct{ key, desc string }
 	var es []entry
 	for _, raw := range items {
@@ -157,6 +161,11 @@ func catalog(k lock.Kind, items []json.RawMessage, limit int) []string {
 			out = append(out, e.key)
 		} else {
 			out = append(out, e.key+"  —  "+e.desc)
+		}
+		for _, l := range lint {
+			if rest, ok := strings.CutPrefix(l, e.key+": "); ok {
+				out = append(out, "  ! "+rest)
+			}
 		}
 	}
 	return out

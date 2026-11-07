@@ -7,7 +7,7 @@ import (
 	"strings"
 )
 
-// Lint reports rules that are wider than the mounts they sit on: an
+// MountWarnings reports rules that are wider than the mounts they sit on: an
 // args.under directory that no read_write path covers, so a write there
 // passes the policy and then fails inside the jail as a read-only
 // filesystem error instead of "denied by policy"; and one that no mount
@@ -17,7 +17,7 @@ import (
 //
 // Nothing is reported for a remote server or a disabled sandbox, where
 // the filesystem section does not apply.
-func (p *Policy) Lint() []string {
+func (p *Policy) MountWarnings() []string {
 	if p.Remote() || p.Sandbox.Disabled {
 		return nil
 	}
