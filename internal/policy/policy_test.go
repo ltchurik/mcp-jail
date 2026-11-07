@@ -386,3 +386,33 @@ func TestSandboxEnvEntries(t *testing.T) {
 		}
 	}
 }
+
+func TestServerRequests(t *testing.T) {
+	p, err := parse([]byte("name: x"), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[string]Decision{"ping": Allow, "roots/list": Allow, "sampling/createMessage": Deny, "elicitation/create": Deny} {
+		if got := p.ServerRequest(m); got != want {
+			t.Errorf("default %s = %s, want %s", m, got, want)
+		}
+	}
+	p, err = parse([]byte("server_requests: { default: ask, rules: { \"sampling/*\": allow, sampling/createMessage: deny } }"), "p")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for m, want := range map[string]Decision{"ping": Ask, "sampling/createMessage": Deny, "sampling/other": Allow} {
+		if got := p.ServerRequest(m); got != want {
+			t.Errorf("%s = %s, want %s", m, got, want)
+		}
+	}
+	// listing rules replaces the defaults: an empty mapping denies ping too
+	if p, err := parse([]byte("server_requests: { rules: {} }"), "p"); err != nil || p.ServerRequest("ping") != Deny {
+		t.Fatalf("empty rules: %v %v", p, err)
+	}
+	for _, bad := range []string{"server_requests: { default: maybe }", "server_requests: { rules: { ping: sometimes } }", "server_requests: { rules: { \"\": allow } }"} {
+		if _, err := parse([]byte(bad), "p"); err == nil {
+			t.Fatalf("%s must be refused", bad)
+		}
+	}
+}

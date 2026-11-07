@@ -20,6 +20,15 @@
   `==`, a deno remote module, a docker image without a digest, `sh -c "curl …
   | sh"`. The warning shows the pinned form; `wrap` writes it into the policy
   header; `run` audits it (`policy` / `warn`).
+- `server_requests`: requests the server sends to the client
+  (`sampling/createMessage`, `elicitation/create`, `roots/list`, `ping`) are
+  decided like tool calls (exact method or glob, allow / deny / ask); a
+  denied or unapproved one is answered to the server with a JSON-RPC error
+  and never reaches the client, audited as `server_request`. Default: `ping`
+  and `roots/list` allowed, everything else denied. Until now every
+  server-initiated request was forwarded unchecked. `mcp-jail show` prints
+  the section as `from server`; the dashboard's kind filter knows
+  `server_request` and `lint`.
 - Every jail starts with `DO_NOT_TRACK=1`, `NO_UPDATE_NOTIFIER=1` and
   `npm_config_update_notifier=false`, so a launcher does not phone home or
   look for a newer version on its own. `sandbox.env` accepts `NAME=value` to

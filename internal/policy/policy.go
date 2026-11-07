@@ -118,6 +118,19 @@ type Policy struct {
 		First FirstContact `yaml:"first"`
 	} `yaml:"lock"`
 
+	// ServerRequests decides the requests a server sends to the client:
+	// sampling/createMessage (the server asks the model to generate text
+	// under a prompt it wrote), elicitation/create (the server asks the user
+	// for input through a form it wrote), roots/list, ping. They are
+	// decided like tool calls: exact method or glob, allow | deny | ask.
+	// With no rules listed, ping and roots/list are allowed and everything
+	// else denied; listing rules replaces those defaults. Reloaded with
+	// tools and ask.
+	ServerRequests struct {
+		Default Decision            `yaml:"default"`
+		Rules   map[string]Decision `yaml:"rules"`
+	} `yaml:"server_requests"`
+
 	// Lint applies content heuristics (package scan) to what the server
 	// defines: hidden markup and invisible characters, text addressed to
 	// the model, sensitive paths, fetch-and-run and exfiltration phrases.
@@ -239,6 +252,7 @@ func Default() *Policy {
 	p.Lock.Enabled = true
 	p.Lock.First = FirstRecord
 	p.Lint.Lists = LintWarn
+	p.ServerRequests.Default = Deny
 	return p
 }
 
@@ -295,6 +309,23 @@ func (p *Policy) Validate() error {
 	case FirstRecord, FirstReview:
 	default:
 		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
+	}
+	if p.ServerRequests.Default == "" {
+		p.ServerRequests.Default = Deny
+	}
+	if err := checkDecision(p.ServerRequests.Default); err != nil {
+		return fmt.Errorf("server_requests.default: %w", err)
+	}
+	if p.ServerRequests.Rules == nil {
+		p.ServerRequests.Rules = map[string]Decision{"ping": Allow, "roots/list": Allow}
+	}
+	for m, d := range p.ServerRequests.Rules {
+		if m == "" || hasControl(m) {
+			return fmt.Errorf("server_requests.rules: %q is not a method", m)
+		}
+		if err := checkDecision(d); err != nil {
+			return fmt.Errorf("server_requests.rules[%s]: %w", m, err)
+		}
 	}
 	switch p.Lint.Lists {
 	case "":
@@ -514,20 +545,39 @@ func checkDecision(d Decision) error {
 // the stricter decision (deny over ask over allow) so that the outcome
 // does not depend on map order; otherwise the default decision applies.
 func (p *Policy) Rule(tool string) Rule {
-	if r, ok := p.Tools.Rules[tool]; ok {
+	if r, ok := pick(p.Tools.Rules, tool, func(r Rule) Decision { return r.Decision }); ok {
 		return r
 	}
-	best, bestLen := Rule{Decision: p.Tools.Default}, -1
-	for pat, r := range p.Tools.Rules {
-		ok, _ := filepath.Match(pat, tool)
+	return Rule{Decision: p.Tools.Default}
+}
+
+// ServerRequest returns the decision for a request the server sends to
+// the client, matched like a tool rule.
+func (p *Policy) ServerRequest(method string) Decision {
+	if d, ok := pick(p.ServerRequests.Rules, method, func(d Decision) Decision { return d }); ok {
+		return d
+	}
+	return p.ServerRequests.Default
+}
+
+// pick finds the rule governing name: an exact key, else the longest
+// matching glob, ties broken by the stricter decision.
+func pick[V any](rules map[string]V, name string, dec func(V) Decision) (V, bool) {
+	if r, ok := rules[name]; ok {
+		return r, true
+	}
+	var best V
+	bestLen := -1
+	for pat, r := range rules {
+		ok, _ := filepath.Match(pat, name)
 		if !ok {
 			continue
 		}
-		if len(pat) > bestLen || (len(pat) == bestLen && strictness(r.Decision) > strictness(best.Decision)) {
+		if len(pat) > bestLen || (len(pat) == bestLen && strictness(dec(r)) > strictness(dec(best))) {
 			best, bestLen = r, len(pat)
 		}
 	}
-	return best
+	return best, bestLen >= 0
 }
 
 func strictness(d Decision) int {
@@ -719,6 +769,18 @@ tools:
     #   decision: allow
     #   args:
     #     url: { host: [network.allow] }          # host must be in network.allow
+
+# Requests the server sends to the client: sampling/createMessage (the server
+# asks the model to generate text under its own prompt), elicitation/create
+# (a form for the user), roots/list, ping. Decided like tools: allow | deny |
+# ask. Without rules, ping and roots/list are allowed and the rest denied;
+# listing rules replaces those defaults.
+# server_requests:
+#   default: deny
+#   rules:
+#     ping: allow
+#     roots/list: allow
+#     sampling/createMessage: ask
 
 # ask without a terminal (Claude Desktop, Cursor): the call waits up to
 # ask.timeout for an answer from the dashboard (mcp-jail ui) when one is open,

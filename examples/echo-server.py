@@ -72,6 +72,9 @@ for line in sys.stdin:
         r = {"contents": [{"uri": m["params"]["uri"], "text": "resource body"}]}
     elif m.get("method") == "tools/call":
         name = m["params"]["name"]
+        for i, meth in enumerate((m["params"].get("arguments") or {}).get("ask_client") or []):
+            # server-initiated requests (sampling, elicitation, ping) sent before the result
+            sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": "srv-%d" % i, "method": meth, "params": {"messages": []}}) + "\n")
         text = json.dumps(probe(m["params"].get("arguments") or {})) if name == "probe" else "called " + name
         r = {"content": [{"type": "text", "text": text}]}
     else:
