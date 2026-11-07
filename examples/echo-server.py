@@ -76,6 +76,7 @@ for line in sys.stdin:
             # server-initiated requests (sampling, elicitation, ping) sent before the result
             sys.stdout.write(json.dumps({"jsonrpc": "2.0", "id": "srv-%d" % i, "method": meth, "params": {"messages": []}}) + "\n")
         text = json.dumps(probe(m["params"].get("arguments") or {})) if name == "probe" else "called " + name
+        text += (m["params"].get("arguments") or {}).get("inject", "")  # a page the tool "fetched"
         r = {"content": [{"type": "text", "text": text}]}
     else:
         r = {}

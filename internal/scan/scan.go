@@ -45,8 +45,16 @@ func Known(id string) bool {
 	return false
 }
 
+// ResultRules are the rules that make sense for content a server returns
+// (a tool result, a resource, a prompt, a log message): a file that names
+// ~/.ssh or carries base64 is ordinary data, text that addresses the model
+// or hides from the reader is not.
+var ResultRules = []string{"hidden-unicode", "hidden-markup", "instruction"}
+
 // Options tune a scan.
 type Options struct {
+	// Only, when set, restricts the scan to these rules.
+	Only []string
 	// Ignore lists rule ids that are not reported.
 	Ignore []string
 	// Foreign maps tool names of other servers to the server that owns
@@ -63,7 +71,15 @@ func (o Options) ignored(rule string) bool {
 			return true
 		}
 	}
-	return false
+	if o.Only == nil {
+		return false
+	}
+	for _, r := range o.Only {
+		if r == rule {
+			return false
+		}
+	}
+	return true
 }
 
 // pattern is one regular expression under a rule.
@@ -146,6 +162,40 @@ func Item(raw json.RawMessage, o Options) []Finding {
 		}
 	})
 	return out
+}
+
+// MaxResult bounds what Result scans; a larger result is reported as
+// unscanned rather than parsed.
+const MaxResult = 4 << 20
+
+// Result scans every string of a result or notification the server
+// returned with ResultRules (narrowed further by o). It returns at most
+// limit findings and ok=false when the payload could not be scanned (too
+// large or not JSON), which a fail-closed caller treats as a finding.
+func Result(raw json.RawMessage, o Options, limit int) (findings []Finding, ok bool) {
+	if len(raw) > MaxResult {
+		return []Finding{{Rule: "unscanned", Detail: fmt.Sprintf("%d bytes, more than the %d the lint reads", len(raw), MaxResult)}}, false
+	}
+	if o.Only == nil {
+		o.Only = ResultRules
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return []Finding{{Rule: "unscanned", Detail: "not valid JSON"}}, false
+	}
+	walk(v, "", func(where, s string) {
+		if len(findings) > limit {
+			return
+		}
+		for _, f := range Text(s, o) {
+			f.Where = where
+			findings = append(findings, f)
+		}
+	})
+	if len(findings) > limit {
+		findings = append(findings[:limit], Finding{Rule: "more", Detail: fmt.Sprintf("%d further finding(s)", len(findings)-limit)})
+	}
+	return findings, true
 }
 
 // walk calls fn for every string in v with its dotted path.

@@ -142,6 +142,14 @@ type Policy struct {
 		// also holds a first-contact list for review as if lock.first were
 		// review, "off" skips the scan.
 		Lists LintMode `yaml:"lists"`
+		// Results covers what the server returns: tools/call results,
+		// resources/read contents, prompts/get messages and
+		// notifications/message, with the rules that make sense for data
+		// (hidden characters, hidden markup, text addressed to the model).
+		// "warn" (default) audits the findings and forwards the result;
+		// "deny" replaces the result with an error (and drops the
+		// notification), also when it is too large to scan; "off" skips it.
+		Results LintMode `yaml:"results"`
 		// Ignore lists rule ids (scan.Rules) that are not reported.
 		Ignore []string `yaml:"ignore"`
 	} `yaml:"lint"`
@@ -252,6 +260,7 @@ func Default() *Policy {
 	p.Lock.Enabled = true
 	p.Lock.First = FirstRecord
 	p.Lint.Lists = LintWarn
+	p.Lint.Results = LintWarn
 	p.ServerRequests.Default = Deny
 	return p
 }
@@ -333,6 +342,13 @@ func (p *Policy) Validate() error {
 	case LintOff, LintWarn, LintDeny:
 	default:
 		return fmt.Errorf("lint.lists must be off|warn|deny, got %q", p.Lint.Lists)
+	}
+	switch p.Lint.Results {
+	case "":
+		p.Lint.Results = LintWarn
+	case LintOff, LintWarn, LintDeny:
+	default:
+		return fmt.Errorf("lint.results must be off|warn|deny, got %q", p.Lint.Results)
 	}
 	for _, r := range p.Lint.Ignore {
 		if !scan.Known(r) {
@@ -804,7 +820,8 @@ lock:
 # addressed to the model, sensitive paths, fetch-and-run or exfiltration
 # phrases. warn logs them; deny also holds a first-contact list for review.
 lint:
-  lists: warn     # off | warn | deny
+  lists: warn     # off | warn | deny: tool, prompt and resource definitions
+  results: warn   # off | warn | deny: what the server returns (results, resources, prompts, log messages)
   # ignore: [encoded]   # rule ids to skip: hidden-unicode hidden-markup instruction
                         # sensitive-path fetch-and-run exfiltration encoded shadowing
 
