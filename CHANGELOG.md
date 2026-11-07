@@ -14,6 +14,17 @@
   show`, the dashboard and the terminal review. `warn` (default) reports;
   `deny` holds a first-contact list with findings for review regardless of
   `lock.first`; `lint.ignore` drops rules.
+- `mcp-jail run`, `show` and `wrap` warn about a launcher that resolves its
+  program at every start instead of pinning it: an npx / bunx / pnpm dlx /
+  yarn dlx package without an exact version, a uvx / pipx package without
+  `==`, a deno remote module, a docker image without a digest, `sh -c "curl …
+  | sh"`. The warning shows the pinned form; `wrap` writes it into the policy
+  header; `run` audits it (`policy` / `warn`).
+- Every jail starts with `DO_NOT_TRACK=1`, `NO_UPDATE_NOTIFIER=1` and
+  `npm_config_update_notifier=false`, so a launcher does not phone home or
+  look for a newer version on its own. `sandbox.env` accepts `NAME=value` to
+  set a variable (`npm_config_ignore_scripts=true`); an entry with the same
+  name overrides a default. `mcp-jail show` lists them under `env`.
 
 ### Changed
 

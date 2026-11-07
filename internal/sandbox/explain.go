@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"strings"
 
+	"github.com/ltchurik/mcp-jail/internal/launcher"
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
 
@@ -34,7 +35,9 @@ type Plan struct {
 	// Hard reports whether the network mode is enforced by the OS rather
 	// than by a cooperative HTTP_PROXY.
 	Hard bool `json:"hard"`
-	// Env lists the variable names passed into the jail.
+	// Env lists the variable names set in the jail: the policy's
+	// sandbox.env plus the update-check and telemetry opt-outs every jail
+	// gets (DO_NOT_TRACK, NO_UPDATE_NOTIFIER, npm_config_update_notifier).
 	Env []string `json:"env"`
 	// Exec lists the pinned executables (exec.allow) and their state on
 	// this host right now.
@@ -95,6 +98,8 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		k, _, _ := strings.Cut(kv, "=")
 		plan.Env = append(plan.Env, k)
 	}
+	// what the command line resolves at start applies whatever the sandbox
+	plan.Notes = append(plan.Notes, launcher.Check(s.Command)...)
 	switch {
 	case p.Remote():
 		plan.Kind = "remote"

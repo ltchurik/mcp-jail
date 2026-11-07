@@ -208,14 +208,42 @@ func TestYAMLQuoting(t *testing.T) {
 			t.Errorf("yamlStr(%q) = %s, want %s", in, got, want)
 		}
 	}
-	if err := Validate(Policy("odd: name", "x", []string{"/nonexistent dir"}, []string{"K"}, "none")); err != nil {
+	if err := Validate(Policy("odd: name", "x", []string{"/nonexistent dir"}, []string{"K"}, "none", nil)); err != nil {
 		t.Errorf("policy with odd name must still load: %v", err)
+	}
+}
+
+// An unpinned launcher is reported with the change and in the policy header.
+func TestRewriteWarnsUnpinned(t *testing.T) {
+	in := []byte(`{"mcpServers":{"fs":{"command":"npx","args":["-y","@scope/srv"]},"git":{"command":"uvx","args":["mcp-server-git==0.6.2"]}}}`)
+	res, err := Rewrite(in, Options{Bin: "/opt/mcp-jail", PolicyDir: "/pol"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var fs, git Change
+	for _, c := range res.Changes {
+		switch c.Name {
+		case "fs":
+			fs = c
+		case "git":
+			git = c
+		}
+	}
+	if len(fs.Warnings) != 1 || !strings.Contains(fs.Warnings[0], `npx resolves "@scope/srv"`) || len(git.Warnings) != 0 {
+		t.Fatalf("warnings: fs=%q git=%q", fs.Warnings, git.Warnings)
+	}
+	pol := res.PolicyText("fs")
+	if !strings.Contains(pol, "# WARNING: npx resolves") || !strings.Contains(pol, "npm_config_ignore_scripts=true") {
+		t.Fatalf("policy header:\n%s", pol)
+	}
+	if err := Validate(pol); err != nil {
+		t.Fatal(err)
 	}
 }
 
 func TestPolicySkipsRootAndHome(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none")
+	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none", nil)
 	if strings.Contains(out, "- /\n") || strings.Contains(out, "- "+home+"\n") {
 		t.Fatalf("root or home became read_write:\n%s", out)
 	}

@@ -610,15 +610,40 @@ func covered(dir string, p *policy.Policy) bool {
 	return false
 }
 
+// hardeningEnv is set in every jail before the policy's own variables:
+// the opt-outs package managers and CLIs honour for update checks and
+// telemetry, so a launcher does not phone home or fetch a newer version on
+// its own. A sandbox.env entry with the same name overrides it.
+var hardeningEnv = []string{"DO_NOT_TRACK=1", "NO_UPDATE_NOTIFIER=1", "npm_config_update_notifier=false"}
+
+// passthroughEnv builds the jail's environment from sandbox.env: a bare
+// NAME copies the host's value (skipped when unset), NAME=value sets it.
 func passthroughEnv(keys []string) []string {
 	if len(keys) == 0 {
 		keys = []string{"PATH", "HOME", "LANG", "TERM"}
 	}
-	out := make([]string, 0, len(keys))
-	for _, k := range keys {
-		if v, ok := os.LookupEnv(k); ok {
-			out = append(out, k+"="+v)
+	vals := map[string]string{}
+	var order []string
+	set := func(k, v string) {
+		if _, ok := vals[k]; !ok {
+			order = append(order, k)
 		}
+		vals[k] = v
+	}
+	for _, kv := range hardeningEnv {
+		k, v, _ := strings.Cut(kv, "=")
+		set(k, v)
+	}
+	for _, k := range keys {
+		if name, v, ok := strings.Cut(k, "="); ok {
+			set(name, v)
+		} else if v, ok := os.LookupEnv(k); ok {
+			set(k, v)
+		}
+	}
+	out := make([]string, 0, len(order))
+	for _, k := range order {
+		out = append(out, k+"="+vals[k])
 	}
 	return out
 }

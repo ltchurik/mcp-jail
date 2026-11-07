@@ -22,6 +22,7 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/audit"
 	"github.com/ltchurik/mcp-jail/internal/control"
 	"github.com/ltchurik/mcp-jail/internal/egress"
+	"github.com/ltchurik/mcp-jail/internal/launcher"
 	"github.com/ltchurik/mcp-jail/internal/lock"
 	"github.com/ltchurik/mcp-jail/internal/netproxy"
 	"github.com/ltchurik/mcp-jail/internal/policy"
@@ -193,7 +194,7 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
-	for _, w := range p.MountWarnings() {
+	for _, w := range append(p.MountWarnings(), launcher.Check(cmdline)...) {
 		if !*quiet {
 			logf("warning: %s", w)
 		}
@@ -472,6 +473,9 @@ func cmdWrap(args []string) error {
 				note = " (" + c.Note + ")"
 			}
 			fmt.Fprintf(os.Stderr, "  wrapped  %-24s policy %s%s\n", c.Name, c.Policy, note)
+			for _, w := range c.Warnings {
+				fmt.Fprintf(os.Stderr, "           ! %s\n", w)
+			}
 		case "already-wrapped":
 			fmt.Fprintf(os.Stderr, "  skipped  %-24s already runs through mcp-jail\n", c.Name)
 		default:

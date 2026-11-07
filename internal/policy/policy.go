@@ -143,7 +143,11 @@ type Policy struct {
 	Sandbox struct {
 		// Disabled runs the server unsandboxed (policy + lock + audit only).
 		Disabled bool `yaml:"disabled"`
-		// Env lists environment variables passed through to the jailed server.
+		// Env lists environment variables for the jailed server: a bare NAME
+		// passes the host's value through, NAME=value sets one. Every jail
+		// also gets the update-check and telemetry opt-outs (DO_NOT_TRACK=1,
+		// NO_UPDATE_NOTIFIER=1, npm_config_update_notifier=false), which an
+		// entry of the same name overrides.
 		Env []string `yaml:"env"`
 	} `yaml:"sandbox"`
 
@@ -333,6 +337,12 @@ func (p *Policy) Validate() error {
 			r.Args[arg] = c
 		}
 	}
+	for _, e := range p.Sandbox.Env {
+		name, _, _ := strings.Cut(e, "=")
+		if !envName(name) || hasControl(e) {
+			return fmt.Errorf("sandbox.env: %q is not NAME or NAME=value", e)
+		}
+	}
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
 	p.Filesystem.ReadWrite = expandAll(p.Filesystem.ReadWrite)
 	p.Audit.Path = expand(p.Audit.Path)
@@ -455,6 +465,22 @@ func checkName(n string) error {
 		return fmt.Errorf("%q: must not contain path separators or control characters", n)
 	}
 	return nil
+}
+
+// envName reports whether s is a portable environment variable name.
+func envName(s string) bool {
+	if s == "" {
+		return false
+	}
+	for i, r := range s {
+		switch {
+		case r == '_', r >= 'A' && r <= 'Z', r >= 'a' && r <= 'z':
+		case r >= '0' && r <= '9' && i > 0:
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func hasControl(s string) bool {
@@ -726,7 +752,8 @@ audit:
 
 sandbox:
   disabled: false
-  env: [PATH, HOME, LANG]
+  env: [PATH, HOME, LANG]       # NAME passes the host's value through, NAME=value sets one
+  # env: [PATH, HOME, npm_config_ignore_scripts=true]   # e.g. no install scripts for npx packages
 
 # Pin executables a launcher (npx, uvx, a thin npm package) execs from
 # outside the system paths: each file is made visible on its own, so an

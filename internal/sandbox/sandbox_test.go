@@ -431,3 +431,14 @@ func TestBuildLinuxDoesNotShareHomeAsCwd(t *testing.T) {
 		t.Errorf("how = %q", how)
 	}
 }
+
+// sandbox.env: a bare NAME copies the host's value, NAME=value sets one, and
+// the update-check / telemetry opt-outs come first unless overridden.
+func TestPassthroughEnvSetsAndHardens(t *testing.T) {
+	t.Setenv("MCPJ_T", "host")
+	got := passthroughEnv([]string{"MCPJ_T", "MCPJ_UNSET", "FOO=bar=baz", "DO_NOT_TRACK=0"})
+	want := []string{"DO_NOT_TRACK=0", "NO_UPDATE_NOTIFIER=1", "npm_config_update_notifier=false", "MCPJ_T=host", "FOO=bar=baz"}
+	if strings.Join(got, " ") != strings.Join(want, " ") {
+		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
