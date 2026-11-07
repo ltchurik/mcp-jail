@@ -191,6 +191,7 @@ lock:
 
 lint:
   lists: warn               # off | warn | deny: content heuristics on new or changed definitions
+  results: warn             # off | warn | deny: the same on what the server returns
   # ignore: [encoded]       # rule ids to skip
 
 server_requests:            # what the server may ask the client: sampling, elicitation, roots, ping
@@ -344,6 +345,8 @@ lint:
   lists: deny
   ignore: [encoded]
 ```
+
+**Results.** The same scan runs on what the server *returns*: `tools/call` results (text and `structuredContent`), `resources/read` contents, `prompts/get` messages and `notifications/message` log lines. Content a tool fetched is the most common place for an injection to arrive, so only the rules that make sense for data apply: `hidden-unicode`, `hidden-markup` and `instruction` (a file that names `~/.ssh` or carries base64 is ordinary data). `lint.results: warn` (the default) audits each finding (`kind: lint`, `reason: result: content[0].text: …`) and forwards the result; `deny` answers the client with error `-32006` instead of the result, drops the notification, and also refuses a result too large to scan (4 MiB). `lint.ignore` applies here too.
 
 ## Remote servers (Streamable HTTP)
 

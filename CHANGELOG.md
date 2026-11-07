@@ -20,6 +20,13 @@
   `==`, a deno remote module, a docker image without a digest, `sh -c "curl …
   | sh"`. The warning shows the pinned form; `wrap` writes it into the policy
   header; `run` audits it (`policy` / `warn`).
+- `lint.results`: the same content heuristics on what the server returns
+  (`tools/call` results, `resources/read` contents, `prompts/get` messages,
+  `notifications/message`), limited to the rules that make sense for data
+  (hidden characters, hidden markup, text addressed to the model). `warn`
+  (default) audits each finding and forwards the result; `deny` answers the
+  client with error `-32006` instead, drops the notification, and refuses a
+  result too large to scan.
 - `server_requests`: requests the server sends to the client
   (`sampling/createMessage`, `elicitation/create`, `roots/list`, `ping`) are
   decided like tool calls (exact method or glob, allow / deny / ask); a

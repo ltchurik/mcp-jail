@@ -29,21 +29,19 @@ func fakeServer(t *testing.T, tools string, extra map[string]string) (in io.Writ
 				continue
 			}
 			var res string
-			switch m.Method {
-			case "tools/list":
+			switch r, ok := extra[m.Method]; {
+			case ok:
+				res = r
+			case m.Method == "tools/list":
 				res = `{"tools":` + tools + `}`
-			case "tools/call":
+			case m.Method == "tools/call":
 				res = `{"content":[{"type":"text","text":"ok"}]}`
-			case "prompts/get":
+			case m.Method == "prompts/get":
 				res = `{"messages":[]}`
-			case "resources/read":
+			case m.Method == "resources/read":
 				res = `{"contents":[]}`
 			default:
-				if r, ok := extra[m.Method]; ok {
-					res = r
-				} else {
-					res = `{}`
-				}
+				res = `{}`
 			}
 			b, _ := json.Marshal(jsonrpc.Message{JSONRPC: "2.0", ID: m.ID, Result: json.RawMessage(res)})
 			_, _ = outW.Write(append(b, '\n'))

@@ -242,9 +242,11 @@ func (p *Proxy) fromClient(line []byte) {
 				return
 			}
 		case "prompts/get", "resources/read":
-			if !p.allowUse(m) {
+			what, ok := p.allowUse(m)
+			if !ok {
 				return
 			}
+			pr.tool = what
 		}
 		p.pmu.Lock()
 		evicted := p.evictOldest()
@@ -299,8 +301,9 @@ func (p *Proxy) expire(key string, pr pendingReq) {
 }
 
 // allowUse gates prompts/get and resources/read on their lock section.
-// Returns false if the request was answered with an error.
-func (p *Proxy) allowUse(m *jsonrpc.Message) bool {
+// Returns the prompt name or resource URI and false if the request was
+// answered with an error.
+func (p *Proxy) allowUse(m *jsonrpc.Message) (string, bool) {
 	var params struct {
 		Name string `json:"name"`
 		URI  string `json:"uri"`
@@ -319,10 +322,10 @@ func (p *Proxy) allowUse(m *jsonrpc.Message) bool {
 		p.Audit.Log(audit.Event{Kind: kind, Tool: what, Decision: "deny", Reason: why})
 		p.Logf("deny %s %s (%s)", m.Method, what, why)
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
-		return false
+		return what, false
 	}
 	p.Audit.Log(audit.Event{Kind: kind, Tool: what, Decision: "allow"})
-	return true
+	return what, true
 }
 
 // rules is the policy in force for tool decisions and asks.
@@ -553,6 +556,9 @@ func (p *Proxy) fromServer(line []byte) {
 	if m.IsRequest() && !p.allowServerRequest(m) {
 		return
 	}
+	if m.IsNotification() && m.Method == "notifications/message" && !p.lintResult("notifications/message", m.Params, nil) {
+		return
+	}
 	if m.IsResponse() {
 		p.pmu.Lock()
 		pr, ok := p.pending[m.IDKey()]
@@ -594,10 +600,53 @@ func (p *Proxy) fromServer(line []byte) {
 					ev.Error = msg
 				}
 				p.Audit.Log(ev)
+				if m.Error == nil && !p.lintResult(pr.tool, m.Result, m.ID) {
+					return
+				}
+			case "prompts/get", "resources/read":
+				if m.Error == nil && !p.lintResult(pr.tool, m.Result, m.ID) {
+					return
+				}
 			}
 		}
 	}
 	p.toClient(line)
+}
+
+// maxResultFindings bounds what one result adds to the log.
+const maxResultFindings = 10
+
+// lintResult applies lint.results to what the server returned under what
+// (a tool name, prompt name, resource URI or notification method). With
+// warn the findings are audited (kind lint) and the result goes through;
+// with deny a result with findings, or one too large to scan, is answered
+// to the client as CodeLintRefused (id nil: the notification is dropped).
+// Returns false when the message must not be forwarded.
+func (p *Proxy) lintResult(what string, raw json.RawMessage, id json.RawMessage) bool {
+	mode := p.rules().Lint.Results
+	if mode == policy.LintOff || len(raw) == 0 {
+		return true
+	}
+	findings, _ := scan.Result(raw, scan.Options{Ignore: p.rules().Lint.Ignore}, maxResultFindings)
+	if len(findings) == 0 {
+		return true
+	}
+	dec := "warn"
+	if mode == policy.LintDeny {
+		dec = "blocked"
+	}
+	for _, f := range findings {
+		p.Audit.Log(audit.Event{Kind: "lint", Tool: what, Decision: dec, Reason: "result: " + f.String()})
+		p.Logf("lint: result of %s: %s", printable(what), printable(f.String()))
+	}
+	if mode != policy.LintDeny {
+		return true
+	}
+	if id != nil {
+		p.toClient(jsonrpc.NewErrorResponse(id, jsonrpc.CodeLintRefused,
+			fmt.Sprintf("mcp-jail: result of %s refused by lint.results (%d finding(s): %s)", what, len(findings), findings[0].String())))
+	}
+	return false
 }
 
 // allowServerRequest applies server_requests to a request the server sends
