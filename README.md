@@ -513,6 +513,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] Promote a rule to allow/deny and stop a jail from the dashboard (v0.4)
 - [x] Streamable HTTP transport: jail remote servers the same way (v0.5)
 - [x] `lock.first: review`, `mcp-jail show`, `exec.allow` / `exec.sha256` pins (v0.6)
+- [x] Content lint on definitions and results, `server_requests`, `limits`, `tools.secrets`, launcher pin warnings (v0.7)
 - [ ] Windows sandbox
 
 ## Non-goals
