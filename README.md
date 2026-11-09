@@ -6,6 +6,7 @@
 [![Release](https://img.shields.io/github/v/release/ltchurik/mcp-jail?display_name=tag&color=2f5fd0)](https://github.com/ltchurik/mcp-jail/releases/latest)
 [![Go](https://img.shields.io/badge/go-1.27-00ADD8)](go.mod)
 [![License](https://img.shields.io/github/license/ltchurik/mcp-jail?color=1f8a4c)](LICENSE)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.24091844.svg)](https://doi.org/10.5281/zenodo.24091844)
 
 Static scanners tell you a server *looks* suspicious. `mcp-jail` makes sure it *can't do* anything your policy doesn't allow: at runtime, for any server, in any language, without touching its code.
 
@@ -499,7 +500,7 @@ cd examples
 
 Paste JSON-RPC lines on stdin: `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and a second run after editing a description in `echo-server.py` trips the lock.
 
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md). Citing: [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button renders it).
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md). Citing: [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button renders it), DOI [10.5281/zenodo.24091844](https://doi.org/10.5281/zenodo.24091844) for all versions.
 
 ## Roadmap
 
