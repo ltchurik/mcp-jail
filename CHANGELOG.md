@@ -1,5 +1,13 @@
 # Changelog
 
+## v0.7.1 — 2026-11-09
+
+### Added
+
+- `CITATION.cff` with the software metadata (author, ORCID, licence,
+  repository) so GitHub offers "Cite this repository" and Zenodo archives
+  each release with a DOI.
+
 ## v0.7.0 — 2026-11-07
 
 What a server *says* and *returns* is now checked, not only what it may call: content lint on definitions and results, a policy for server-initiated requests, budgets, credential detection, and a warning for launchers that fetch their program at start. Existing policies keep working unchanged; the new defaults are `warn`.
