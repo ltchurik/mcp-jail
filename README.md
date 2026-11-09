@@ -499,7 +499,7 @@ cd examples
 
 Paste JSON-RPC lines on stdin: `delete_file` is refused, `read_file` passes, `probe` reports what the server can see, and a second run after editing a description in `echo-server.py` trips the lock.
 
-Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md).
+Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md](SECURITY.md). Changes: [CHANGELOG.md](CHANGELOG.md). Citing: [CITATION.cff](CITATION.cff) (GitHub's "Cite this repository" button renders it).
 
 ## Roadmap
 
