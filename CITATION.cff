@@ -12,7 +12,7 @@ identifiers:
     value: "10.5281/zenodo.24091844"
     description: "Concept DOI, resolves to the latest version"
 repository-code: "https://github.com/ltchurik/mcp-jail"
-url: "https://github.com/ltchurik/mcp-jail"
+url: "https://lubomirtchurik.sk"
 license: Apache-2.0
 version: 0.7.1
 date-released: 2026-11-09
