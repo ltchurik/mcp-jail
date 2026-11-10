@@ -128,6 +128,7 @@
         const firstOnly = sections.length > 0 && sections.every(d => d.first);
         p.append(el("strong", null, firstOnly ? "First contact: review before use" : "Pending change"), el("span", "muted small", ` seen ${fmtDate(s.pending.seen_at)}`));
         const ul = el("ul");
+        const boxes = []; // one checkbox per pending item: approve only the ticked ones
         for (const [kind, d] of Object.entries(s.pending.sections)) {
           const parts = [];
           if (d.first) parts.push(`${d.added.length} seen for the first time`);
@@ -135,7 +136,21 @@
           if (d.removed.length) parts.push(`−${d.removed.length} removed`);
           if (d.changed.length) parts.push(`~${d.changed.length} changed`);
           const li = el("li", null, `${kind.replace(/_/g, " ")}: ${parts.join(", ")}`);
-          li.title = [...d.added.map(x => "+ " + x), ...d.removed.map(x => "- " + x), ...d.changed.map(x => "~ " + x)].join("\n");
+          if (d.held) li.append(" ", el("span", "pill lock", "held: the rest keeps working"));
+          if (!d.first) {
+            const iul = el("ul", "items");
+            for (const [mark, names] of [["+", d.added], ["−", d.removed], ["~", d.changed]]) {
+              for (const x of names) {
+                const lab = el("label", "item");
+                const cb = el("input");
+                cb.type = "checkbox"; cb.checked = true; cb.dataset.kind = kind; cb.dataset.key = x;
+                lab.append(cb, ` ${mark} ${x}`);
+                boxes.push(cb);
+                iul.append(el("li", null, lab));
+              }
+            }
+            li.append(iul);
+          }
           if (d.lint && d.lint.length) {
             // the content findings: what to look at before approving
             li.append(" ", el("span", "pill blocked", `${d.lint.length} lint finding${d.lint.length === 1 ? "" : "s"}`));
@@ -157,7 +172,9 @@
           // inline confirmation: no browser dialogs
           state.confirming = true;
           act.replaceChildren();
-          const yes = el("button", "btn danger", "Yes, accept the new definitions");
+          const ticked = boxes.filter(cb => cb.checked).length;
+          if (boxes.length && ticked === 0) { state.confirming = false; toast(`${s.name}: tick at least one item`, "deny"); refreshState(); return; }
+          const yes = el("button", "btn danger", boxes.length && ticked < boxes.length ? `Yes, accept the ${ticked} ticked` : "Yes, accept the new definitions");
           const no = el("button", "btn", "Cancel");
           yes.type = no.type = "button";
           act.append(el("span", "small", "Trust what the server now serves?"), yes, no);
@@ -165,8 +182,15 @@
           yes.addEventListener("click", async () => {
             yes.disabled = no.disabled = true;
             state.confirming = false;
+            // unticked items stay pending: send only the ticked ones
+            const only = {};
+            let partial = false;
+            for (const cb of boxes) {
+              if (cb.checked) (only[cb.dataset.kind] ||= []).push(cb.dataset.key);
+              else partial = true;
+            }
             try {
-              const r = await mutate(`/api/servers/${encodeURIComponent(s.name)}/approve`);
+              const r = await mutate(`/api/servers/${encodeURIComponent(s.name)}/approve`, partial ? { only } : undefined);
               toast(`${s.name}: approved · ${r.lock.map(x => `${x.count} ${x.kind.replace(/_/g, " ")}`).join(", ")}`, "lock");
             } catch (err) {
               toast(`${s.name}: approve failed · ${err.message}`, "deny");

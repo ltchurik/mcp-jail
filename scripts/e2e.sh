@@ -295,9 +295,13 @@ refute "$OUT" '"id": ?2, ?"result".*delete_file'         # minus the changed too
 assert "$OUT" '"id": ?3, ?"result"'                      # unchanged tools keep working
 assert "$OUT" '"id":4,"error":\{"code":-32002,"message":"mcp-jail: tool \\"delete_file\\" is held for review'
 assert "$(cat "$WORK/audit.jsonl")" '"kind":"lock","decision":"review","reason":"tools added=\[\] removed=\[\] changed=\[delete_file\]: 1 item\(s\) held for review"'
+assert "$($BIN diff e2e)" 'tools \(held under lock.scope item'
 assert "$($BIN diff e2e)" 'changed delete_file'
 assert "$($BIN show --policy "$WORK/item.yml" -- "$PY" x.py)" '^lock: +on, first contact: record, scope: item'
-$BIN approve e2e >/dev/null
+assert "$($BIN show e2e)" 'PENDING: +tools added=\[\] removed=\[\] changed=\[delete_file\] \(held'
+assert "$($BIN approve e2e --only tools:nope 2>&1 || true)" 'tool "nope" is not pending'
+assert "$($BIN approve e2e --only delete_file)" '^approved e2e: 3 tools'
+assert "$($BIN diff e2e)" 'nothing pending'
 OUT=$(run "$WORK/item.yml")
 assert "$OUT" '"id": ?2, ?"result".*delete_file'
 

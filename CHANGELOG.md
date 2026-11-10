@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `mcp-jail approve <name> --only tools:a,prompts:b` (a bare key means
+  tools) records only those items of a pending change and leaves the rest
+  pending; the dashboard's Pending box lists the items with checkboxes and
+  sends the ticked ones. A pending section written under `lock.scope: item`
+  is flagged `held` in `diff`, `show` and the dashboard.
+
 ## v0.8.0 — 2026-11-10
 
 Two answers to the questions a Docker-sandboxing post raised about mcp-jail: a lock that copes with servers whose tool list legitimately changes, and a container backend for hosts without bubblewrap, Windows included. Existing policies and locks keep working unchanged.

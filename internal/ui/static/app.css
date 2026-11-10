@@ -93,6 +93,8 @@ main > section { min-width: 0; }
 .pending strong { color: var(--lock); }
 .pending ul { margin: 4px 0 0; padding-left: 16px; }
 .pending code { font-size: 12px; }
+.pending ul.items { margin: 2px 0 0 0; padding-left: 0; list-style: none; }
+.pending ul.items label.item { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; cursor: pointer; }
 .pending ul.lint { margin-top: 2px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; word-break: break-word; }
 .paths { margin-top: 10px; word-break: break-all; }
 .paths div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

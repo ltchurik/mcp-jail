@@ -878,6 +878,7 @@ func (p *Proxy) holdChanged(k lock.Kind, old *lock.Section, sec lock.Section, it
 		}
 	}
 	p.lintList(k, heldItems, &sec, false)
+	sec.Held = true
 	if err := lock.SavePending(p.Policy.Name, k, sec); err != nil {
 		p.Logf("lock: save pending: %v", err)
 	}
