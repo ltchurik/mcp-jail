@@ -50,6 +50,9 @@ type Proxy struct {
 	// environment to their values (scan.EnvSecrets); an argument carrying
 	// one is a credential leaving the machine.
 	EnvSecrets map[string]string
+	// NotifyPoll is how often a jail with a pending change checks the lock
+	// for an out-of-band approve (lock.notify); 0: one second.
+	NotifyPoll time.Duration
 	// MaxPending bounds the requests awaiting a server response; past it
 	// the oldest is dropped and answered with CodeNoResponse, so a server
 	// that stops answering cannot grow the proxy without bound. 0: 1024.
@@ -92,9 +95,14 @@ type lockState struct {
 	why      string // reason for the taint when it was not a hash mismatch
 	items    map[string]string
 	held     map[string]bool
-	paging   bool
-	acc      []json.RawMessage
-	next     string
+	// watching: a change is pending for this section; watchHash is the
+	// recorded section's hash at that moment ("" when none), so a later
+	// approve shows up as a different hash (see notify.go).
+	watching  bool
+	watchHash string
+	paging    bool
+	acc       []json.RawMessage
+	next      string
 }
 
 type pendingReq struct {
@@ -136,8 +144,13 @@ func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer,
 	errc := make(chan error, 2)
 	go func() { errc <- p.pump(clientIn, p.fromClient) }()
 	go func() { errc <- p.pump(serverOut, p.fromServer) }()
+	stopWatch := make(chan struct{})
+	if p.Policy.Lock.Enabled && p.Policy.LockNotify() {
+		go p.watchApprovals(stopWatch)
+	}
 	err := <-errc
 	p.drain(errc, drainGrace)
+	close(stopWatch)
 	p.lmu.Lock()
 	for _, st := range p.sections {
 		st.tainted = true // release anyone parked in waitVerified with a deny
@@ -549,6 +562,7 @@ func (p *Proxy) setLockHeld(k lock.Kind, verified, tainted bool, items map[strin
 	p.lmu.Lock()
 	st := p.sections[k]
 	st.verified, st.tainted, st.why, st.items, st.held = verified, tainted, "", items, held
+	st.watching, st.watchHash = false, ""
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -842,6 +856,7 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	d := lock.Compare(old.Items, sec.Items)
 	_ = lock.SavePending(p.Policy.Name, k, sec)
 	p.setLock(k, false, true, nil)
+	p.watch(k, old.Hash)
 	reason := string(k) + " " + d.String()
 	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: reason})
 	p.Logf("RUG-PULL: %s changed: %s", k, d)
@@ -883,6 +898,7 @@ func (p *Proxy) holdChanged(k lock.Kind, old *lock.Section, sec lock.Section, it
 		p.Logf("lock: save pending: %v", err)
 	}
 	p.setLockHeld(k, true, false, verified, held)
+	p.watch(k, old.Hash)
 	if len(held) == 0 {
 		// only removals: nothing to hold, the lock just no longer matches
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "warn", Reason: fmt.Sprintf("%s %s: nothing held; approve to record the removal", k, d)})

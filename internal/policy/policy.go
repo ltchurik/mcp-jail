@@ -174,6 +174,11 @@ type Policy struct {
 		// whole list; "item" forwards the unchanged items and holds only the
 		// added or changed ones for approval.
 		Scope LockScope `yaml:"scope"`
+		// Notify, unless false, makes a running jail watch the lock while a
+		// change is pending and tell the client (notifications/tools/
+		// list_changed and the prompts/resources equivalents) once it was
+		// approved out of band, so the client lists again without a restart.
+		Notify *bool `yaml:"notify"`
 	} `yaml:"lock"`
 
 	// ServerRequests decides the requests a server sends to the client:
@@ -278,6 +283,9 @@ type Policy struct {
 		Headers map[string]string `yaml:"headers"` // values support ${ENV} expansion
 	} `yaml:"server"`
 }
+
+// LockNotify reports lock.notify (default true).
+func (p *Policy) LockNotify() bool { return p.Lock.Notify == nil || *p.Lock.Notify }
 
 // Remote reports whether the policy names a remote server (server.url).
 func (p *Policy) Remote() bool { return p.Server.URL != "" }
@@ -1011,6 +1019,7 @@ lock:
   # item – the unchanged items keep working; only the added or changed ones
   #        are held back until approved (for servers whose tool list varies)
   scope: list
+  # notify: false  # do not tell the client (notifications/*/list_changed) when a pending change is approved
 
 # Content heuristics on what the server defines, applied whenever the lock
 # has something new to decide: hidden markup or invisible characters, text

@@ -367,6 +367,8 @@ mcp-jail locks                # overview of all locks
 mcp-jail reset filesystem     # forget everything
 ```
 
+A running jail notices the approve (it watches its lock while a change is pending) and sends the client `notifications/tools/list_changed` (or the prompts / resources equivalent), so the client lists again and the approved definitions appear without a restart; the audit log carries `lock`/`notified`. `lock.notify: false` turns that off.
+
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
 
 **First contact.** By default the first list a server ever returns is trusted and recorded (`lock.first: record`), so a malicious description that is there from the start is preserved by the lock, not caught by it. `lock.first: review` closes that gap: a list seen for the first time is saved as pending and refused, together with every use of it, until someone approves it. On a terminal the catalog is printed (name and first line of each description) and a `y` records it; without a terminal, while the dashboard is open, the jail waits up to `ask.timeout` for its **Approve** button or for `mcp-jail approve <name>` from another shell; with nobody to ask, the list is refused at once and stays pending. Nothing is recorded before the approve; the audit log carries `lock`/`review` and then `created` or `blocked`.

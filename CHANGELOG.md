@@ -9,6 +9,11 @@
   pending; the dashboard's Pending box lists the items with checkboxes and
   sends the ticked ones. A pending section written under `lock.scope: item`
   is flagged `held` in `diff`, `show` and the dashboard.
+- A running jail with a pending change watches its lock and, once the
+  change is approved elsewhere (CLI, dashboard, another terminal), sends
+  the client `notifications/tools/list_changed` (prompts / resources
+  likewise), so the client lists again without a restart; audit `lock` /
+  `notified`. `lock.notify: false` turns it off; `show` says so.
 
 ## v0.8.0 — 2026-11-10
 
