@@ -374,9 +374,15 @@ func (p *Proxy) Reload(np *policy.Policy) error {
 	cp.Tools = np.Tools
 	cp.Ask = np.Ask
 	cp.ServerRequests = np.ServerRequests
+	cp.Limits = np.Limits
 	p.live.Store(&cp)
-	p.Audit.Log(audit.Event{Kind: "reload", Reason: fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))})
-	p.Logf("policy reloaded: tools.default=%s, %d rule(s)", cp.Tools.Default, len(cp.Tools.Rules))
+	p.Limits.Reload(cp.Limits.Calls, cp.Limits.ArgsBytes, cp.Limits.EgressBytes, cp.Limits.Tools)
+	reason := fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))
+	if n := len(cp.Limits.Tools); !cp.Limits.Calls.Zero() || !cp.Limits.ArgsBytes.Zero() || !cp.Limits.EgressBytes.Zero() || n > 0 {
+		reason += fmt.Sprintf(" limits=calls:%s,args_bytes:%s,egress_bytes:%s,tools:%d", cp.Limits.Calls, cp.Limits.ArgsBytes, cp.Limits.EgressBytes, n)
+	}
+	p.Audit.Log(audit.Event{Kind: "reload", Reason: reason})
+	p.Logf("policy reloaded: %s", reason)
 	return nil
 }
 
@@ -408,7 +414,7 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 		}
 	}
 	if d != policy.Deny {
-		pat, _ := p.Policy.ToolLimit(tc.Name)
+		pat, _ := pol.ToolLimit(tc.Name)
 		if why := p.Limits.Call(pat, len(tc.Arguments)); why != "" {
 			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
 			p.Logf("deny tools/call %s (%s)", tc.Name, why)

@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/ltchurik/mcp-jail/internal/jsonrpc"
+	"github.com/ltchurik/mcp-jail/internal/limits"
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
 
@@ -23,6 +24,38 @@ func startWithProxy(t *testing.T, p *policy.Policy) (*session, *Proxy) {
 	s := &session{t: t, toCli: cInW, fromCl: newReader(cOutR), done: done}
 	s.call(`{"jsonrpc":"2.0","id":0,"method":"tools/list"}`)
 	return s, px
+}
+
+func TestReloadChangesLimits(t *testing.T) {
+	p := basePolicy(t)
+	p.Limits.Calls, _ = limits.ParseRate("1/1h")
+	s, px := startWithProxy(t, p)
+	defer s.close()
+	px.Limits = limits.New(p.Limits.Calls, p.Limits.ArgsBytes, p.Limits.EgressBytes, p.Limits.Tools, nil)
+	if m := s.call(callReq); m.Error != nil {
+		t.Fatalf("first call: %+v", m.Error)
+	}
+	if m := s.call(callReq); m.Error == nil || m.Error.Code != jsonrpc.CodeLimit {
+		t.Fatalf("second call must be over budget: %s", m.Raw)
+	}
+	np := basePolicy(t) // no limits at all
+	if err := px.Reload(np); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.call(callReq); m.Error != nil {
+		t.Fatalf("after reload without limits: %+v", m.Error)
+	}
+	np2 := basePolicy(t)
+	np2.Limits.Tools = map[string]limits.Rate{"read_*": mustRate(t, "1/1h")}
+	if err := px.Reload(np2); err != nil {
+		t.Fatal(err)
+	}
+	if m := s.call(callReq); m.Error != nil {
+		t.Fatalf("a new tool budget starts full: %+v", m.Error)
+	}
+	if m := s.call(callReq); m.Error == nil || !strings.Contains(m.Error.Message, "tools[read_*]") {
+		t.Fatalf("the new tool budget must apply via the reloaded patterns: %s", m.Raw)
+	}
 }
 
 func TestReloadChangesToolDecisions(t *testing.T) {
