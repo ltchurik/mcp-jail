@@ -14,6 +14,10 @@
   the client `notifications/tools/list_changed` (prompts / resources
   likewise), so the client lists again without a restart; audit `lock` /
   `notified`. `lock.notify: false` turns it off; `show` says so.
+- `mcp-jail doctor [--json]`: what this host can do, with a hint per
+  problem: bubblewrap (version, the three user-namespace knobs, a probe
+  jail), `sandbox-exec`, docker or podman and whether a daemon answers,
+  the state directory; exit 1 when no sandbox at all is usable.
 
 ## v0.8.0 — 2026-11-10
 

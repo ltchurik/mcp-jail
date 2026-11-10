@@ -57,6 +57,7 @@ Usage:
                                        local dashboard: servers, audit events, pending changes
   mcp-jail report [--since 24h] [--server NAME] [--json|--csv] [--audit FILE]...
                                        summarise the audit logs
+  mcp-jail doctor [--json]             what this host can do: sandbox, user namespaces, docker, state
   mcp-jail version
 
 Client config (Claude Desktop, Cursor, Claude Code, …):
@@ -94,6 +95,8 @@ func main() {
 		err = cmdUI(os.Args[2:])
 	case "report":
 		err = cmdReport(os.Args[2:])
+	case "doctor":
+		err = cmdDoctor(os.Args[2:])
 	case sandbox.ShimCommand: // internal: mcp-jail re-executed inside the jail
 		code, err := cmdShim(os.Args[2:])
 		if err != nil {
