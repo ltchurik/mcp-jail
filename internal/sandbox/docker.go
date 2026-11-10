@@ -123,7 +123,7 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 		notes = append(notes, n)
 	}
 	if runtime.GOOS == "windows" {
-		notes = append(notes, "host paths are mounted under /mnt/<drive>/ in the container (C:\\work -> /mnt/c/work): tool arguments must use those")
+		notes = append(notes, windowsMountNote)
 	}
 	switch {
 	case hard:
@@ -226,6 +226,9 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	}
 	return append([]string{cli}, args...), why, "", nil
 }
+
+// windowsMountNote tells a Windows user where the host paths went.
+const windowsMountNote = "host paths are mounted under /mnt/<drive>/ in the container (C:\\work -> /mnt/c/work): tool arguments must use those"
 
 // dockerUser is the uid:gid the container runs as: ours, or nobody on a
 // host without uids (Windows), so the server is never root in the image.
@@ -340,6 +343,9 @@ func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	}
 	if n := commandNote(s); n != "" {
 		plan.Notes = append(plan.Notes, n)
+	}
+	if runtime.GOOS == "windows" {
+		plan.Notes = append(plan.Notes, windowsMountNote)
 	}
 	plan.Notes = append(plan.Notes, p.ImageWarnings()...)
 	plan.Hard = true
