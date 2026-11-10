@@ -47,7 +47,7 @@ run() { # $1 = policy file, $2... = request lines (default: the standard set)
   local pol=$1; shift
   [[ $# -gt 0 ]] || set -- "$INIT" "$LIST" "$READ" "$READBAD" "$DEL" "$PROBE" "$PLIST" "$PGET" "$RLIST" "$RREAD"
   req "$@" | "$BIN" run --quiet --policy "$pol" -- "$PY" "$WORK/echo-server.py" 2>"$WORK/stderr" \
-    || { echo "FAIL: mcp-jail exited non-zero"; cat "$WORK/stderr"; exit 1; }
+    || { echo "FAIL: mcp-jail exited non-zero" >&2; cat "$WORK/stderr" >&2; exit 1; }   # stderr: OUT=\$(run …) must not swallow it
 }
 probe() { # $1 = id, $2 = arguments json
   printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"probe","arguments":%s}}' "$1" "$2"
