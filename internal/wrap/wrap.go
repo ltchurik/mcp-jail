@@ -193,6 +193,9 @@ func wrapOne(name string, srv map[string]json.RawMessage, o Options, res *Result
 		sort.Strings(envKeys)
 	}
 	warnings := launcher.Check(append([]string{command}, args...))
+	if o.Backend == "docker" && o.Image != "" && !strings.Contains(o.Image, "@sha256:") {
+		warnings = append(warnings, "sandbox.image "+o.Image+" is not pinned to a digest: a tag can move; pin it, e.g. "+o.Image+"@sha256:<digest>")
+	}
 	res.policyText[name] = Policy(name, command, args, envKeys, o.Network, warnings, o.Backend, o.Image)
 	res.Policies = append(res.Policies, polPath)
 

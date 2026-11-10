@@ -211,6 +211,47 @@ func commandNote(s Spec) string {
 	return ""
 }
 
+// Prepare does what must happen before Build's command can start: for the
+// docker backend, the image has to be present, or `docker run` would pull
+// it with a progress bar on stderr while the client waits for the
+// handshake. A missing image is pulled quietly here, with one log line;
+// a pull that fails refuses the start. Other backends have nothing to do.
+func Prepare(p *policy.Policy, s Spec, logf func(string, ...any)) error {
+	if p.Sandbox.Backend != policy.BackendDocker || p.Sandbox.Disabled {
+		return nil
+	}
+	cli, err := dockerCLI()
+	if err != nil {
+		return err
+	}
+	image, _, err := dockerImage(p, s)
+	if err != nil {
+		return err
+	}
+	if out, err := exec.Command(cli, "image", "inspect", "--format", "{{.Id}}", image).Output(); err == nil && len(strings.TrimSpace(string(out))) > 0 {
+		return nil
+	}
+	if logf != nil {
+		logf("docker: pulling %s (not present locally)", image)
+	}
+	out, err := exec.Command(cli, "pull", "--quiet", image).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("sandbox.backend docker: pull %s: %s", image, oneLine(string(out), err))
+	}
+	return nil
+}
+
+func oneLine(s string, err error) string {
+	s = strings.TrimSpace(s)
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
+	}
+	if s == "" && err != nil {
+		s = err.Error()
+	}
+	return s
+}
+
 // explainDocker fills the Plan for the docker backend.
 func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	plan.Kind = "docker"
@@ -230,6 +271,7 @@ func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	if n := commandNote(s); n != "" {
 		plan.Notes = append(plan.Notes, n)
 	}
+	plan.Notes = append(plan.Notes, p.ImageWarnings()...)
 	plan.Hard = true
 	if p.Network.Mode == policy.NetAllowlist && runtime.GOOS != "linux" {
 		plan.Hard = false

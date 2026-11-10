@@ -754,6 +754,7 @@ YML
   assert "$OUT" '"sentinel_visible\\": false'
   assert "$OUT" '"net\\": \\"blocked:'
   assert "$(cat "$WORK/audit-docker.jsonl")" '"kind":"start","reason":"docker: python:3.12-slim, caps dropped, read-only root, no network'
+  assert "$(cat "$WORK/audit-docker.jsonl")" '"kind":"policy","decision":"warn","reason":"sandbox.image python:3.12-slim is not pinned to a digest'
   assert "$($BIN show --policy "$WORK/d.yml" -- "$PY" x.py)" '^  image: +python:3.12-slim'
 
   echo "== docker: hard egress allowlist"

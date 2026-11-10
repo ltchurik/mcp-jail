@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -152,6 +153,63 @@ func TestBuildDockerHardEgress(t *testing.T) {
 	}
 }
 
+// fakeDockerScript puts a docker stand-in in PATH that logs its arguments
+// and answers "image inspect" with inspect (exit 0) or not (exit 1).
+func fakeDockerScript(t *testing.T, present bool, pullOK bool) string {
+	t.Helper()
+	bin := t.TempDir()
+	log := filepath.Join(bin, "log")
+	inspect, pull := "exit 1", "exit 0"
+	if present {
+		inspect = "echo sha256:abc; exit 0"
+	}
+	if !pullOK {
+		pull = "echo 'Error response from daemon: manifest unknown' >&2; exit 1"
+	}
+	script := "#!/bin/sh\necho \"$@\" >> " + log + "\ncase \"$1\" in image) " + inspect + ";; pull) " + pull + ";; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o700); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return log
+}
+
+func TestPreparePullsAMissingImage(t *testing.T) {
+	log := fakeDockerScript(t, false, true)
+	var lines []string
+	logf := func(f string, a ...any) { lines = append(lines, sprintf(f, a...)) }
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	if !strings.Contains(string(b), "image inspect --format {{.Id}} python:3.12-slim") || !strings.Contains(string(b), "pull --quiet python:3.12-slim") {
+		t.Fatalf("docker calls: %s", b)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "pulling python:3.12-slim") {
+		t.Fatalf("log: %v", lines)
+	}
+
+	log = fakeDockerScript(t, true, true)
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), "pull") {
+		t.Fatalf("present image must not be pulled: %s", b)
+	}
+
+	fakeDockerScript(t, false, false)
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err == nil || !strings.Contains(err.Error(), "manifest unknown") {
+		t.Fatalf("failed pull must refuse the start: %v", err)
+	}
+	p := policy.Default() // other backends: nothing to do, no docker needed
+	t.Setenv("PATH", t.TempDir())
+	if err := Prepare(p, Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
+
 func TestExplainDocker(t *testing.T) {
 	fakeDocker(t)
 	p := dockerPolicy()
@@ -166,6 +224,15 @@ func TestExplainDocker(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Notes, "\n"), "derived from uvx") {
 		t.Fatalf("notes: %v", plan.Notes)
 	}
+	p.Sandbox.Image = "node:22-slim"
+	if notes := strings.Join(Explain(p, Spec{Command: []string{"npx", "srv"}}).Notes, "\n"); !strings.Contains(notes, "sandbox.image node:22-slim is not pinned to a digest") {
+		t.Fatalf("unpinned image note missing: %s", notes)
+	}
+	p.Sandbox.Image = "node:22-slim@sha256:0123"
+	if notes := strings.Join(Explain(p, Spec{Command: []string{"npx", "srv"}}).Notes, "\n"); strings.Contains(notes, "not pinned") {
+		t.Fatalf("pinned image must not warn: %s", notes)
+	}
+	p.Sandbox.Image = ""
 	abs := Explain(p, Spec{Command: []string{"/usr/bin/python3", "srv.py"}})
 	if !strings.Contains(strings.Join(abs.Notes, "\n"), "resolved inside the image; use a bare name (python3)") {
 		t.Fatalf("absolute command note missing: %v", abs.Notes)

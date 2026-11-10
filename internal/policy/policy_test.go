@@ -367,6 +367,20 @@ func TestSandboxBackend(t *testing.T) {
 	}
 }
 
+func TestImageWarnings(t *testing.T) {
+	p, err := parse([]byte("name: x\nsandbox:\n  backend: docker\n  image: node:22-slim\n"), "t.yml")
+	if err != nil || len(p.ImageWarnings()) != 1 || !strings.Contains(p.ImageWarnings()[0], "node:22-slim@sha256:<digest>") {
+		t.Fatalf("%v %v", p.ImageWarnings(), err)
+	}
+	p, _ = parse([]byte("name: x\nsandbox:\n  backend: docker\n  image: node:22-slim@sha256:0123\n"), "t.yml")
+	if p.ImageWarnings() != nil {
+		t.Fatalf("pinned: %v", p.ImageWarnings())
+	}
+	if p := Default(); p.ImageWarnings() != nil {
+		t.Fatal("no image, no warning")
+	}
+}
+
 func TestLockScope(t *testing.T) {
 	for in, want := range map[string]LockScope{"": ScopeList, "list": ScopeList, "item": ScopeItem} {
 		text := "name: x\nlock:\n  enabled: true\n"

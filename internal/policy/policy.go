@@ -284,6 +284,17 @@ type Policy struct {
 	} `yaml:"server"`
 }
 
+// ImageWarnings says when sandbox.image names a tag rather than a digest:
+// a tag can move, so the container the jail starts tomorrow may not be
+// the one reviewed today. Empty when there is nothing to say.
+func (p *Policy) ImageWarnings() []string {
+	img := p.Sandbox.Image
+	if p.Sandbox.Backend != BackendDocker || img == "" || strings.Contains(img, "@sha256:") {
+		return nil
+	}
+	return []string{"sandbox.image " + img + " is not pinned to a digest: a tag can move; pin it, e.g. " + img + "@sha256:<digest> (docker image inspect --format '{{index .RepoDigests 0}}' " + img + ")"}
+}
+
 // LockNotify reports lock.notify (default true).
 func (p *Policy) LockNotify() bool { return p.Lock.Notify == nil || *p.Lock.Notify }
 

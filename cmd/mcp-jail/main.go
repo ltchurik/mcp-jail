@@ -207,7 +207,7 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
-	for _, w := range append(p.MountWarnings(), launcher.Check(cmdline)...) {
+	for _, w := range append(append(p.MountWarnings(), p.ImageWarnings()...), launcher.Check(cmdline)...) {
 		if !*quiet {
 			logf("warning: %s", w)
 		}
@@ -352,6 +352,9 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		spec.Env["NODE_USE_ENV_PROXY"] = "1"
 	}
 
+	if err := sandbox.Prepare(p, spec, logf); err != nil {
+		return fail(err)
+	}
 	var cmd *exec.Cmd
 	cmd, how, err = sandbox.Build(p, spec)
 	if err != nil {

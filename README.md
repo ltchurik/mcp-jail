@@ -284,6 +284,8 @@ sandbox:
   image: node:22-slim@sha256:…     # omitted: derived from npx / bunx / uvx / python, with a note to pin one
 ```
 
+An image named by tag gets the same warning a floating `npx` package gets (`run` audits it as `policy` / `warn`, `show` and `wrap` repeat it) with the `docker image inspect` line that prints the digest. A missing image is pulled quietly before the server starts, with one log line, instead of a progress bar on stderr while the client waits for the handshake; a pull that fails refuses the start.
+
 `network.mode: allowlist` stays **hard** on a Linux host: the container has no network and the egress relay's socket directory is mounted into it, with mcp-jail as the in-container shim (`net.ipv4.ip_unprivileged_port_start=0` lets it bind :53/:80/:443 unprivileged). Docker Desktop cannot pass a Unix socket into its VM, so on macOS and Windows the allowlist is refused rather than downgraded to a cooperative proxy: use `none`, `all`, or the native sandbox. `exec.allow` does not apply either, the image is the pin. `mcp-jail show` prints the image, `mcp-jail wrap --backend docker [--image …]` writes such policies.
 
 ## Headless approvals

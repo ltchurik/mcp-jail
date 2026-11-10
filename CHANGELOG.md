@@ -18,6 +18,11 @@
   problem: bubblewrap (version, the three user-namespace knobs, a probe
   jail), `sandbox-exec`, docker or podman and whether a daemon answers,
   the state directory; exit 1 when no sandbox at all is usable.
+- A `sandbox.image` named by tag rather than digest is warned about like a
+  floating `npx` package (`run` audits `policy` / `warn`, `show` notes it,
+  `wrap --image` writes the warning header). A missing image is pulled
+  quietly before the server starts (one log line); a failed pull refuses
+  the start.
 
 ## v0.8.0 — 2026-11-10
 
