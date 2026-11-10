@@ -23,6 +23,12 @@
   `wrap --image` writes the warning header). A missing image is pulled
   quietly before the server starts (one log line); a failed pull refuses
   the start.
+- The `initialize` result's `instructions` are locked and linted like a
+  list, as a single item named `instructions`: recorded on first contact
+  (`lock.first` applies), refused with `-32002` on the `initialize`
+  response when they change, approved with `mcp-jail approve` (or `--only
+  instructions:instructions`); `diff`, `show`, `locks` and the dashboard
+  show the section.
 
 ## v0.8.0 — 2026-11-10
 

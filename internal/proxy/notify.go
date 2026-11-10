@@ -24,13 +24,17 @@ func (p *Proxy) watch(k lock.Kind, hash string) {
 }
 
 // listChanged is the notification that tells the client to list kind k
-// again; resource templates are covered by the resources one.
+// again; resource templates are covered by the resources one. There is
+// none for instructions: the client gets them from initialize, so it has
+// to reconnect ("" says so).
 func listChanged(k lock.Kind) string {
 	switch k {
 	case lock.Prompts:
 		return "notifications/prompts/list_changed"
 	case lock.Resources, lock.ResourceTemplates:
 		return "notifications/resources/list_changed"
+	case lock.Instructions:
+		return ""
 	}
 	return "notifications/tools/list_changed"
 }
@@ -85,6 +89,10 @@ func (p *Proxy) watchApprovals(stop <-chan struct{}) {
 				continue
 			}
 			method := listChanged(k)
+			if method == "" {
+				p.Logf("lock: %s approved; the client has to reconnect to get them", k)
+				continue
+			}
 			p.Audit.Log(audit.Event{Kind: "lock", Decision: "notified", Reason: string(k) + " approved elsewhere; client told to list again (" + method + ")"})
 			p.Logf("lock: %s approved; telling the client to list again", k)
 			b, _ := json.Marshal(jsonrpc.Message{JSONRPC: "2.0", Method: method})
