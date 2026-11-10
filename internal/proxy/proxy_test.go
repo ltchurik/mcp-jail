@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -298,6 +299,9 @@ func TestUnhashableListFailsClosed(t *testing.T) {
 }
 
 func TestArgConstraints(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixtures use Unix paths")
+	}
 	p := basePolicy(t)
 	p.Tools.Rules["read_file"] = policy.Rule{Decision: policy.Allow,
 		Args: map[string]policy.ArgConstraint{"path": {Under: []string{"/srv/ok"}}}}

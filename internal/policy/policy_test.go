@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,7 @@ tools:
 }
 
 func TestCheckArgs(t *testing.T) {
+	skipUnixPaths(t)
 	p := Default()
 	p.Network.Allow = []string{"api.github.com"}
 	p.Tools.Rules = map[string]Rule{
@@ -401,6 +403,7 @@ func TestLockScope(t *testing.T) {
 }
 
 func TestExecValidate(t *testing.T) {
+	skipUnixPaths(t)
 	home, _ := os.UserHomeDir()
 	good := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
 	p, err := parse([]byte("name: x\nexec:\n  allow: [~/.local/bin/srv, /opt/x/../bin/tool]\n  sha256:\n    ~/.local/bin/srv: "+strings.ToUpper(good)+"\n"), "t.yml")
@@ -525,5 +528,14 @@ func TestSecretsSettings(t *testing.T) {
 		if _, err := parse([]byte(bad), "p"); err == nil {
 			t.Fatalf("%s must be refused", bad)
 		}
+	}
+}
+
+// skipUnixPaths skips a test whose fixtures are Unix paths, which are not
+// absolute on Windows.
+func skipUnixPaths(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fixtures use Unix paths")
 	}
 }
