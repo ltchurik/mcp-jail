@@ -47,7 +47,7 @@ run() { # $1 = policy file, $2... = request lines (default: the standard set)
   local pol=$1; shift
   [[ $# -gt 0 ]] || set -- "$INIT" "$LIST" "$READ" "$READBAD" "$DEL" "$PROBE" "$PLIST" "$PGET" "$RLIST" "$RREAD"
   req "$@" | "$BIN" run --quiet --policy "$pol" -- "$PY" "$WORK/echo-server.py" 2>"$WORK/stderr" \
-    || { echo "FAIL: mcp-jail exited non-zero"; cat "$WORK/stderr"; exit 1; }
+    || { echo "FAIL: mcp-jail exited non-zero" >&2; cat "$WORK/stderr" >&2; exit 1; }   # stderr: OUT=\$(run …) must not swallow it
 }
 probe() { # $1 = id, $2 = arguments json
   printf '{"jsonrpc":"2.0","id":%s,"method":"tools/call","params":{"name":"probe","arguments":%s}}' "$1" "$2"
@@ -725,5 +725,47 @@ YML
   exec_scenario sandbox-exec
 else
   echo "== sandbox: skipped ($(uname -s))"
+fi
+
+if [[ "$(uname -s)" == Linux ]] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  echo "== docker: no home, no network"
+  cat >"$WORK/d.yml" <<YML
+name: e2e-docker
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+sandbox: { backend: docker, image: python:3.12-slim }
+audit: { path: $WORK/audit-docker.jsonl }
+YML
+  OUT=$(PY=python3 run "$WORK/d.yml")   # the command is resolved inside the image, not on the host
+  assert "$OUT" '"sentinel_visible\\": false'
+  assert "$OUT" '"net\\": \\"blocked:'
+  assert "$(cat "$WORK/audit-docker.jsonl")" '"kind":"start","reason":"docker: python:3.12-slim, caps dropped, read-only root, no network'
+  assert "$($BIN show --policy "$WORK/d.yml" -- "$PY" x.py)" '^  image: +python:3.12-slim'
+
+  echo "== docker: hard egress allowlist"
+  cat >"$WORK/da.yml" <<YML
+name: e2e-docker-allowlist
+network: { mode: allowlist, allow: ["127.0.0.1"] }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+sandbox: { backend: docker, image: python:3.12-slim }
+audit: { path: $WORK/audit-docker-allowlist.jsonl }
+YML
+  OUT=$(PY=python3 run "$WORK/da.yml" "$INIT" "$LIST" \
+    "$(probe 10 '{"host":"127.0.0.1","port":'"$PORT"'}')" \
+    "$(probe 11 '{"url":"http://127.0.0.1:'"$PORT"'/"}')" \
+    "$(probe 12 '{"url":"http://blocked.e2e.test/"}')" \
+    "$(probe 14 '{"dns":"blocked.e2e.test"}')")
+  assert "$OUT" '"id": ?10.*"net\\": \\"blocked:'          # the container has its own, empty loopback
+  assert "$OUT" '"id": ?11.*"http\\": \\"status:200'        # allowed host through shim and relay
+  assert "$OUT" '"id": ?12.*"http\\": \\"status:403'
+  assert "$OUT" '"id": ?14.*"dns\\": \\"error:gaierror'
+  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
+  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"dns","decision":"blocked","host":"blocked.e2e.test"'   # the shim refuses it before the relay
+else
+  echo "== docker: skipped (no usable docker on this host)"
 fi
 echo "e2e OK"

@@ -208,7 +208,7 @@ func TestYAMLQuoting(t *testing.T) {
 			t.Errorf("yamlStr(%q) = %s, want %s", in, got, want)
 		}
 	}
-	if err := Validate(Policy("odd: name", "x", []string{"/nonexistent dir"}, []string{"K"}, "none", nil)); err != nil {
+	if err := Validate(Policy("odd: name", "x", []string{"/nonexistent dir"}, []string{"K"}, "none", nil, "", "")); err != nil {
 		t.Errorf("policy with odd name must still load: %v", err)
 	}
 }
@@ -243,7 +243,14 @@ func TestRewriteWarnsUnpinned(t *testing.T) {
 
 func TestPolicySkipsRootAndHome(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none", nil)
+	docker := Policy("fs", "npx", []string{"-y", "server"}, nil, "none", nil, "docker", "node:22-slim")
+	if !strings.Contains(docker, "  backend: docker") || !strings.Contains(docker, "  image: node:22-slim\n") {
+		t.Fatalf("docker policy:\n%s", docker)
+	}
+	if err := Validate(docker); err != nil {
+		t.Fatalf("docker policy must validate: %v", err)
+	}
+	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none", nil, "", "")
 	if strings.Contains(out, "- /\n") || strings.Contains(out, "- "+home+"\n") {
 		t.Fatalf("root or home became read_write:\n%s", out)
 	}

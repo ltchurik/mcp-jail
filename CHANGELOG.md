@@ -12,6 +12,18 @@
   `review` with the names; a pure removal is a `warn`. First contact still
   follows `lock.first` for the whole list; resource templates stay
   list-scoped. `mcp-jail show` prints the scope. Default stays `list`.
+- `sandbox.backend: docker` (and `sandbox.image`): run the server in a
+  container (docker, or podman) with the policy's paths bind-mounted at
+  their host paths, every capability dropped, `no-new-privileges`, a
+  read-only root, a private `/tmp` and `HOME=/tmp` (a passed-through HOME
+  would point at a path that does not exist there). `network.mode: none` is
+  a container without a network; `allowlist` is hard on a Linux host (the
+  egress relay is mounted into the container, mcp-jail is the in-container
+  shim) and refused elsewhere, never downgraded. The image is derived from
+  npx / bunx / uvx / python when omitted. The first sandbox on Windows.
+  `sandbox.backend` also names `bwrap`, `sandbox-exec` and `none`
+  explicitly (`auto` stays the default); `mcp-jail wrap --backend --image`;
+  `mcp-jail show` prints the image.
 
 ## v0.7.1 — 2026-11-09
 
