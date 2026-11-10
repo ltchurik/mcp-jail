@@ -166,6 +166,10 @@ func TestExplainDocker(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Notes, "\n"), "derived from uvx") {
 		t.Fatalf("notes: %v", plan.Notes)
 	}
+	abs := Explain(p, Spec{Command: []string{"/usr/bin/python3", "srv.py"}})
+	if !strings.Contains(strings.Join(abs.Notes, "\n"), "resolved inside the image; use a bare name (python3)") {
+		t.Fatalf("absolute command note missing: %v", abs.Notes)
+	}
 	p.Network.Mode = policy.NetAllowlist
 	p.Network.Allow = []string{"api.example.com"}
 	plan = Explain(p, Spec{Command: []string{"uvx", "srv"}})

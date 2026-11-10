@@ -738,7 +738,7 @@ lock: { enabled: false }
 sandbox: { backend: docker, image: python:3.12-slim }
 audit: { path: $WORK/audit-docker.jsonl }
 YML
-  OUT=$(run "$WORK/d.yml")
+  OUT=$(PY=python3 run "$WORK/d.yml")   # the command is resolved inside the image, not on the host
   assert "$OUT" '"sentinel_visible\\": false'
   assert "$OUT" '"net\\": \\"blocked:'
   assert "$(cat "$WORK/audit-docker.jsonl")" '"kind":"start","reason":"docker: python:3.12-slim, caps dropped, read-only root, no network'
@@ -754,7 +754,7 @@ lock: { enabled: false }
 sandbox: { backend: docker, image: python:3.12-slim }
 audit: { path: $WORK/audit-docker-allowlist.jsonl }
 YML
-  OUT=$(run "$WORK/da.yml" "$INIT" "$LIST" \
+  OUT=$(PY=python3 run "$WORK/da.yml" "$INIT" "$LIST" \
     "$(probe 10 '{"host":"127.0.0.1","port":'"$PORT"'}')" \
     "$(probe 11 '{"url":"http://127.0.0.1:'"$PORT"'/"}')" \
     "$(probe 12 '{"url":"http://blocked.e2e.test/"}')" \

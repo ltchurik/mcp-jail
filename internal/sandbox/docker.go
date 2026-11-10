@@ -107,6 +107,9 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	if imgNote != "" {
 		notes = append(notes, imgNote)
 	}
+	if n := commandNote(s); n != "" {
+		notes = append(notes, n)
+	}
 	switch {
 	case hard:
 		args = append(args, "--network", "none", "--sysctl", "net.ipv4.ip_unprivileged_port_start=0")
@@ -199,6 +202,15 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	return append([]string{cli}, args...), why, "", nil
 }
 
+// commandNote warns when the server command is a host path: it is resolved
+// inside the image, where a host's interpreter path usually does not exist.
+func commandNote(s Spec) string {
+	if len(s.Command) > 0 && filepath.IsAbs(s.Command[0]) {
+		return "command " + s.Command[0] + " is resolved inside the image; use a bare name (" + filepath.Base(s.Command[0]) + ") unless the image has that path"
+	}
+	return ""
+}
+
 // explainDocker fills the Plan for the docker backend.
 func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	plan.Kind = "docker"
@@ -214,6 +226,9 @@ func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	}
 	if _, err := dockerCLI(); err != nil {
 		plan.Notes = append(plan.Notes, err.Error())
+	}
+	if n := commandNote(s); n != "" {
+		plan.Notes = append(plan.Notes, n)
 	}
 	plan.Hard = true
 	if p.Network.Mode == policy.NetAllowlist && runtime.GOOS != "linux" {
