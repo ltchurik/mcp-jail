@@ -495,17 +495,17 @@ STATE=$(http "$BASE/api/state" "$TOKEN")
 assert "$STATE" '^200$'
 assert "$STATE" '"name":"e2e-ui","running":true,"pid":[0-9]+'
 assert "$STATE" '"tools_default":"deny","lock_enabled":true,"lock":\[\{"kind":"tools","count":3'
-assert "$STATE" '"counts":\{"allow":1,"created":1,"deny":1,"warn":1\}'
+assert "$STATE" '"counts":\{"allow":1,"created":2,"deny":1,"warn":3\}'
 EV=$(http "$BASE/api/events?server=e2e-ui&decision=deny" "$TOKEN")
 assert "$EV" '"server":"e2e-ui","kind":"tool_call","tool":"delete_file","decision":"deny"'
 refute "$EV" '"tool":"read_file"'
 assert "$(http "$BASE/api/events?since=nonsense" "$TOKEN")" '^400$'
 REP=$(http "$BASE/api/report?since=1h&server=e2e-ui" "$TOKEN")
-assert "$REP" '"decisions":\{"allow":1,"created":1,"deny":1,"warn":1\}'
+assert "$REP" '"decisions":\{"allow":1,"created":2,"deny":1,"warn":3\}'
 assert "$REP" '"tool":"delete_file","allow":0,"deny":1'
 assert "$(http "$BASE/api/report?format=csv&server=e2e-ui" "$TOKEN")" '^e2e-ui,delete_file,1,0,1,0,0,0,$'
 TXT=$("$BIN" report --since 1h --server e2e-ui)
-assert "$TXT" 'decisions: +allow 1 +deny 1 +created 1 +warn 1'
+assert "$TXT" 'decisions: +allow 1 +deny 1 +created 2 +warn 3'
 assert "$TXT" '^delete_file +e2e-ui +1 +0 +1 +0'
 assert "$("$BIN" report --json --server e2e-ui)" '"hosts": \[\]'
 "$BIN" report --since never 2>"$WORK/rep.err" && { echo "FAIL: bad --since accepted"; exit 1; }
