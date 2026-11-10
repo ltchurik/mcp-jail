@@ -243,7 +243,10 @@ func TestRewriteWarnsUnpinned(t *testing.T) {
 
 func TestPolicySkipsRootAndHome(t *testing.T) {
 	home, _ := os.UserHomeDir()
-	docker := Policy("fs", "npx", []string{"-y", "server"}, nil, "none", nil, "docker", "node:22-slim")
+	docker := Policy("fs", "npx", []string{"-y", "server"}, nil, "none", []string{"sandbox.image node:22-slim is not pinned to a digest"}, "docker", "node:22-slim")
+	if !strings.Contains(docker, "# WARNING: sandbox.image node:22-slim is not pinned") {
+		t.Fatalf("warning header:\n%s", docker)
+	}
 	if !strings.Contains(docker, "  backend: docker") || !strings.Contains(docker, "  image: node:22-slim\n") {
 		t.Fatalf("docker policy:\n%s", docker)
 	}
