@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.8.1 — 2026-11-10
+
+Follow-ups to v0.8.0: a pending change can be approved item by item and a running jail tells the client when that happened; `mcp-jail doctor` explains what a host can do; the Docker backend warns about an unpinned image and pulls a missing one quietly; the `initialize` instructions join the lock; budgets reload with the policy.
 
 ### Added
 
