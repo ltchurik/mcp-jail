@@ -68,6 +68,7 @@ func TestReload(t *testing.T) {
 	if why := l.Call("", 0); why == "" {
 		t.Fatal("and no more")
 	}
+	advance(time.Minute) // refill the global budget; only the removed per-tool one is under test
 	if why := l.Call("send_*", 0); why != "" {
 		t.Fatalf("removed tool budget must not apply: %s", why)
 	}
