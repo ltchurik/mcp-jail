@@ -190,6 +190,25 @@ func TestSplitAndWithItems(t *testing.T) {
 	}
 }
 
+func TestInstructionsItems(t *testing.T) {
+	items, err := InstructionsItems(raw(`{"protocolVersion":"x","instructions":"Be nice."}`))
+	if err != nil || len(items) != 1 || string(items[0]) != `{"description":"Be nice.","name":"instructions"}` {
+		t.Fatalf("%s %v", items, err)
+	}
+	for _, in := range []string{`{}`, `{"instructions":""}`, `{"instructions":null}`} {
+		if items, err := InstructionsItems(raw(in)); err != nil || items != nil {
+			t.Fatalf("%s: %s %v", in, items, err)
+		}
+	}
+	if _, err := InstructionsItems(raw(`{"instructions":["a"]}`)); err == nil || !strings.Contains(err.Error(), "not a string") {
+		t.Fatalf("array: %v", err)
+	}
+	sec, err := Compute(Instructions, items)
+	if err != nil || sec.Items["instructions"] == "" {
+		t.Fatalf("compute: %+v %v", sec, err)
+	}
+}
+
 func TestParsePage(t *testing.T) {
 	pg, err := ParsePage(Tools, raw(`{"tools":[{"name":"a"}],"nextCursor":"abc"}`))
 	if err != nil || len(pg.Items) != 1 || pg.Next != "abc" {
@@ -289,8 +308,8 @@ func TestApproveItems(t *testing.T) {
 }
 
 func TestParseItems(t *testing.T) {
-	m, err := ParseItems([]string{"read_file,prompts:summarize", "resources:file:///readme", "tools:x"})
-	if err != nil || len(m[Tools]) != 2 || m[Prompts][0] != "summarize" || m[Resources][0] != "file:///readme" {
+	m, err := ParseItems([]string{"read_file,prompts:summarize", "resources:file:///readme", "tools:x", "instructions:instructions"})
+	if err != nil || len(m[Tools]) != 2 || m[Prompts][0] != "summarize" || m[Resources][0] != "file:///readme" || m[Instructions][0] != "instructions" {
 		t.Fatalf("%v %v", m, err)
 	}
 	if _, err := ParseItems([]string{" , "}); err == nil {

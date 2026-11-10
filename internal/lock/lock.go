@@ -24,10 +24,41 @@ const (
 	Prompts           Kind = "prompts"
 	Resources         Kind = "resources"
 	ResourceTemplates Kind = "resource_templates"
+	// Instructions is the initialize result's instructions text, locked as
+	// a single item named "instructions" (see InstructionsItems).
+	Instructions Kind = "instructions"
 )
 
 // Kinds in display order.
-var Kinds = []Kind{Tools, Prompts, Resources, ResourceTemplates}
+var Kinds = []Kind{Tools, Prompts, Resources, ResourceTemplates, Instructions}
+
+// InstructionsItems turns an initialize result into the one-item list the
+// lock and the lint work on: {"name":"instructions","description":text}.
+// No or empty instructions give no item; a non-string value is an error,
+// so a server cannot smuggle structure past the lock.
+func InstructionsItems(result json.RawMessage) ([]json.RawMessage, error) {
+	var res struct {
+		Instructions json.RawMessage `json:"instructions"`
+	}
+	if err := json.Unmarshal(result, &res); err != nil {
+		return nil, err
+	}
+	if len(res.Instructions) == 0 || string(res.Instructions) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(res.Instructions, &text); err != nil {
+		return nil, fmt.Errorf("instructions is not a string")
+	}
+	if text == "" {
+		return nil, nil
+	}
+	item, err := json.Marshal(map[string]string{"name": "instructions", "description": text})
+	if err != nil {
+		return nil, err
+	}
+	return []json.RawMessage{item}, nil
+}
 
 // KindOf maps a list method to its kind; "" for anything else.
 func KindOf(method string) Kind {
@@ -499,7 +530,7 @@ func ParseItems(sel []string) (map[Kind][]string, error) {
 			k, key := Tools, one
 			if prefix, rest, ok := strings.Cut(one, ":"); ok {
 				switch Kind(prefix) {
-				case Tools, Prompts, Resources, ResourceTemplates:
+				case Tools, Prompts, Resources, ResourceTemplates, Instructions:
 					k, key = Kind(prefix), rest
 				}
 			}

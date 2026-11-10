@@ -59,7 +59,8 @@ for line in sys.stdin:
     if "id" not in m:
         continue
     if m.get("method") == "initialize":
-        r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "echo", "version": "0"}}
+        r = {"protocolVersion": "2025-06-18", "capabilities": {"tools": {}}, "serverInfo": {"name": "echo", "version": "0"},
+             "instructions": "Echo server for mcp-jail tests."}
     elif m.get("method") == "tools/list":
         r = {"tools": TOOLS}
     elif m.get("method") == "prompts/list":
