@@ -83,7 +83,7 @@ sudo apt install bubblewrap      # Debian / Ubuntu
 sudo dnf install bubblewrap      # Fedora
 ```
 
-Without bubblewrap, on Windows, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)).
+Without bubblewrap, on Windows, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)). `mcp-jail doctor` says what this host can do: bubblewrap and its version, whether unprivileged user namespaces are allowed (and which sysctl closes them), `sandbox-exec`, a docker or podman daemon, and where the state lives; it exits 1 when no sandbox at all is usable.
 
 ## Quick start
 
