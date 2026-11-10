@@ -726,4 +726,46 @@ YML
 else
   echo "== sandbox: skipped ($(uname -s))"
 fi
+
+if [[ "$(uname -s)" == Linux ]] && command -v docker >/dev/null && docker info >/dev/null 2>&1; then
+  echo "== docker: no home, no network"
+  cat >"$WORK/d.yml" <<YML
+name: e2e-docker
+network: { mode: none }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+sandbox: { backend: docker, image: python:3.12-slim }
+audit: { path: $WORK/audit-docker.jsonl }
+YML
+  OUT=$(run "$WORK/d.yml")
+  assert "$OUT" '"sentinel_visible\\": false'
+  assert "$OUT" '"net\\": \\"blocked:'
+  assert "$(cat "$WORK/audit-docker.jsonl")" '"kind":"start","reason":"docker: python:3.12-slim, caps dropped, read-only root, no network'
+  assert "$($BIN show --policy "$WORK/d.yml" -- "$PY" x.py)" '^  image: +python:3.12-slim'
+
+  echo "== docker: hard egress allowlist"
+  cat >"$WORK/da.yml" <<YML
+name: e2e-docker-allowlist
+network: { mode: allowlist, allow: ["127.0.0.1"] }
+filesystem: { read_only: [$WORK], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+sandbox: { backend: docker, image: python:3.12-slim }
+audit: { path: $WORK/audit-docker-allowlist.jsonl }
+YML
+  OUT=$(run "$WORK/da.yml" "$INIT" "$LIST" \
+    "$(probe 10 '{"host":"127.0.0.1","port":'"$PORT"'}')" \
+    "$(probe 11 '{"url":"http://127.0.0.1:'"$PORT"'/"}')" \
+    "$(probe 12 '{"url":"http://blocked.e2e.test/"}')" \
+    "$(probe 14 '{"dns":"blocked.e2e.test"}')")
+  assert "$OUT" '"id": ?10.*"net\\": \\"blocked:'          # the container has its own, empty loopback
+  assert "$OUT" '"id": ?11.*"http\\": \\"status:200'        # allowed host through shim and relay
+  assert "$OUT" '"id": ?12.*"http\\": \\"status:403'
+  assert "$OUT" '"id": ?14.*"dns\\": \\"error:gaierror'
+  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
+  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"blocked.e2e.test"'
+else
+  echo "== docker: skipped (no usable docker on this host)"
+fi
 echo "e2e OK"

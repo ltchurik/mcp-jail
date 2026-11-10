@@ -2,11 +2,16 @@ package egress
 
 import (
 	"bufio"
+	"errors"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"os/exec"
+	"os/signal"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -264,7 +269,10 @@ func ProxyEnv() map[string]string {
 
 // RunShim is the entry point of `mcp-jail _egress-shim`: bind the listeners,
 // start the server with argv under the given uid/gid, wait, exit like it did.
-func RunShim(socket string, allow []string, uid, gid int, argv []string, logf func(string, ...any)) (int, error) {
+// plain starts the server as the shim's own user without a nested user
+// namespace: for a container, where the shim is already unprivileged and
+// binds the low ports thanks to net.ipv4.ip_unprivileged_port_start=0.
+func RunShim(socket string, allow []string, uid, gid int, plain bool, argv []string, logf func(string, ...any)) (int, error) {
 	if len(argv) == 0 {
 		return 2, fmt.Errorf("egress shim: no server command")
 	}
@@ -273,7 +281,40 @@ func RunShim(socket string, allow []string, uid, gid int, argv []string, logf fu
 		return 1, fmt.Errorf("egress shim: %w (is the jail's net namespace ours?)", err)
 	}
 	go s.Serve()
-	code, err := runServer(argv, uid, gid)
+	var code int
+	var err error
+	if plain {
+		code, err = runPlain(argv)
+	} else {
+		code, err = runServer(argv, uid, gid)
+	}
 	s.Close()
 	return code, err
+}
+
+// runPlain starts the server as this process's user, forwarding the
+// termination signals, and returns its exit code.
+func runPlain(argv []string) (int, error) {
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Start(); err != nil {
+		return 1, err
+	}
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGINT, syscall.SIGTERM, syscall.SIGHUP)
+	go func() {
+		for s := range sig {
+			_ = cmd.Process.Signal(s)
+		}
+	}()
+	err := cmd.Wait()
+	signal.Stop(sig)
+	var ee *exec.ExitError
+	if errors.As(err, &ee) {
+		return ee.ExitCode(), nil
+	}
+	if err != nil {
+		return 1, err
+	}
+	return 0, nil
 }

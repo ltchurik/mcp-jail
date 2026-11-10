@@ -67,6 +67,17 @@ const (
 	ScopeItem LockScope = "item"
 )
 
+// Backend is sandbox.backend.
+type Backend string
+
+const (
+	BackendAuto        Backend = "auto"
+	BackendBwrap       Backend = "bwrap"
+	BackendSandboxExec Backend = "sandbox-exec"
+	BackendDocker      Backend = "docker"
+	BackendNone        Backend = "none"
+)
+
 // SecretsMode is what a credential found in tool arguments does.
 type SecretsMode string
 
@@ -223,7 +234,17 @@ type Policy struct {
 
 	Sandbox struct {
 		// Disabled runs the server unsandboxed (policy + lock + audit only).
+		// Backend none is the same thing.
 		Disabled bool `yaml:"disabled"`
+		// Backend picks the isolation: auto (default: bwrap on Linux,
+		// sandbox-exec on macOS), bwrap, sandbox-exec, docker (a container
+		// from Image with the policy's paths bind-mounted; works wherever
+		// docker or podman does, Windows included) or none.
+		Backend Backend `yaml:"backend"`
+		// Image is the container image for the docker backend. Empty: derived
+		// from the launcher (node/npx, bun/bunx, uv/uvx, python), otherwise
+		// required.
+		Image string `yaml:"image"`
 		// Env lists environment variables for the jailed server: a bare NAME
 		// passes the host's value through, NAME=value sets one. Every jail
 		// also gets the update-check and telemetry opt-outs (DO_NOT_TRACK=1,
@@ -483,6 +504,26 @@ func (p *Policy) Validate() error {
 		name, _, _ := strings.Cut(e, "=")
 		if !envName(name) || hasControl(e) {
 			return fmt.Errorf("sandbox.env: %q is not NAME or NAME=value", e)
+		}
+	}
+	switch p.Sandbox.Backend {
+	case "":
+		p.Sandbox.Backend = BackendAuto
+	case BackendNone:
+		p.Sandbox.Disabled = true
+	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendDocker:
+	default:
+		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|docker|none, got %q", p.Sandbox.Backend)
+	}
+	if p.Sandbox.Disabled {
+		p.Sandbox.Backend = BackendNone
+	}
+	if p.Sandbox.Image != "" {
+		if p.Sandbox.Backend != BackendDocker {
+			return errors.New("sandbox.image needs sandbox.backend: docker")
+		}
+		if strings.ContainsAny(p.Sandbox.Image, " \t\"'") || hasControl(p.Sandbox.Image) || strings.HasPrefix(p.Sandbox.Image, "-") {
+			return fmt.Errorf("sandbox.image: %q is not an image reference", p.Sandbox.Image)
 		}
 	}
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
@@ -987,6 +1028,12 @@ audit:
 
 sandbox:
   disabled: false
+  # auto (bwrap on Linux, sandbox-exec on macOS) | bwrap | sandbox-exec | none
+  # docker: run the server in a container (docker or podman) with the policy's
+  #         paths bind-mounted; the only sandbox on Windows. network allowlist
+  #         needs a Linux host; exec pins do not apply (the image is the pin)
+  backend: auto
+  # image: node:22-slim         # docker only; derived from npx/uvx/python when omitted
   env: [PATH, HOME, LANG]       # NAME passes the host's value through, NAME=value sets one
   # env: [PATH, HOME, npm_config_ignore_scripts=true]   # e.g. no install scripts for npx packages
 

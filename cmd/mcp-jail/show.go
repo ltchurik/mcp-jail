@@ -246,6 +246,9 @@ func (d *showDoc) write(w io.Writer) error {
 		pr("sandbox", "%s", s.Kind)
 	}
 	if s.Kind != "remote" && s.Kind != "disabled" && s.Kind != "none" {
+		if s.Image != "" {
+			pr("  image", "%s", s.Image)
+		}
 		if len(s.Base) > 0 {
 			pr("  base", "%s", strings.Join(s.Base, " "))
 		}
