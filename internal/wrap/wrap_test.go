@@ -265,7 +265,8 @@ func TestPolicySkipsRootAndHome(t *testing.T) {
 	}
 	rw := out[strings.Index(out, "read_write: ["):]
 	rw = rw[:strings.Index(rw, "\n")]
-	if !strings.Contains(out, "NOT added: "+root) || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(rw, tmp) {
+	quoted := strings.ReplaceAll(tmp, `\`, `\\`) // a Windows path is written double-quoted
+	if !strings.Contains(out, "NOT added: "+root) || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(rw, quoted) {
 		t.Fatalf("notes/paths:\n%s", out)
 	}
 }
