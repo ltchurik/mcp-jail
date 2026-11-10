@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- `lock.scope: item`: a lock mode for servers whose tool list legitimately
+  varies. Items whose hash still matches the lock are forwarded and usable;
+  the added or changed ones are filtered out of the list (page by page),
+  held as pending, linted, and refused on use until `mcp-jail approve` or
+  the dashboard records the new list. The audit log carries `lock` /
+  `review` with the names; a pure removal is a `warn`. First contact still
+  follows `lock.first` for the whole list; resource templates stay
+  list-scoped. `mcp-jail show` prints the scope. Default stays `list`.
+
 ## v0.7.1 — 2026-11-09
 
 ### Added

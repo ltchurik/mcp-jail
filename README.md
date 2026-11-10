@@ -192,6 +192,7 @@ ask:                        # how `ask` is answered without a terminal
 
 lock:
   enabled: true             # refuse to run if tool definitions change
+  # scope: item             # hold only the added or changed items, keep the rest working
 
 lint:
   lists: warn               # off | warn | deny: content heuristics on new or changed definitions
@@ -360,6 +361,14 @@ lock:
 ```
 
 `mcp-jail wrap` keeps `record` so a freshly wrapped config starts without interaction; switch the policies you care about to `review` afterwards.
+
+**Dynamic tool lists.** Some servers legitimately change their tool list: feature flags, per-account capabilities, plugins discovered at start. Under the default `lock.scope: list` every such change refuses the whole list until it is approved. `lock.scope: item` keeps the lock but changes what a mismatch invalidates: items whose hash still matches are forwarded and usable, while the added or changed ones are filtered out of the list (page by page, so an unapproved description never reaches the model), held as pending, linted, and refused on use with `tool "x" is held for review` until `mcp-jail approve` or the dashboard's **Approve** records the new list. The audit log carries `lock`/`review` with the names; a pure removal is only a `warn`, since nothing new arrived. A first contact still follows `lock.first` for the whole list, and resource templates stay list-scoped because a read URI cannot be matched to one template.
+
+```yaml
+lock:
+  enabled: true
+  scope: item
+```
 
 ### Content lint
 

@@ -13,9 +13,9 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
 
-// pagedServer serves tools/list in two pages: the first (no cursor) with
-// read_file and nextCursor "p2", the second (cursor "p2") with delete_file.
-func pagedServer(t *testing.T) (io.Writer, io.Reader) {
+// pagedServerWith serves tools/list in two pages: the first (no cursor)
+// with page1 and nextCursor "p2", the second (cursor "p2") with page2.
+func pagedServerWith(t *testing.T, page1, page2 string) (io.Writer, io.Reader) {
 	t.Helper()
 	inR, inW := io.Pipe()
 	outR, outW := io.Pipe()
@@ -35,9 +35,9 @@ func pagedServer(t *testing.T) (io.Writer, io.Reader) {
 				}
 				_ = json.Unmarshal(m.Params, &lp)
 				if lp.Cursor == "" {
-					res = `{"tools":[{"name":"read_file","description":"Read"}],"nextCursor":"p2"}`
+					res = `{"tools":[` + page1 + `],"nextCursor":"p2"}`
 				} else {
-					res = `{"tools":[{"name":"delete_file","description":"Delete"}]}`
+					res = `{"tools":[` + page2 + `]}`
 				}
 			case "tools/call":
 				res = `{"content":[{"type":"text","text":"ok"}]}`
@@ -51,7 +51,12 @@ func pagedServer(t *testing.T) (io.Writer, io.Reader) {
 
 func startPaged(t *testing.T, p *policy.Policy) *session {
 	t.Helper()
-	sIn, sOut := pagedServer(t)
+	return startPagedWith(t, p, `{"name":"read_file","description":"Read"}`, `{"name":"delete_file","description":"Delete"}`)
+}
+
+func startPagedWith(t *testing.T, p *policy.Policy, page1, page2 string) *session {
+	t.Helper()
+	sIn, sOut := pagedServerWith(t, page1, page2)
 	cInR, cInW := io.Pipe()
 	cOutR, cOutW := io.Pipe()
 	px := &Proxy{Policy: p, Logf: t.Logf, TTYPath: filepath.Join(t.TempDir(), "no-such-tty")}

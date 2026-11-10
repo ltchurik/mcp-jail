@@ -286,6 +286,21 @@ $BIN approve e2e >/dev/null
 OUT=$(run "$WORK/p.yml")
 assert "$OUT" '"id": ?6, ?"result"'
 
+echo "== lock: scope item holds only the changed tool"
+{ cat "$WORK/p.yml"; echo "lock: { enabled: true, scope: item }"; } >"$WORK/item.yml"
+edit 's/Delete a file/Delete a file for good/'
+OUT=$(run "$WORK/item.yml")
+assert "$OUT" '"id": ?2, ?"result"'                      # the list still arrives
+refute "$OUT" '"id": ?2, ?"result".*delete_file'         # minus the changed tool
+assert "$OUT" '"id": ?3, ?"result"'                      # unchanged tools keep working
+assert "$OUT" '"id":4,"error":\{"code":-32002,"message":"mcp-jail: tool \\"delete_file\\" is held for review'
+assert "$(cat "$WORK/audit.jsonl")" '"kind":"lock","decision":"review","reason":"tools added=\[\] removed=\[\] changed=\[delete_file\]: 1 item\(s\) held for review"'
+assert "$($BIN diff e2e)" 'changed delete_file'
+assert "$($BIN show --policy "$WORK/item.yml" -- "$PY" x.py)" '^lock: +on, first contact: record, scope: item'
+$BIN approve e2e >/dev/null
+OUT=$(run "$WORK/item.yml")
+assert "$OUT" '"id": ?2, ?"result".*delete_file'
+
 echo "== lock: review on first contact (no tty)"
 cat >"$WORK/rv.yml" <<YML
 name: e2e-review
