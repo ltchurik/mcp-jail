@@ -764,7 +764,7 @@ YML
   assert "$OUT" '"id": ?12.*"http\\": \\"status:403'
   assert "$OUT" '"id": ?14.*"dns\\": \\"error:gaierror'
   assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"net","decision":"allow","host":"127.0.0.1"'
-  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"net","decision":"blocked","host":"blocked.e2e.test"'
+  assert "$(cat "$WORK/audit-docker-allowlist.jsonl")" '"kind":"dns","decision":"blocked","host":"blocked.e2e.test"'   # the shim refuses it before the relay
 else
   echo "== docker: skipped (no usable docker on this host)"
 fi
