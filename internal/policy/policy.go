@@ -53,6 +53,20 @@ const (
 	FirstReview FirstContact = "review"
 )
 
+// LockScope is lock.scope: what a change in a recorded list invalidates.
+type LockScope string
+
+const (
+	// ScopeList (default) refuses the whole list and every use of it when
+	// anything in it changed, until the new list is approved.
+	ScopeList LockScope = "list"
+	// ScopeItem forwards the items that still match the lock and holds only
+	// the added or changed ones (and their use) for approval. Resource
+	// templates are always locked as a list, because a read URI cannot be
+	// matched to one template.
+	ScopeItem LockScope = "item"
+)
+
 // SecretsMode is what a credential found in tool arguments does.
 type SecretsMode string
 
@@ -145,6 +159,10 @@ type Policy struct {
 		// only after an explicit approve (terminal, dashboard or `mcp-jail
 		// approve`); until then the list and its uses are refused.
 		First FirstContact `yaml:"first"`
+		// Scope says what a change invalidates: "list" (default) refuses the
+		// whole list; "item" forwards the unchanged items and holds only the
+		// added or changed ones for approval.
+		Scope LockScope `yaml:"scope"`
 	} `yaml:"lock"`
 
 	// ServerRequests decides the requests a server sends to the client:
@@ -303,6 +321,7 @@ func Default() *Policy {
 	p.Tools.Default = Ask
 	p.Lock.Enabled = true
 	p.Lock.First = FirstRecord
+	p.Lock.Scope = ScopeList
 	p.Lint.Lists = LintWarn
 	p.Lint.Results = LintWarn
 	p.Tools.Secrets = SecretsWarn
@@ -363,6 +382,13 @@ func (p *Policy) Validate() error {
 	case FirstRecord, FirstReview:
 	default:
 		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
+	}
+	switch p.Lock.Scope {
+	case "":
+		p.Lock.Scope = ScopeList
+	case ScopeList, ScopeItem:
+	default:
+		return fmt.Errorf("lock.scope must be list|item, got %q", p.Lock.Scope)
 	}
 	for pat := range p.Limits.Tools {
 		if pat == "" || hasControl(pat) {
@@ -940,6 +966,10 @@ lock:
   # review – show the first list and record it only after you approve it
   #          (terminal prompt, Approve in the dashboard, or mcp-jail approve)
   first: record
+  # list – a change refuses the whole list and every use of it until approved
+  # item – the unchanged items keep working; only the added or changed ones
+  #        are held back until approved (for servers whose tool list varies)
+  scope: list
 
 # Content heuristics on what the server defines, applied whenever the lock
 # has something new to decide: hidden markup or invisible characters, text

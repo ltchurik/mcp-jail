@@ -333,6 +333,25 @@ func TestLockFirst(t *testing.T) {
 	}
 }
 
+func TestLockScope(t *testing.T) {
+	for in, want := range map[string]LockScope{"": ScopeList, "list": ScopeList, "item": ScopeItem} {
+		text := "name: x\nlock:\n  enabled: true\n"
+		if in != "" {
+			text += "  scope: " + in + "\n"
+		}
+		p, err := parse([]byte(text), "t.yml")
+		if err != nil || p.Lock.Scope != want {
+			t.Errorf("scope %q: got %q, %v", in, p.Lock.Scope, err)
+		}
+	}
+	if _, err := parse([]byte("name: x\nlock:\n  scope: tool\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "lock.scope") {
+		t.Errorf("bad lock.scope accepted: %v", err)
+	}
+	if Default().Lock.Scope != ScopeList {
+		t.Errorf("default scope %q", Default().Lock.Scope)
+	}
+}
+
 func TestExecValidate(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	good := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
