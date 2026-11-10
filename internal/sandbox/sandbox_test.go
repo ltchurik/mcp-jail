@@ -273,6 +273,7 @@ func TestTooBroadAndToolchainBind(t *testing.T) {
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	for _, d := range []string{"home/bin", "home/.local/bin", "home/.config/mcp-jail/run", "home/projects/x", "opt/tool/bin"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o750); err != nil {
 			t.Fatal(err)

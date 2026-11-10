@@ -255,15 +255,17 @@ func TestPolicySkipsRootAndHome(t *testing.T) {
 	if err := Validate(docker); err != nil {
 		t.Fatalf("docker policy must validate: %v", err)
 	}
-	root, tmp := "/", "/tmp"
+	root, tmp := "/", "/tmp" // tmp: an existing directory that is neither
 	if runtime.GOOS == "windows" {
-		root, tmp = filepath.VolumeName(home)+`\`, filepath.VolumeName(home)+`\tmp`
+		root, tmp = filepath.VolumeName(home)+`\`, os.TempDir()
 	}
 	out := Policy("fs", "npx", []string{"-y", "server", root, home, tmp}, nil, "none", nil, "", "")
-	if strings.Contains(out, "- "+root+"\n") || strings.Contains(out, "- "+home+"\n") {
-		t.Fatalf("root or home became read_write:\n%s", out)
+	if strings.Contains(out, "- "+root+"\n") || strings.Contains(out, "- "+home+"\n") || strings.Contains(out, "NOT added: "+tmp) {
+		t.Fatalf("root or home became read_write, or tmp was skipped:\n%s", out)
 	}
-	if !strings.Contains(out, "NOT added: "+root) || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(out, "read_write: ["+tmp) {
+	rw := out[strings.Index(out, "read_write: ["):]
+	rw = rw[:strings.Index(rw, "\n")]
+	if !strings.Contains(out, "NOT added: "+root) || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(rw, tmp) {
 		t.Fatalf("notes/paths:\n%s", out)
 	}
 }

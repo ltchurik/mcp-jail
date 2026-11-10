@@ -19,9 +19,9 @@ func writeTemp(t *testing.T, text string) string {
 }
 
 func TestSetRuleKeepsCommentsAndOrder(t *testing.T) {
-	tmp := "/tmp" // an absolute path on this OS
+	tmp, quoted := "/tmp", "/tmp" // an absolute path on this OS, and how the writer spells it
 	if runtime.GOOS == "windows" {
-		tmp = `C:\tmp`
+		tmp, quoted = `C:\tmp`, `'C:\tmp'`
 	}
 	p := writeTemp(t, `# my policy
 name: demo
@@ -59,7 +59,7 @@ lock: { enabled: false }
 	got := string(b)
 	for _, want := range []string{
 		"# my policy\n", "mode: none # no egress\n", "  # defaults first\n", `"read_*": allow # cheap`,
-		"    delete_file: deny\n", "      decision: allow\n      args:\n        path: {under: [" + tmp + "]}\n",
+		"    delete_file: deny\n", "      decision: allow\n      args:\n        path: {under: [" + quoted + "]}\n",
 		`    "send_*": deny` + "\n", "    create_issue: allow\n", "lock: {enabled: false}\n",
 	} {
 		if !strings.Contains(got, want) {
