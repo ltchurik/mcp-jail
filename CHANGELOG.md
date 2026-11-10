@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.8.0 — 2026-11-10
+
+Two answers to the questions a Docker-sandboxing post raised about mcp-jail: a lock that copes with servers whose tool list legitimately changes, and a container backend for hosts without bubblewrap, Windows included. Existing policies and locks keep working unchanged.
 
 ### Added
 
