@@ -57,7 +57,7 @@ func TestRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs := servers["filesystem"]
-	if fs.Command != "/opt/mcp-jail" || strings.Join(fs.Args, " ") != "run --policy /pol/filesystem.yml -- npx -y @modelcontextprotocol/server-filesystem "+proj {
+	if fs.Command != "/opt/mcp-jail" || strings.Join(fs.Args, " ") != "run --policy "+filepath.Join("/pol", "filesystem.yml")+" -- npx -y @modelcontextprotocol/server-filesystem "+proj {
 		t.Errorf("filesystem rewritten wrong: %s %v", fs.Command, fs.Args)
 	}
 	gh := servers["github"]
@@ -68,7 +68,7 @@ func TestRewrite(t *testing.T) {
 		t.Errorf("legacy sse/already-wrapped must be untouched: %+v %+v", servers["legacy"], servers["done"])
 	}
 	rm := servers["remote"]
-	if rm.URL != "" || rm.Command != "/opt/mcp-jail" || strings.Join(rm.Args, " ") != "run --policy /pol/remote.yml" || rm.Env["REMOTE_AUTHORIZATION"] != "Bearer abc" || len(rm.Env) != 1 {
+	if rm.URL != "" || rm.Command != "/opt/mcp-jail" || strings.Join(rm.Args, " ") != "run --policy "+filepath.Join("/pol", "remote.yml") || rm.Env["REMOTE_AUTHORIZATION"] != "Bearer abc" || len(rm.Env) != 1 {
 		t.Errorf("remote rewritten wrong: %+v", rm)
 	}
 	rp := res.PolicyText("remote")

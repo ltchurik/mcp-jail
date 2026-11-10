@@ -335,7 +335,7 @@ func TestOwnedDir(t *testing.T) {
 
 func TestSocketDirHasNoNegativeUID(t *testing.T) {
 	d := SocketDir()
-	if !strings.HasPrefix(d, os.TempDir()) || strings.Contains(d, "-1") {
+	if !strings.HasPrefix(d, os.TempDir()) || strings.HasSuffix(d, "--1") {
 		t.Errorf("SocketDir = %s", d)
 	}
 }
