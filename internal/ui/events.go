@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -78,6 +79,9 @@ func ReadEvents(paths []string, f Filter, limit int) (events []audit.Event, skip
 		evs, n := scan(fh, f)
 		_ = fh.Close()
 		skipped += n
+		// A later line is a later event even when the clock did not move
+		// between them: reverse the file, then the stable sort keeps ties.
+		slices.Reverse(evs)
 		events = append(events, evs...)
 	}
 	sort.SliceStable(events, func(i, j int) bool { return events[i].Time.After(events[j].Time) })

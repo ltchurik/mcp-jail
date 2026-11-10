@@ -448,7 +448,7 @@ func darwinProfile(p *policy.Policy, s Spec, h profilePaths) string {
 // parents, or it holds one of the protected paths. "" means fine.
 func tooBroad(dir string, protect []string) string {
 	dir = filepath.Clean(dir)
-	if dir == "/" || dir == "." {
+	if dir == "/" || dir == "." || dir == filepath.VolumeName(dir)+string(filepath.Separator) {
 		return "root"
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
@@ -466,7 +466,8 @@ func tooBroad(dir string, protect []string) string {
 
 // under reports whether path is dir itself or inside it.
 func under(path, dir string) bool {
-	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, "/")+"/")
+	sep := string(filepath.Separator)
+	return path == dir || strings.HasPrefix(path, strings.TrimSuffix(dir, sep)+sep)
 }
 
 // toolchainBind picks the directory to expose for the server binary:
@@ -621,7 +622,7 @@ func toolchainPrefix(argv0 string) string {
 
 func covered(dir string, p *policy.Policy) bool {
 	for _, d := range append(append([]string{}, p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...) {
-		if dir == d || strings.HasPrefix(dir, strings.TrimSuffix(d, "/")+"/") {
+		if under(dir, d) {
 			return true
 		}
 	}

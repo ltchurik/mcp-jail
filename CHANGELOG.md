@@ -1,5 +1,22 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- Windows binaries (`windows_amd64`, `windows_arm64`, as `.zip`) in every
+  release, attested like the tarballs; the test suite runs on Windows in CI.
+
+### Fixed
+
+- The Docker backend on a Windows host: the container ran as `--user -1:-1`
+  (there is no uid; it is `nobody` now), a drive path was mounted at its
+  `C:\...` spelling inside the Linux container and the drive colon was
+  taken for a mount separator (paths are mounted at `/mnt/<drive>/...`, with
+  a note in `show` and `run`), `/tmp` was shared from a host without one
+  (the host temp dir is), and the per-user socket directory under the temp
+  dir carried the uid `-1`.
+
 ## v0.8.1 — 2026-11-10
 
 Follow-ups to v0.8.0: a pending change can be approved item by item and a running jail tells the client when that happened; `mcp-jail doctor` explains what a host can do; the Docker backend warns about an unpinned image and pulls a missing one quietly; the `initialize` instructions join the lock; budgets reload with the policy.

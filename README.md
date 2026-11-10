@@ -70,7 +70,7 @@ Scanners pattern-match descriptions and produce [mostly false positives](https:/
 go install github.com/ltchurik/mcp-jail/cmd/mcp-jail@latest
 ```
 
-Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
+Or download a static binary for Linux, macOS or Windows (amd64, arm64; `.tar.gz`, `.zip` on Windows) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
 
 ```sh
 gh attestation verify mcp-jail_<version>_linux_amd64.tar.gz --repo ltchurik/mcp-jail
@@ -277,6 +277,8 @@ Inside the jail the shim briefly runs as the user namespace's root so it can bin
 ## Docker backend
 
 `sandbox.backend: docker` runs the server in a container (docker, or podman when docker is absent) instead of a namespace or `sandbox-exec` jail. It is the only sandbox on Windows, works on a Linux host without bubblewrap, and keeps a server's toolchain off the host altogether. The policy means the same thing: `filesystem.read_only` / `read_write` become bind mounts at their host paths (tool arguments keep working), `network.mode: none` is a container without a network, `sandbox.env` is the container's environment. The container runs as your uid with every capability dropped, `no-new-privileges`, a read-only root, a private `/tmp` (`exec` allowed, since npx and uvx run what they cache) and `HOME=/tmp`, since the host's home does not exist in the container (`sandbox.env: [HOME=/path]` overrides it). The working directory is shared read-only as under bubblewrap, mcp-jail's own files are masked, and the client sees nothing different. The command is resolved inside the image: write `python3 server.py`, not `/usr/bin/python3 server.py` (`show` and `run` say so when they see a host path).
+
+On a Windows host (Docker Desktop or podman with Linux containers) the same policy applies, with two differences the container forces: a drive path is mounted at `/mnt/<drive>/…` (`C:\work\proj` becomes `/mnt/c/work/proj`, UNC paths are refused), so tool arguments must use the container path, and the server runs as `nobody` (65534), since the host has no uid; `show` and `run` print the mapping note. `network.mode` must be `none` or `all` there, see below.
 
 ```yaml
 sandbox:
@@ -493,7 +495,7 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 |---|---|---|
 | Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist. Or `sandbox.backend: docker` | ✓ |
 | macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
-| Windows | `sandbox.backend: docker` (Docker Desktop or podman; `network.mode` none or all) | ✓ (WSL for the native sandbox) |
+| Windows | `sandbox.backend: docker` (Docker Desktop or podman with Linux containers; host paths at `/mnt/<drive>/…`; `network.mode` none or all). Native binaries ship; tests run on Windows in CI | ✓ (WSL for the native sandbox) |
 | Remote server (`server.url`) | none needed: the jail is the only process talking to the server, over a guarded HTTPS client | ✓ |
 
 `sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
@@ -550,7 +552,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] `lock.first: review`, `mcp-jail show`, `exec.allow` / `exec.sha256` pins (v0.6)
 - [x] Content lint on definitions and results, `server_requests`, `limits`, `tools.secrets`, launcher pin warnings (v0.7)
 - [x] `lock.scope: item`, Docker / Podman backend (v0.8)
-- [ ] Windows native sandbox (Docker backend covers Windows today)
+- [ ] Windows native sandbox (AppContainer; the Docker backend covers Windows today)
 
 ## Non-goals
 

@@ -11,6 +11,7 @@ import (
 )
 
 func TestToolchainPrefix(t *testing.T) {
+	skipWindows(t, "symlinks and extension-less executables")
 	root := t.TempDir()
 	bin := filepath.Join(root, "node-v22", "bin")
 	if err := os.MkdirAll(bin, 0o750); err != nil {
@@ -161,6 +162,7 @@ func TestBuildHardEgress(t *testing.T) {
 }
 
 func TestDarwinProfile(t *testing.T) {
+	skipWindows(t, "sandbox-exec profiles are built from Unix paths")
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)
 	mk := func(rel string) string {
@@ -271,6 +273,7 @@ func TestTooBroadAndToolchainBind(t *testing.T) {
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	for _, d := range []string{"home/bin", "home/.local/bin", "home/.config/mcp-jail/run", "home/projects/x", "opt/tool/bin"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o750); err != nil {
 			t.Fatal(err)
@@ -295,6 +298,7 @@ func TestTooBroadAndToolchainBind(t *testing.T) {
 		}
 	}
 
+	skipWindows(t, "toolchainBind looks the binary up in PATH, which needs an extension on Windows")
 	// ~/bin/foo: the prefix would be ~ itself; fall back to ~/bin
 	exe := filepath.Join(home, "bin", "foo")
 	writeExec(t, exe)
@@ -359,6 +363,7 @@ func TestMasks(t *testing.T) {
 }
 
 func TestDarwinProfileProtectsState(t *testing.T) {
+	skipWindows(t, "sandbox-exec profiles are built from Unix paths")
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")
@@ -440,5 +445,14 @@ func TestPassthroughEnvSetsAndHardens(t *testing.T) {
 	want := []string{"DO_NOT_TRACK=0", "NO_UPDATE_NOTIFIER=1", "npm_config_update_notifier=false", "MCPJ_T=host", "FOO=bar=baz"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+// skipWindows skips a test of the bubblewrap or sandbox-exec path, which
+// works with Unix paths, symlinks and shell scripts.
+func skipWindows(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
 	}
 }

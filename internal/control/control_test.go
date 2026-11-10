@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -135,8 +136,7 @@ func TestSocketRoundTrip(t *testing.T) {
 	if s.Path() != path {
 		t.Fatalf("short path must be used as is: %s", s.Path())
 	}
-	st, err := os.Stat(path)
-	if err != nil || st.Mode().Perm() != 0o600 {
+	if st, err := os.Stat(path); err != nil || (runtime.GOOS != "windows" && st.Mode().Perm() != 0o600) {
 		t.Fatalf("socket perms: %v %v", st, err)
 	}
 	c := Dial(path)
@@ -296,6 +296,9 @@ func TestClientStop(t *testing.T) {
 }
 
 func TestOwnedDir(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("ownedDir checks nothing on Windows: the temp dir is per user")
+	}
 	root := t.TempDir()
 	fresh := filepath.Join(root, "fresh")
 	if err := ownedDir(fresh); err != nil {
@@ -327,5 +330,12 @@ func TestOwnedDir(t *testing.T) {
 	}
 	if err := ownedDir(file); err == nil {
 		t.Error("file accepted")
+	}
+}
+
+func TestSocketDirHasNoNegativeUID(t *testing.T) {
+	d := SocketDir()
+	if !strings.HasPrefix(d, os.TempDir()) || strings.HasSuffix(d, "--1") {
+		t.Errorf("SocketDir = %s", d)
 	}
 }

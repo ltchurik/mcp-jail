@@ -373,7 +373,8 @@ func Policy(name, command string, args, envKeys []string, network string, warnin
 	for _, a := range args {
 		if filepath.IsAbs(a) {
 			if st, err := os.Stat(a); err == nil && st.IsDir() {
-				if a := filepath.Clean(a); a == "/" || a == home || (home != "" && strings.HasPrefix(home, a+"/")) {
+				sep := string(filepath.Separator)
+				if a := filepath.Clean(a); a == "/" || a == filepath.VolumeName(a)+sep || a == home || (home != "" && strings.HasPrefix(home, strings.TrimSuffix(a, sep)+sep)) {
 					// the root or the home directory: too much to hand a
 					// server read-write; the user picks a narrower path
 					b.WriteString("  # NOT added: " + a + " is the root or home directory; list a narrower read_write path yourself\n")

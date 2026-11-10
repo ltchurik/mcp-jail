@@ -391,8 +391,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 // the policy file, the audit log, the lock and registry directories (with
 // the control socket) and the per-user socket directory under the temp dir.
 func protectPaths(p *policy.Policy, pol string) []string {
-	return []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(),
-		filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}
+	return []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(), control.SocketDir()}
 }
 
 // startRemote connects to a Streamable HTTP server named by server.url.

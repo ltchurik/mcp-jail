@@ -26,6 +26,10 @@ import (
 // the mcp-jail binary as the shim (as under bwrap). Docker Desktop cannot
 // pass a Unix socket into its VM, so on other hosts the allowlist is refused
 // rather than downgraded to a cooperative proxy.
+//
+// On a Windows host a path like C:\work\proj cannot be a container path, so
+// it is mounted at /mnt/c/work/proj (the WSL convention) and the container
+// runs as nobody, since the host has no uid; show and run say so.
 
 // defaultImages maps a launcher to the image used when sandbox.image is
 // empty. Floating tags: the note printed on start says to pin one.
@@ -85,15 +89,9 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	}
 	args := []string{"run", "--rm", "-i", "--init",
 		"--cap-drop", "ALL", "--security-opt", "no-new-privileges",
-		"--read-only", "--user", strconv.Itoa(os.Getuid()) + ":" + strconv.Itoa(os.Getgid())}
-	if p.Filesystem.Tmp {
-		// exec: npx and uvx run what they download from their cache under HOME
-		args = append(args, "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g")
-	} else {
-		args = append(args, "-v", "/tmp:/tmp")
-	}
+		"--read-only", "--user", dockerUser()}
 	bind := func(host, guest string, ro bool) error {
-		if strings.ContainsAny(host, ":,") || strings.ContainsAny(guest, ":,") {
+		if strings.ContainsAny(host[len(driveLetter(host)):], ":,") || strings.ContainsAny(guest, ":,") {
 			return fmt.Errorf("sandbox.backend docker: cannot mount %q (':' or ',' in the path)", host)
 		}
 		spec := host + ":" + guest
@@ -103,12 +101,29 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 		args = append(args, "-v", spec)
 		return nil
 	}
+	// share mounts a host directory at its container path.
+	share := func(host string, ro bool) error {
+		guest, err := containerPath(runtime.GOOS, host)
+		if err != nil {
+			return err
+		}
+		return bind(host, guest, ro)
+	}
+	if p.Filesystem.Tmp {
+		// exec: npx and uvx run what they download from their cache under HOME
+		args = append(args, "--tmpfs", "/tmp:rw,exec,nosuid,nodev,size=1g")
+	} else if err := bind(hostTmp(runtime.GOOS), "/tmp", false); err != nil {
+		return nil, "", "", err
+	}
 	var notes []string
 	if imgNote != "" {
 		notes = append(notes, imgNote)
 	}
 	if n := commandNote(s); n != "" {
 		notes = append(notes, n)
+	}
+	if runtime.GOOS == "windows" {
+		notes = append(notes, windowsMountNote)
 	}
 	switch {
 	case hard:
@@ -126,12 +141,12 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	}
 	bound := append(append([]string{}, p.Filesystem.ReadOnly...), p.Filesystem.ReadWrite...)
 	for _, d := range p.Filesystem.ReadOnly {
-		if err := bind(d, d, true); err != nil {
+		if err := share(d, true); err != nil {
 			return nil, "", "", err
 		}
 	}
 	for _, d := range p.Filesystem.ReadWrite {
-		if err := bind(d, d, false); err != nil {
+		if err := share(d, false); err != nil {
 			return nil, "", "", err
 		}
 	}
@@ -140,7 +155,7 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	workdir := "/"
 	if cwd, err := os.Getwd(); err == nil && !covered(cwd, p) {
 		if why := tooBroad(cwd, s.Protect); why == "" {
-			if err := bind(cwd, cwd, true); err != nil {
+			if err := share(cwd, true); err != nil {
 				return nil, "", "", err
 			}
 			bound = append(bound, cwd)
@@ -151,11 +166,21 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	} else if err == nil {
 		workdir = cwd
 	}
+	if workdir != "/" {
+		if workdir, err = containerPath(runtime.GOOS, workdir); err != nil {
+			return nil, "", "", err
+		}
+	}
 	args = append(args, "-w", workdir)
 	for _, m := range masks(s.Protect, bound) {
+		guest, err := containerPath(runtime.GOOS, m.path)
+		if err != nil {
+			return nil, "", "", err
+		}
 		if m.dir {
-			args = append(args, "--tmpfs", m.path)
-		} else if err := bind("/dev/null", m.path, true); err != nil {
+			args = append(args, "--tmpfs", guest)
+		} else if err := bind("/dev/null", guest, true); err != nil {
+			// /dev/null is the daemon's: Docker Desktop's VM has one too.
 			return nil, "", "", err
 		}
 	}
@@ -189,7 +214,7 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	}
 	args = append(args, s.Command...)
 
-	why := filepath.Base(cli) + ": " + image + ", caps dropped, read-only root"
+	why := strings.TrimSuffix(filepath.Base(cli), ".exe") + ": " + image + ", caps dropped, read-only root"
 	switch {
 	case hard:
 		why += ", no network + egress allowlist (hard)"
@@ -200,6 +225,54 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 		why += "; " + strings.Join(notes, "; ")
 	}
 	return append([]string{cli}, args...), why, "", nil
+}
+
+// windowsMountNote tells a Windows user where the host paths went.
+const windowsMountNote = "host paths are mounted under /mnt/<drive>/ in the container (C:\\work -> /mnt/c/work): tool arguments must use those"
+
+// dockerUser is the uid:gid the container runs as: ours, or nobody on a
+// host without uids (Windows), so the server is never root in the image.
+func dockerUser() string {
+	uid, gid := os.Getuid(), os.Getgid()
+	if uid < 0 || gid < 0 {
+		return "65534:65534"
+	}
+	return strconv.Itoa(uid) + ":" + strconv.Itoa(gid)
+}
+
+// containerPath is where a host directory appears inside the container: the
+// same path on a Unix host; /mnt/<drive>/rest for a Windows drive path.
+// A UNC path has no such place and is refused.
+func containerPath(goos, host string) (string, error) {
+	if goos != "windows" {
+		return host, nil
+	}
+	if strings.HasPrefix(host, `\\`) {
+		return "", fmt.Errorf("sandbox.backend docker: cannot mount %q (UNC path)", host)
+	}
+	vol := driveLetter(host)
+	rest := strings.ReplaceAll(host[len(vol):], `\`, "/")
+	if vol == "" {
+		return rest, nil
+	}
+	return "/mnt/" + strings.ToLower(vol[:1]) + rest, nil
+}
+
+// driveLetter returns the "C:" of a Windows drive path, or "" (parsed here
+// rather than by filepath.VolumeName, which knows only the host's rules).
+func driveLetter(path string) string {
+	if len(path) >= 2 && path[1] == ':' && (path[0] >= 'a' && path[0] <= 'z' || path[0] >= 'A' && path[0] <= 'Z') {
+		return path[:2]
+	}
+	return ""
+}
+
+// hostTmp is the host directory shared as /tmp when filesystem.tmp is off.
+func hostTmp(goos string) string {
+	if goos == "windows" {
+		return os.TempDir()
+	}
+	return "/tmp"
 }
 
 // commandNote warns when the server command is a host path: it is resolved
@@ -270,6 +343,9 @@ func explainDocker(p *policy.Policy, s Spec, plan Plan) Plan {
 	}
 	if n := commandNote(s); n != "" {
 		plan.Notes = append(plan.Notes, n)
+	}
+	if runtime.GOOS == "windows" {
+		plan.Notes = append(plan.Notes, windowsMountNote)
 	}
 	plan.Notes = append(plan.Notes, p.ImageWarnings()...)
 	plan.Hard = true

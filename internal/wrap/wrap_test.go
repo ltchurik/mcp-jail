@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -22,7 +24,7 @@ const sample = `{
 
 func TestRewrite(t *testing.T) {
 	proj := t.TempDir()
-	in := []byte(strings.ReplaceAll(sample, "%s", proj))
+	in := []byte(strings.ReplaceAll(sample, "%s", jsonPath(proj)))
 	res, err := Rewrite(in, Options{Bin: "/opt/mcp-jail", PolicyDir: "/pol"})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +57,7 @@ func TestRewrite(t *testing.T) {
 		t.Fatal(err)
 	}
 	fs := servers["filesystem"]
-	if fs.Command != "/opt/mcp-jail" || strings.Join(fs.Args, " ") != "run --policy /pol/filesystem.yml -- npx -y @modelcontextprotocol/server-filesystem "+proj {
+	if fs.Command != "/opt/mcp-jail" || strings.Join(fs.Args, " ") != "run --policy "+filepath.Join("/pol", "filesystem.yml")+" -- npx -y @modelcontextprotocol/server-filesystem "+proj {
 		t.Errorf("filesystem rewritten wrong: %s %v", fs.Command, fs.Args)
 	}
 	gh := servers["github"]
@@ -66,7 +68,7 @@ func TestRewrite(t *testing.T) {
 		t.Errorf("legacy sse/already-wrapped must be untouched: %+v %+v", servers["legacy"], servers["done"])
 	}
 	rm := servers["remote"]
-	if rm.URL != "" || rm.Command != "/opt/mcp-jail" || strings.Join(rm.Args, " ") != "run --policy /pol/remote.yml" || rm.Env["REMOTE_AUTHORIZATION"] != "Bearer abc" || len(rm.Env) != 1 {
+	if rm.URL != "" || rm.Command != "/opt/mcp-jail" || strings.Join(rm.Args, " ") != "run --policy "+filepath.Join("/pol", "remote.yml") || rm.Env["REMOTE_AUTHORIZATION"] != "Bearer abc" || len(rm.Env) != 1 {
 		t.Errorf("remote rewritten wrong: %+v", rm)
 	}
 	rp := res.PolicyText("remote")
@@ -129,7 +131,7 @@ func TestRewrite(t *testing.T) {
 func TestRunWritesFilesAndBackup(t *testing.T) {
 	dir := t.TempDir()
 	cfg := filepath.Join(dir, "claude_desktop_config.json")
-	in := strings.ReplaceAll(sample, "%s", dir)
+	in := strings.ReplaceAll(sample, "%s", jsonPath(dir))
 	if err := os.WriteFile(cfg, []byte(in), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -253,11 +255,24 @@ func TestPolicySkipsRootAndHome(t *testing.T) {
 	if err := Validate(docker); err != nil {
 		t.Fatalf("docker policy must validate: %v", err)
 	}
-	out := Policy("fs", "npx", []string{"-y", "server", "/", home, "/tmp"}, nil, "none", nil, "", "")
-	if strings.Contains(out, "- /\n") || strings.Contains(out, "- "+home+"\n") {
-		t.Fatalf("root or home became read_write:\n%s", out)
+	root, tmp := "/", "/tmp" // tmp: an existing directory that is neither
+	if runtime.GOOS == "windows" {
+		root, tmp = filepath.VolumeName(home)+`\`, os.TempDir()
 	}
-	if !strings.Contains(out, "NOT added: /") || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(out, "read_write: [/tmp") {
+	out := Policy("fs", "npx", []string{"-y", "server", root, home, tmp}, nil, "none", nil, "", "")
+	if strings.Contains(out, "- "+root+"\n") || strings.Contains(out, "- "+home+"\n") || strings.Contains(out, "NOT added: "+tmp) {
+		t.Fatalf("root or home became read_write, or tmp was skipped:\n%s", out)
+	}
+	rw := out[strings.Index(out, "read_write: ["):]
+	rw = rw[:strings.Index(rw, "\n")]
+	quoted := strings.ReplaceAll(tmp, `\`, `\\`) // a Windows path is written double-quoted
+	if !strings.Contains(out, "NOT added: "+root) || !strings.Contains(out, "NOT added: "+home) || !strings.Contains(rw, quoted) {
 		t.Fatalf("notes/paths:\n%s", out)
 	}
+}
+
+// jsonPath is path as it appears inside a JSON string literal (backslashes
+// escaped on Windows).
+func jsonPath(path string) string {
+	return strings.Trim(strconv.Quote(path), `"`)
 }

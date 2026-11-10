@@ -40,7 +40,8 @@ Known limitations, documented in the README and **not** vulnerabilities:
 - the macOS sandbox scopes the filesystem and the network only: no PID or
   mount isolation, system locations outside `/Users` stay readable, and Mach
   IPC, `sysctl` and other system services are not restricted
-- no sandbox on Windows yet; policy, lock and audit still apply
+- no native sandbox on Windows yet: without `sandbox.backend: docker` the
+  policy, lock and audit still apply, the filesystem scope does not
 - a hostile MCP *client* is out of scope
 
 ## Supported versions
