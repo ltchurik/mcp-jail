@@ -47,7 +47,7 @@ Usage:
   mcp-jail init [--policy FILE]        write a starter policy
   mcp-jail wrap <client-config.json>   route every server in a client config through mcp-jail
   mcp-jail diff    <name>              show pending tool changes
-  mcp-jail approve <name>              accept pending tool changes
+  mcp-jail approve <name> [--only tools:a,prompts:b]   accept pending changes (all, or the named items)
   mcp-jail reset   <name>              forget the lock
   mcp-jail locks                       list locks
   mcp-jail ps                          list running jails
@@ -542,10 +542,14 @@ func cmdDiff(args []string) error {
 			continue
 		}
 		var old map[string]string
-		if o := cur.Section(k); o != nil {
+		switch o := cur.Section(k); {
+		case o != nil && sec.Held:
+			old = o.Items
+			fmt.Printf("%s (held under lock.scope item: the recorded items keep working, these wait):\n", k)
+		case o != nil:
 			old = o.Items
 			fmt.Printf("%s:\n", k)
-		} else {
+		default:
 			fmt.Printf("%s (seen for the first time, nothing recorded yet):\n", k)
 		}
 		d := lock.Compare(old, sec.Items)
@@ -563,19 +567,58 @@ func cmdDiff(args []string) error {
 		}
 	}
 	fmt.Println("\nreview the server, then: mcp-jail approve", name)
+	fmt.Println("or some of it:          mcp-jail approve", name, "--only tools:<name>,prompts:<name>")
 	return nil
 }
 
 func cmdApprove(args []string) error {
-	name, err := nameArg(args)
+	// mcp-jail approve <name> [--only kind:key,…]; the flag may come first
+	var name, only string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case strings.HasPrefix(a, "--only="):
+			only = strings.TrimPrefix(a, "--only=")
+		case a == "--only":
+			if i+1 >= len(args) {
+				return errors.New("--only needs kind:key[,kind:key…]; a bare key means tools")
+			}
+			i++
+			only = args[i]
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("approve: unknown flag %s", a)
+		case name == "":
+			name = a
+		default:
+			return errors.New("usage: mcp-jail approve <name> [--only kind:key,…]")
+		}
+	}
+	name, err := nameArg([]string{name})
 	if err != nil {
 		return err
 	}
-	f, err := lock.Approve(name)
+	var f *lock.File
+	if only == "" {
+		f, err = lock.Approve(name)
+	} else {
+		sel, perr := lock.ParseItems([]string{only})
+		if perr != nil {
+			return perr
+		}
+		f, err = lock.ApproveItems(name, sel)
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Printf("approved %s: %s\n", name, summarize(f))
+	if p, _ := lock.LoadPending(name); p != nil && len(p.Sections) > 0 {
+		var left []string
+		for _, k := range lock.Kinds {
+			if sec, ok := p.Sections[k]; ok {
+				left = append(left, fmt.Sprintf("%s (%s)", k, lock.Compare(f.Section(k).Items, sec.Items)))
+			}
+		}
+		fmt.Printf("still pending: %s\n", strings.Join(left, "; "))
+	}
 	return nil
 }
 

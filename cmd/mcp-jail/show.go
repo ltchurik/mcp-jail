@@ -202,7 +202,11 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 					continue
 				}
 				if o := f.Section(k); o != nil {
-					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String()+lintCount(sec))
+					held := ""
+					if sec.Held {
+						held = " (held: the recorded items keep working)"
+					}
+					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String()+held+lintCount(sec))
 				} else {
 					doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review%s", k, len(sec.Items), lintCount(sec)))
 				}

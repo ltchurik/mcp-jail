@@ -231,6 +231,76 @@ func TestApproveKind(t *testing.T) {
 	}
 }
 
+func TestApproveItems(t *testing.T) {
+	t.Setenv("MCP_JAIL_HOME", t.TempDir())
+	a, b, c := raw(`{"name":"a","description":"A"}`), raw(`{"name":"b","description":"B"}`), raw(`{"name":"c"}`)
+	b2 := raw(`{"name":"b","description":"B2"}`)
+	rec, _ := Compute(Tools, []json.RawMessage{a, b, c})
+	if _, err := Record("z", Tools, rec); err != nil {
+		t.Fatal(err)
+	}
+	// the server changed b, added d and removed c
+	pend, _ := Compute(Tools, []json.RawMessage{a, b2, raw(`{"name":"d"}`)})
+	pend.Lint = []string{"b: description: instruction (x)", "d: description: encoded (y)"}
+	pend.Held = true
+	if err := SavePending("z", Tools, pend); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Tools: {"nope"}}); err == nil || !strings.Contains(err.Error(), "not pending") {
+		t.Fatalf("unknown item: %v", err)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Prompts: {"x"}}); err == nil {
+		t.Fatal("a kind that is not pending must fail")
+	}
+	f, err := ApproveItems("z", map[Kind][]string{Tools: {"b", "c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := f.Section(Tools)
+	if sec.Items["b"] != pend.Items["b"] || sec.Items["a"] != rec.Items["a"] {
+		t.Fatalf("b must be the pending version, a untouched: %+v", sec.Items)
+	}
+	if _, ok := sec.Items["c"]; ok {
+		t.Fatal("c was removed by the server and accepted: must leave the lock")
+	}
+	if _, ok := sec.Items["d"]; ok {
+		t.Fatal("d was not approved")
+	}
+	if len(sec.Lint) != 1 || !strings.HasPrefix(sec.Lint[0], "b: ") {
+		t.Fatalf("b's lint must move to the lock: %v", sec.Lint)
+	}
+	want, _ := Compute(Tools, []json.RawMessage{a, b2})
+	if sec.Hash != want.Hash {
+		t.Fatal("section hash must be recomputed")
+	}
+	p, _ := LoadPending("z")
+	if p == nil || len(p.Sections[Tools].Lint) != 1 || !p.Sections[Tools].Held {
+		t.Fatalf("d must stay pending with its lint and the held flag: %+v", p)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Tools: {"d"}}); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := LoadPending("z"); p != nil {
+		t.Fatal("pending must be gone once nothing is left")
+	}
+	if f, _ := Load("z"); f.Section(Tools).Hash != pend.Hash {
+		t.Fatal("after approving everything the lock must equal the pending list")
+	}
+}
+
+func TestParseItems(t *testing.T) {
+	m, err := ParseItems([]string{"read_file,prompts:summarize", "resources:file:///readme", "tools:x"})
+	if err != nil || len(m[Tools]) != 2 || m[Prompts][0] != "summarize" || m[Resources][0] != "file:///readme" {
+		t.Fatalf("%v %v", m, err)
+	}
+	if _, err := ParseItems([]string{" , "}); err == nil {
+		t.Fatal("empty selection must fail")
+	}
+	if _, err := ParseItems([]string{"tools:"}); err == nil {
+		t.Fatal("empty key must fail")
+	}
+}
+
 func TestOtherToolsAndLint(t *testing.T) {
 	t.Setenv("MCP_JAIL_HOME", t.TempDir())
 	a, _ := Compute(Tools, []json.RawMessage{json.RawMessage(`{"name":"send_email"}`)})
