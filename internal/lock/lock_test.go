@@ -163,6 +163,33 @@ func TestComputeRefusesDuplicateNames(t *testing.T) {
 	}
 }
 
+func TestSplitAndWithItems(t *testing.T) {
+	a := raw(`{"name":"a","description":"A"}`)
+	b := raw(`{"name":"b","description":"B"}`)
+	b2 := raw(`{"name":"b","description":"B changed"}`)
+	c := raw(`{"name":"c"}`)
+	bad := raw(`{"description":"no name"}`)
+	rec, err := Compute(Tools, []json.RawMessage{a, b})
+	if err != nil {
+		t.Fatal(err)
+	}
+	known, held, keys := Split(Tools, []json.RawMessage{a, b2, c, bad}, rec.Items)
+	if len(known) != 1 || string(known[0]) != string(a) {
+		t.Fatalf("known = %s", known)
+	}
+	if len(held) != 3 || strings.Join(keys, ",") != "b,c" {
+		t.Fatalf("held = %d keys = %v", len(held), keys)
+	}
+	out, err := WithItems(Tools, raw(`{"tools":[{"name":"a"},{"name":"b"}],"nextCursor":"p2"}`), known)
+	if err != nil || string(out) != `{"nextCursor":"p2","tools":[{"name":"a","description":"A"}]}` {
+		t.Fatalf("WithItems = %s %v", out, err)
+	}
+	out, err = WithItems(ResourceTemplates, raw(`{"resourceTemplates":[{"uriTemplate":"x"}]}`), nil)
+	if err != nil || string(out) != `{"resourceTemplates":[]}` {
+		t.Fatalf("empty WithItems = %s %v", out, err)
+	}
+}
+
 func TestParsePage(t *testing.T) {
 	pg, err := ParsePage(Tools, raw(`{"tools":[{"name":"a"}],"nextCursor":"abc"}`))
 	if err != nil || len(pg.Items) != 1 || pg.Next != "abc" {

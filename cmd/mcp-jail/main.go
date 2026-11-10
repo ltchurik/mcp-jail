@@ -413,6 +413,7 @@ func cmdShim(args []string) (int, error) {
 	allow := fs.String("allow", "", "comma-separated network.allow")
 	uid := fs.Int("uid", os.Getuid(), "uid for the server")
 	gid := fs.Int("gid", os.Getgid(), "gid for the server")
+	plain := fs.Bool("plain", false, "start the server as this user, without a nested user namespace (containers)")
 	if err := fs.Parse(args); err != nil {
 		return 2, err
 	}
@@ -425,7 +426,7 @@ func cmdShim(args []string) (int, error) {
 			hosts = append(hosts, h)
 		}
 	}
-	return egress.RunShim(*sock, hosts, *uid, *gid, fs.Args(), logf)
+	return egress.RunShim(*sock, hosts, *uid, *gid, *plain, fs.Args(), logf)
 }
 
 func cmdInit(args []string) error {
@@ -451,6 +452,8 @@ func cmdWrap(args []string) error {
 	polDir := fs.String("policy-dir", filepath.Join(filepath.Dir(lock.Dir()), "policies"), "where to write <server>.yml policies")
 	bin := fs.String("bin", "", "mcp-jail binary to reference (default: this executable's absolute path)")
 	network := fs.String("network", "none", "network.mode for new policies: none | all")
+	backend := fs.String("backend", "auto", "sandbox.backend for new policies: auto | bwrap | sandbox-exec | docker | none")
+	image := fs.String("image", "", "sandbox.image for new policies (docker backend)")
 	force := fs.Bool("force", false, "overwrite existing policy files")
 	dry := fs.Bool("dry-run", false, "print the rewritten config, write nothing")
 	fs.Usage = usage
@@ -470,7 +473,7 @@ func cmdWrap(args []string) error {
 		}
 		*bin = exe
 	}
-	res, err := wrap.Run(fs.Arg(0), wrap.Options{Bin: *bin, PolicyDir: *polDir, Network: *network, Force: *force, DryRun: *dry})
+	res, err := wrap.Run(fs.Arg(0), wrap.Options{Bin: *bin, PolicyDir: *polDir, Network: *network, Backend: *backend, Image: *image, Force: *force, DryRun: *dry})
 	if err != nil {
 		return err
 	}

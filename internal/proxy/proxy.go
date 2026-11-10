@@ -80,15 +80,18 @@ type Proxy struct {
 // session's list matched the lock. inflight: list requests awaiting a
 // response. tainted: a mismatch was seen. items: the per-item hashes of
 // the verified list, so a use of a name that was never listed can be
-// refused (nil when the lock is off). paging/acc/next: a listing that
-// spans several pages is collected here and verified whole on the last
-// page, so pagination cannot split the list and dodge the lock.
+// refused (nil when the lock is off). held: with lock.scope item, the
+// names the server listed that the lock has not approved (added or
+// changed), filtered out of the list and refused on use. paging/acc/next:
+// a listing that spans several pages is collected here and verified whole
+// on the last page, so pagination cannot split the list and dodge the lock.
 type lockState struct {
 	verified bool
 	tainted  bool
 	inflight int
 	why      string // reason for the taint when it was not a hash mismatch
 	items    map[string]string
+	held     map[string]bool
 	paging   bool
 	acc      []json.RawMessage
 	next     string
@@ -491,6 +494,9 @@ func (p *Proxy) listed(k lock.Kind, name string) string {
 	if _, ok := st.items[name]; ok {
 		return ""
 	}
+	if st.held[name] {
+		return strings.TrimSuffix(string(k), "s") + " " + fmt.Sprintf("%q", name) + " is held for review (added or changed since last approval); run `mcp-jail approve " + p.Policy.Name + "`"
+	}
 	return strings.TrimSuffix(string(k), "s") + " " + fmt.Sprintf("%q", name) + " is not in the " + listMethod(k) + " verified against the lock"
 }
 
@@ -535,9 +541,14 @@ func gateMethod(k lock.Kind) string {
 // setLock records the outcome of a lock check; items is the verified
 // list (nil when the check failed).
 func (p *Proxy) setLock(k lock.Kind, verified, tainted bool, items map[string]string) {
+	p.setLockHeld(k, verified, tainted, items, nil)
+}
+
+// setLockHeld is setLock with the names held back under lock.scope item.
+func (p *Proxy) setLockHeld(k lock.Kind, verified, tainted bool, items map[string]string, held map[string]bool) {
 	p.lmu.Lock()
 	st := p.sections[k]
-	st.verified, st.tainted, st.why, st.items = verified, tainted, "", items
+	st.verified, st.tainted, st.why, st.items, st.held = verified, tainted, "", items, held
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -745,7 +756,8 @@ func (p *Proxy) allowServerRequest(m *jsonrpc.Message) bool {
 
 // checkLock enforces rug-pull protection on a list response of kind k. A
 // paged list is forwarded page by page and verified whole once the last
-// page is in. Returns false when the response was replaced with an error.
+// page is in. Returns false when the response was replaced: with an
+// error, or (lock.scope item) with the list minus the items held back.
 func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	if !p.Policy.Lock.Enabled {
 		return true
@@ -765,17 +777,6 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	if err != nil {
 		return fail("cannot hash result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
 	}
-	items, done, why := p.collect(k, pr.cursor, page)
-	if why != "" {
-		return fail(why, why)
-	}
-	if !done {
-		return true // more pages to come; the uses wait or are refused meanwhile
-	}
-	sec, err := lock.Compute(k, items)
-	if err != nil {
-		return fail("cannot hash result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
-	}
 	cur, err := lock.Load(p.Policy.Name)
 	if err != nil {
 		p.Logf("lock: %v", err)
@@ -785,9 +786,45 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 		return false
 	}
 	old := cur.Section(k)
+	// Under lock.scope item a page is forwarded without the items the lock
+	// does not hold, so a description the operator never approved does not
+	// reach the model even before the list is complete. Resource templates
+	// stay list-scoped: a read URI cannot be matched to one template.
+	perItem := p.Policy.Lock.Scope == policy.ScopeItem && k != lock.ResourceTemplates && old != nil
+	var shown []json.RawMessage
+	var heldOnPage []string
+	if perItem {
+		shown, _, heldOnPage = lock.Split(k, page.Items, old.Items)
+	}
+	// forward sends the page to the client, trimmed when something is held.
+	forward := func() bool {
+		if !perItem || len(heldOnPage) == 0 {
+			return true
+		}
+		trimmed, err := lock.WithItems(k, m.Result, shown)
+		if err != nil {
+			return fail("cannot rewrite result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
+		}
+		p.toClient(jsonrpc.NewResultResponse(m.ID, trimmed))
+		return false
+	}
+	items, done, why := p.collect(k, pr.cursor, page)
+	if why != "" {
+		return fail(why, why)
+	}
+	if !done {
+		return forward() // more pages to come; the uses wait or are refused meanwhile
+	}
+	sec, err := lock.Compute(k, items)
+	if err != nil {
+		return fail("cannot hash result: "+err.Error(), "cannot verify "+string(k)+" against the lock: "+err.Error())
+	}
 	if old != nil && old.Hash == sec.Hash {
 		p.setLock(k, true, false, sec.Items)
 		return true
+	}
+	if perItem {
+		return p.holdChanged(k, old, sec, items, forward)
 	}
 	held := p.lintList(k, items, &sec, old == nil)
 	if old == nil && (p.Policy.Lock.First == policy.FirstReview || held) {
@@ -812,6 +849,49 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull,
 		"mcp-jail: "+string(k)+" changed since last approval ("+d.String()+"); run `mcp-jail approve "+p.Policy.Name+"`"))
 	return false
+}
+
+// holdChanged is the lock.scope item outcome of a list that differs from
+// the lock: the new list is saved as pending, only its added or changed
+// items are linted, the unchanged ones are verified for use and the rest
+// are held back, filtered out of the response and refused on use until
+// `mcp-jail approve`. forward sends the (trimmed) last page.
+func (p *Proxy) holdChanged(k lock.Kind, old *lock.Section, sec lock.Section, items []json.RawMessage, forward func() bool) bool {
+	d := lock.Compare(old.Items, sec.Items)
+	held := make(map[string]bool, len(d.Added)+len(d.Changed))
+	for _, n := range d.Added {
+		held[n] = true
+	}
+	for _, n := range d.Changed {
+		held[n] = true
+	}
+	var heldItems []json.RawMessage
+	for _, raw := range items {
+		if held[itemKey(k, raw)] {
+			heldItems = append(heldItems, raw)
+		}
+	}
+	verified := make(map[string]string, len(sec.Items))
+	for n, h := range sec.Items {
+		if !held[n] {
+			verified[n] = h
+		}
+	}
+	p.lintList(k, heldItems, &sec, false)
+	if err := lock.SavePending(p.Policy.Name, k, sec); err != nil {
+		p.Logf("lock: save pending: %v", err)
+	}
+	p.setLockHeld(k, true, false, verified, held)
+	if len(held) == 0 {
+		// only removals: nothing to hold, the lock just no longer matches
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "warn", Reason: fmt.Sprintf("%s %s: nothing held; approve to record the removal", k, d)})
+		p.Logf("lock: %s changed: %s; nothing held, `mcp-jail approve %s` records the removal", k, d, p.Policy.Name)
+		return forward()
+	}
+	p.Audit.Log(audit.Event{Kind: "lock", Decision: "review", Reason: fmt.Sprintf("%s %s: %d item(s) held for review", k, d, len(held))})
+	p.Logf("lock: %s changed: %s", k, d)
+	p.Logf("      %d held until `mcp-jail approve %s`, %d forwarded; inspect with `mcp-jail diff %s`", len(held), p.Policy.Name, len(verified), p.Policy.Name)
+	return forward()
 }
 
 // maxLintLines bounds the findings kept for one list.

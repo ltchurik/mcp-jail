@@ -48,6 +48,7 @@ type showDoc struct {
 	Lock   struct {
 		Enabled  bool          `json:"enabled"`
 		First    string        `json:"first"`
+		Scope    string        `json:"scope"`
 		Sections []showSection `json:"sections"`
 		Pending  []string      `json:"pending,omitempty"`
 	} `json:"lock"`
@@ -186,7 +187,7 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 	for m, d := range p.ServerRequests.Rules {
 		doc.ServerRequests.Rules[m] = string(d)
 	}
-	doc.Lock.Enabled, doc.Lock.First = p.Lock.Enabled, string(p.Lock.First)
+	doc.Lock.Enabled, doc.Lock.First, doc.Lock.Scope = p.Lock.Enabled, string(p.Lock.First), string(p.Lock.Scope)
 	doc.Lock.Sections = []showSection{}
 	if f, err := lock.Load(p.Name); err == nil && f != nil {
 		for _, k := range lock.Kinds {
@@ -245,6 +246,9 @@ func (d *showDoc) write(w io.Writer) error {
 		pr("sandbox", "%s", s.Kind)
 	}
 	if s.Kind != "remote" && s.Kind != "disabled" && s.Kind != "none" {
+		if s.Image != "" {
+			pr("  image", "%s", s.Image)
+		}
 		if len(s.Base) > 0 {
 			pr("  base", "%s", strings.Join(s.Base, " "))
 		}
@@ -325,6 +329,9 @@ func (d *showDoc) write(w io.Writer) error {
 	lk := "off"
 	if d.Lock.Enabled {
 		lk = "on, first contact: " + d.Lock.First
+		if d.Lock.Scope == "item" {
+			lk += ", scope: item (unchanged items keep working, new or changed ones are held)"
+		}
 		if len(d.Lock.Sections) == 0 {
 			lk += "; nothing recorded yet"
 		}

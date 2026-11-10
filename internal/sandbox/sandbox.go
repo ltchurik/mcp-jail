@@ -6,6 +6,8 @@
 // macOS: sandbox-exec with a generated profile — home directory hidden
 // except for the policy's paths, writes only where allowed, network per
 // network.mode (allowlist = loopback proxy port only).
+// Any host with docker or podman (sandbox.backend docker): a container from
+// an image, the policy's paths bind-mounted, see docker.go.
 // Other platforms: no isolation; mcp-jail still enforces tool policy, the
 // rug-pull lock and audit logging, and prints a warning.
 package sandbox
@@ -61,9 +63,11 @@ const (
 )
 
 // HardEgress reports whether this run enforces network.allow in the kernel
-// (Linux with the sandbox on) rather than through a cooperative HTTP_PROXY.
+// (Linux with the sandbox on, bwrap or docker) rather than through a
+// cooperative HTTP_PROXY.
 func HardEgress(p *policy.Policy) bool {
-	return runtime.GOOS == "linux" && !p.Sandbox.Disabled && p.Network.Mode == policy.NetAllowlist
+	return runtime.GOOS == "linux" && !p.Sandbox.Disabled && p.Network.Mode == policy.NetAllowlist &&
+		p.Sandbox.Backend != policy.BackendSandboxExec
 }
 
 // Build returns an exec.Cmd for the jailed server and a description of the
@@ -97,6 +101,20 @@ func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error)
 	if err := checkExec(p); err != nil {
 		return nil, "", "", err
 	}
+	switch p.Sandbox.Backend {
+	case policy.BackendDocker:
+		return buildDocker(p, s, env)
+	case policy.BackendBwrap:
+		if runtime.GOOS != "linux" {
+			return nil, "", "", fmt.Errorf("sandbox.backend bwrap needs Linux (this is %s); use auto or docker", runtime.GOOS)
+		}
+		return buildLinux(p, s, env)
+	case policy.BackendSandboxExec:
+		if runtime.GOOS != "darwin" {
+			return nil, "", "", fmt.Errorf("sandbox.backend sandbox-exec needs macOS (this is %s); use auto or docker", runtime.GOOS)
+		}
+		return buildDarwin(p, s, env)
+	}
 	switch runtime.GOOS {
 	case "linux":
 		return buildLinux(p, s, env)
@@ -106,7 +124,7 @@ func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error)
 	if len(p.Exec.Allow) > 0 {
 		return nil, "", "", fmt.Errorf("exec.allow cannot be enforced on %s (no sandbox)", runtime.GOOS)
 	}
-	why := "no sandbox on " + runtime.GOOS + " (policy/lock/audit only)"
+	why := "no sandbox on " + runtime.GOOS + " (policy/lock/audit only; sandbox.backend: docker would isolate it)"
 	return append([]string{"env", "-i"}, append(env, s.Command...)...), why, "", nil
 }
 

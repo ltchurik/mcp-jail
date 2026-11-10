@@ -14,9 +14,11 @@ import (
 // derived with the same helpers Build uses (toolchain prefix, working
 // directory, masks), so it names the mounts a server really gets.
 type Plan struct {
-	// Kind is bwrap, sandbox-exec, none (a platform without a sandbox),
-	// disabled (sandbox.disabled) or remote (server.url).
+	// Kind is bwrap, sandbox-exec, docker, none (a platform without a
+	// sandbox), disabled (sandbox.disabled) or remote (server.url).
 	Kind string `json:"kind"`
+	// Image is the container image of the docker backend; "" otherwise.
+	Image string `json:"image,omitempty"`
 	// Base lists host paths every Linux jail sees read-only.
 	Base      []string `json:"base,omitempty"`
 	ReadOnly  []string `json:"read_only"`
@@ -110,6 +112,8 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		plan.Kind = "disabled"
 		plan.Notes = append(plan.Notes, "sandbox.disabled: policy, lock and audit only; the server sees the whole machine")
 		return plan
+	case p.Sandbox.Backend == policy.BackendDocker:
+		return explainDocker(p, s, plan)
 	case runtime.GOOS == "linux":
 		plan.Kind = "bwrap"
 		plan.Base = linuxBase

@@ -167,6 +167,12 @@ func NewErrorResponse(id json.RawMessage, code int, msg string) []byte {
 	return b
 }
 
+// NewResultResponse builds a result response for the given id.
+func NewResultResponse(id json.RawMessage, result json.RawMessage) []byte {
+	b, _ := json.Marshal(Message{JSONRPC: "2.0", ID: id, Result: result})
+	return b
+}
+
 // JSON-RPC 2.0 error codes the proxy answers with.
 const (
 	CodeParseError     = -32700

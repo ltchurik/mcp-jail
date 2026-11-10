@@ -53,6 +53,31 @@ const (
 	FirstReview FirstContact = "review"
 )
 
+// LockScope is lock.scope: what a change in a recorded list invalidates.
+type LockScope string
+
+const (
+	// ScopeList (default) refuses the whole list and every use of it when
+	// anything in it changed, until the new list is approved.
+	ScopeList LockScope = "list"
+	// ScopeItem forwards the items that still match the lock and holds only
+	// the added or changed ones (and their use) for approval. Resource
+	// templates are always locked as a list, because a read URI cannot be
+	// matched to one template.
+	ScopeItem LockScope = "item"
+)
+
+// Backend is sandbox.backend.
+type Backend string
+
+const (
+	BackendAuto        Backend = "auto"
+	BackendBwrap       Backend = "bwrap"
+	BackendSandboxExec Backend = "sandbox-exec"
+	BackendDocker      Backend = "docker"
+	BackendNone        Backend = "none"
+)
+
 // SecretsMode is what a credential found in tool arguments does.
 type SecretsMode string
 
@@ -145,6 +170,10 @@ type Policy struct {
 		// only after an explicit approve (terminal, dashboard or `mcp-jail
 		// approve`); until then the list and its uses are refused.
 		First FirstContact `yaml:"first"`
+		// Scope says what a change invalidates: "list" (default) refuses the
+		// whole list; "item" forwards the unchanged items and holds only the
+		// added or changed ones for approval.
+		Scope LockScope `yaml:"scope"`
 	} `yaml:"lock"`
 
 	// ServerRequests decides the requests a server sends to the client:
@@ -205,7 +234,17 @@ type Policy struct {
 
 	Sandbox struct {
 		// Disabled runs the server unsandboxed (policy + lock + audit only).
+		// Backend none is the same thing.
 		Disabled bool `yaml:"disabled"`
+		// Backend picks the isolation: auto (default: bwrap on Linux,
+		// sandbox-exec on macOS), bwrap, sandbox-exec, docker (a container
+		// from Image with the policy's paths bind-mounted; works wherever
+		// docker or podman does, Windows included) or none.
+		Backend Backend `yaml:"backend"`
+		// Image is the container image for the docker backend. Empty: derived
+		// from the launcher (node/npx, bun/bunx, uv/uvx, python), otherwise
+		// required.
+		Image string `yaml:"image"`
 		// Env lists environment variables for the jailed server: a bare NAME
 		// passes the host's value through, NAME=value sets one. Every jail
 		// also gets the update-check and telemetry opt-outs (DO_NOT_TRACK=1,
@@ -303,6 +342,7 @@ func Default() *Policy {
 	p.Tools.Default = Ask
 	p.Lock.Enabled = true
 	p.Lock.First = FirstRecord
+	p.Lock.Scope = ScopeList
 	p.Lint.Lists = LintWarn
 	p.Lint.Results = LintWarn
 	p.Tools.Secrets = SecretsWarn
@@ -363,6 +403,13 @@ func (p *Policy) Validate() error {
 	case FirstRecord, FirstReview:
 	default:
 		return fmt.Errorf("lock.first must be record|review, got %q", p.Lock.First)
+	}
+	switch p.Lock.Scope {
+	case "":
+		p.Lock.Scope = ScopeList
+	case ScopeList, ScopeItem:
+	default:
+		return fmt.Errorf("lock.scope must be list|item, got %q", p.Lock.Scope)
 	}
 	for pat := range p.Limits.Tools {
 		if pat == "" || hasControl(pat) {
@@ -457,6 +504,26 @@ func (p *Policy) Validate() error {
 		name, _, _ := strings.Cut(e, "=")
 		if !envName(name) || hasControl(e) {
 			return fmt.Errorf("sandbox.env: %q is not NAME or NAME=value", e)
+		}
+	}
+	switch p.Sandbox.Backend {
+	case "":
+		p.Sandbox.Backend = BackendAuto
+	case BackendNone:
+		p.Sandbox.Disabled = true
+	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendDocker:
+	default:
+		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|docker|none, got %q", p.Sandbox.Backend)
+	}
+	if p.Sandbox.Disabled {
+		p.Sandbox.Backend = BackendNone
+	}
+	if p.Sandbox.Image != "" {
+		if p.Sandbox.Backend != BackendDocker {
+			return errors.New("sandbox.image needs sandbox.backend: docker")
+		}
+		if strings.ContainsAny(p.Sandbox.Image, " \t\"'") || hasControl(p.Sandbox.Image) || strings.HasPrefix(p.Sandbox.Image, "-") {
+			return fmt.Errorf("sandbox.image: %q is not an image reference", p.Sandbox.Image)
 		}
 	}
 	p.Filesystem.ReadOnly = expandAll(p.Filesystem.ReadOnly)
@@ -940,6 +1007,10 @@ lock:
   # review – show the first list and record it only after you approve it
   #          (terminal prompt, Approve in the dashboard, or mcp-jail approve)
   first: record
+  # list – a change refuses the whole list and every use of it until approved
+  # item – the unchanged items keep working; only the added or changed ones
+  #        are held back until approved (for servers whose tool list varies)
+  scope: list
 
 # Content heuristics on what the server defines, applied whenever the lock
 # has something new to decide: hidden markup or invisible characters, text
@@ -957,6 +1028,12 @@ audit:
 
 sandbox:
   disabled: false
+  # auto (bwrap on Linux, sandbox-exec on macOS) | bwrap | sandbox-exec | none
+  # docker: run the server in a container (docker or podman) with the policy's
+  #         paths bind-mounted; the only sandbox on Windows. network allowlist
+  #         needs a Linux host; exec pins do not apply (the image is the pin)
+  backend: auto
+  # image: node:22-slim         # docker only; derived from npx/uvx/python when omitted
   env: [PATH, HOME, LANG]       # NAME passes the host's value through, NAME=value sets one
   # env: [PATH, HOME, npm_config_ignore_scripts=true]   # e.g. no install scripts for npx packages
 

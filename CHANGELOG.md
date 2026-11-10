@@ -1,5 +1,40 @@
 # Changelog
 
+## v0.8.0 — 2026-11-10
+
+Two answers to the questions a Docker-sandboxing post raised about mcp-jail: a lock that copes with servers whose tool list legitimately changes, and a container backend for hosts without bubblewrap, Windows included. Existing policies and locks keep working unchanged.
+
+### Added
+
+- `lock.scope: item`: a lock mode for servers whose tool list legitimately
+  varies. Items whose hash still matches the lock are forwarded and usable;
+  the added or changed ones are filtered out of the list (page by page),
+  held as pending, linted, and refused on use until `mcp-jail approve` or
+  the dashboard records the new list. The audit log carries `lock` /
+  `review` with the names; a pure removal is a `warn`. First contact still
+  follows `lock.first` for the whole list; resource templates stay
+  list-scoped. `mcp-jail show` prints the scope. Default stays `list`.
+- `sandbox.backend: docker` (and `sandbox.image`): run the server in a
+  container (docker, or podman) with the policy's paths bind-mounted at
+  their host paths, every capability dropped, `no-new-privileges`, a
+  read-only root, a private `/tmp` and `HOME=/tmp` (a passed-through HOME
+  would point at a path that does not exist there). `network.mode: none` is
+  a container without a network; `allowlist` is hard on a Linux host (the
+  egress relay is mounted into the container, mcp-jail is the in-container
+  shim) and refused elsewhere, never downgraded. The image is derived from
+  npx / bunx / uvx / python when omitted. The first sandbox on Windows.
+  `sandbox.backend` also names `bwrap`, `sandbox-exec` and `none`
+  explicitly (`auto` stays the default); `mcp-jail wrap --backend --image`;
+  `mcp-jail show` prints the image.
+
+## v0.7.1 — 2026-11-09
+
+### Added
+
+- `CITATION.cff` with the software metadata (author, ORCID, licence,
+  repository) so GitHub offers "Cite this repository" and Zenodo archives
+  each release with a DOI.
+
 ## v0.7.0 — 2026-11-07
 
 What a server *says* and *returns* is now checked, not only what it may call: content lint on definitions and results, a policy for server-initiated requests, budgets, credential detection, and a warning for launchers that fetch their program at start. Existing policies keep working unchanged; the new defaults are `warn`.

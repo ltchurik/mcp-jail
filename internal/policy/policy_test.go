@@ -333,6 +333,59 @@ func TestLockFirst(t *testing.T) {
 	}
 }
 
+func TestSandboxBackend(t *testing.T) {
+	for in, want := range map[string]Backend{"": BackendAuto, "auto": BackendAuto, "bwrap": BackendBwrap, "sandbox-exec": BackendSandboxExec, "docker": BackendDocker} {
+		text := "name: x\nsandbox:\n  disabled: false\n"
+		if in != "" {
+			text += "  backend: " + in + "\n"
+		}
+		p, err := parse([]byte(text), "t.yml")
+		if err != nil || p.Sandbox.Backend != want || p.Sandbox.Disabled {
+			t.Errorf("backend %q: got %q disabled=%v, %v", in, p.Sandbox.Backend, p.Sandbox.Disabled, err)
+		}
+	}
+	p, err := parse([]byte("name: x\nsandbox:\n  backend: none\n"), "t.yml")
+	if err != nil || !p.Sandbox.Disabled || p.Sandbox.Backend != BackendNone {
+		t.Errorf("backend none must disable: %+v %v", p.Sandbox, err)
+	}
+	p, err = parse([]byte("name: x\nsandbox:\n  disabled: true\n"), "t.yml")
+	if err != nil || p.Sandbox.Backend != BackendNone {
+		t.Errorf("disabled must read back as backend none: %+v %v", p.Sandbox, err)
+	}
+	if _, err := parse([]byte("name: x\nsandbox:\n  backend: firejail\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "sandbox.backend") {
+		t.Errorf("bad backend accepted: %v", err)
+	}
+	if _, err := parse([]byte("name: x\nsandbox:\n  image: node:22\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "sandbox.image needs") {
+		t.Errorf("image without docker accepted: %v", err)
+	}
+	if _, err := parse([]byte("name: x\nsandbox:\n  backend: docker\n  image: \"--privileged node\"\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "not an image reference") {
+		t.Errorf("odd image accepted: %v", err)
+	}
+	p, err = parse([]byte("name: x\nsandbox:\n  backend: docker\n  image: ghcr.io/x/y@sha256:0123\n"), "t.yml")
+	if err != nil || p.Sandbox.Image != "ghcr.io/x/y@sha256:0123" {
+		t.Errorf("docker image: %+v %v", p.Sandbox, err)
+	}
+}
+
+func TestLockScope(t *testing.T) {
+	for in, want := range map[string]LockScope{"": ScopeList, "list": ScopeList, "item": ScopeItem} {
+		text := "name: x\nlock:\n  enabled: true\n"
+		if in != "" {
+			text += "  scope: " + in + "\n"
+		}
+		p, err := parse([]byte(text), "t.yml")
+		if err != nil || p.Lock.Scope != want {
+			t.Errorf("scope %q: got %q, %v", in, p.Lock.Scope, err)
+		}
+	}
+	if _, err := parse([]byte("name: x\nlock:\n  scope: tool\n"), "t.yml"); err == nil || !strings.Contains(err.Error(), "lock.scope") {
+		t.Errorf("bad lock.scope accepted: %v", err)
+	}
+	if Default().Lock.Scope != ScopeList {
+		t.Errorf("default scope %q", Default().Lock.Scope)
+	}
+}
+
 func TestExecValidate(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	good := "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"

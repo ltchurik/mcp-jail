@@ -1,0 +1,25 @@
+cff-version: 1.2.0
+message: "If you use mcp-jail in your work, please cite it using the metadata below."
+type: software
+title: "mcp-jail"
+abstract: "Runtime jail for MCP servers: egress allowlist, filesystem scope, per-tool allow/deny/ask policy, rug-pull lock on tool definitions, content lint, budgets and a JSONL audit log. Linux namespaces via bubblewrap, sandbox-exec on macOS."
+authors:
+  - family-names: Tchurik
+    given-names: Ľubomír
+    orcid: "https://orcid.org/0009-0005-8053-9405"
+identifiers:
+  - type: doi
+    value: "10.5281/zenodo.24091844"
+    description: "Concept DOI, resolves to the latest version"
+repository-code: "https://github.com/ltchurik/mcp-jail"
+url: "https://lubomirtchurik.sk"
+license: Apache-2.0
+version: 0.8.0
+date-released: 2026-11-10
+keywords:
+  - mcp
+  - model-context-protocol
+  - sandbox
+  - security
+  - llm-agents
+  - go

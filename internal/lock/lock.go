@@ -149,25 +149,16 @@ func pending(name string) string { return filepath.Join(Dir(), name+".pending.js
 func Compute(k Kind, items []json.RawMessage) (Section, error) {
 	per := make(map[string]string, len(items))
 	for _, raw := range items {
-		var v map[string]any
-		if err := json.Unmarshal(raw, &v); err != nil {
+		key, hash, err := ItemHash(k, raw)
+		if err != nil {
 			return Section{}, err
-		}
-		key, _ := v[keyField(k)].(string)
-		if key == "" {
-			return Section{}, fmt.Errorf("%s item without %s", k, keyField(k))
 		}
 		if _, dup := per[key]; dup {
 			// two definitions under one name: a client may use either, so
 			// neither can be trusted
 			return Section{}, fmt.Errorf("%s: duplicate %s %q", k, keyField(k), key)
 		}
-		canon, err := json.Marshal(v) // map keys are sorted by encoding/json
-		if err != nil {
-			return Section{}, err
-		}
-		sum := sha256.Sum256(canon)
-		per[key] = hex.EncodeToString(sum[:])
+		per[key] = hash
 	}
 	names := make([]string, 0, len(per))
 	for n := range per {
@@ -182,6 +173,62 @@ func Compute(k Kind, items []json.RawMessage) (Section, error) {
 		h.Write([]byte{'\n'})
 	}
 	return Section{Hash: hex.EncodeToString(h.Sum(nil)), Items: per}, nil
+}
+
+// ItemHash returns the key (name, uri or uriTemplate) of one item of kind k
+// and the hash of its canonical JSON (sorted keys).
+func ItemHash(k Kind, raw json.RawMessage) (key, hash string, err error) {
+	var v map[string]any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return "", "", err
+	}
+	key, _ = v[keyField(k)].(string)
+	if key == "" {
+		return "", "", fmt.Errorf("%s item without %s", k, keyField(k))
+	}
+	canon, err := json.Marshal(v) // map keys are sorted by encoding/json
+	if err != nil {
+		return "", "", err
+	}
+	sum := sha256.Sum256(canon)
+	return key, hex.EncodeToString(sum[:]), nil
+}
+
+// Split partitions the items of one page of kind k into those the recorded
+// section already holds with the same hash (known) and the rest: added,
+// changed or unreadable items (held, with their keys where there is one).
+func Split(k Kind, items []json.RawMessage, recorded map[string]string) (known, held []json.RawMessage, heldKeys []string) {
+	for _, raw := range items {
+		key, hash, err := ItemHash(k, raw)
+		if err == nil && recorded[key] == hash {
+			known = append(known, raw)
+			continue
+		}
+		held = append(held, raw)
+		if key != "" {
+			heldKeys = append(heldKeys, key)
+		}
+	}
+	sort.Strings(heldKeys)
+	return known, held, heldKeys
+}
+
+// WithItems returns result with its list of kind k replaced by items; the
+// other fields (nextCursor, _meta) are kept.
+func WithItems(k Kind, result json.RawMessage, items []json.RawMessage) (json.RawMessage, error) {
+	var res map[string]json.RawMessage
+	if err := json.Unmarshal(result, &res); err != nil {
+		return nil, err
+	}
+	if items == nil {
+		items = []json.RawMessage{}
+	}
+	raw, err := json.Marshal(items)
+	if err != nil {
+		return nil, err
+	}
+	res[listField(k)] = raw
+	return json.Marshal(res)
 }
 
 // Page is one page of a list result: its items and the cursor for the
