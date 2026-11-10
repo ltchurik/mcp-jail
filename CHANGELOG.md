@@ -29,6 +29,10 @@
   response when they change, approved with `mcp-jail approve` (or `--only
   instructions:instructions`); `diff`, `show`, `locks` and the dashboard
   show the section.
+- `limits` are reloaded with `tools`, `ask` and `server_requests`: an
+  existing budget keeps its balance (clamped to the new cap), a new one
+  starts full, a zero rate removes one; the `reload` audit line names the
+  rates.
 
 ## v0.8.0 — 2026-11-10
 

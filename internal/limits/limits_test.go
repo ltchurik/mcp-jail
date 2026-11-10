@@ -3,6 +3,7 @@ package limits
 import (
 	"errors"
 	"net"
+	"strings"
 	"testing"
 	"time"
 )
@@ -27,6 +28,54 @@ func TestParseRate(t *testing.T) {
 func clock(start time.Time) (func() time.Time, func(time.Duration)) {
 	now := start
 	return func() time.Time { return now }, func(d time.Duration) { now = now.Add(d) }
+}
+
+func TestReload(t *testing.T) {
+	now, advance := clock(time.Unix(1_700_000_000, 0))
+	l := New(mustRate("2/1m"), Rate{}, Rate{}, map[string]Rate{"send_*": mustRate("1/1h")}, now)
+	l.Call("", 0)
+	l.Call("", 0)
+	if why := l.Call("", 0); why == "" {
+		t.Fatal("third call must be over budget")
+	}
+	// raised: the balance stays (0), the refill is faster: 10/1m gives one token in 6s
+	l.Reload(mustRate("10/1m"), mustRate("100B/1m"), mustRate("1KB/1h"), map[string]Rate{"send_*": mustRate("1/1h"), "get_*": mustRate("5/1m")})
+	if why := l.Call("", 0); why == "" {
+		t.Fatal("a raised cap does not hand out tokens at once")
+	}
+	advance(6 * time.Second)
+	if why := l.Call("", 0); why != "" {
+		t.Fatalf("after refill: %s", why)
+	}
+	advance(6 * time.Second) // one more global token for the next call
+	if why := l.Call("get_*", 0); why != "" {
+		t.Fatalf("a new tool budget starts full: %s", why)
+	}
+	advance(6 * time.Second)
+	if why := l.Call("", 200); !strings.Contains(why, "args_bytes") {
+		t.Fatalf("a new args budget applies: %q", why)
+	}
+	if l.Egress("h", 2048) || !l.hasEgress() {
+		t.Fatal("a new egress budget applies")
+	}
+	// lowered: the balance (full after a minute) is clamped to the new cap
+	l.Call("send_*", 0)
+	advance(time.Minute)
+	l.Reload(mustRate("1/1m"), Rate{}, Rate{}, nil)
+	if why := l.Call("", 0); why != "" {
+		t.Fatalf("clamped to 1, one call fits: %s", why)
+	}
+	if why := l.Call("", 0); why == "" {
+		t.Fatal("and no more")
+	}
+	if why := l.Call("send_*", 0); why != "" {
+		t.Fatalf("removed tool budget must not apply: %s", why)
+	}
+	if !l.Egress("h", 1<<20) || l.hasEgress() {
+		t.Fatal("removed egress budget must not apply")
+	}
+	var nilL *Limiter
+	nilL.Reload(mustRate("1/1m"), Rate{}, Rate{}, nil) // a nil limiter stays nil-safe
 }
 
 func TestCall(t *testing.T) {
