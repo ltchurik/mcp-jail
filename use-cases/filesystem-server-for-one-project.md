@@ -100,6 +100,8 @@ Audit log after a session:
   `default: deny` with only `read_*`/`list_*`/`search_*` allowed. The server
   cannot write even if a rule slipped through: the mount is read-only.
 - **Two projects.** List both in `read_write` and in every `under:`.
-- **Windows.** No sandbox yet; the policy, the argument constraints, the lock
-  and the audit still apply, the bind-mount does not. Keep the `under:`
-  constraints, they are what protects you there.
+- **Windows.** No native sandbox yet; the policy, the argument constraints,
+  the lock and the audit still apply, the bind-mount does not. Keep the
+  `under:` constraints, they are what protects you there, or use
+  `sandbox.backend: docker` (the project then lives at `/mnt/c/...` inside
+  the container and the `under:` paths must say so).

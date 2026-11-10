@@ -171,12 +171,22 @@ func safe(name string) string {
 // macOS and the BSDs, 108 on Linux, minus the terminator).
 const maxSocketPath = 100
 
+// SocketDir is the per-user directory under the temp dir that holds a
+// socket whose state path was too long. The uid keeps users apart in a
+// shared /tmp; Windows has no uid and a per-user temp dir already.
+func SocketDir() string {
+	if uid := os.Getuid(); uid >= 0 {
+		return filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", uid))
+	}
+	return filepath.Join(os.TempDir(), "mcp-jail")
+}
+
 // Listen creates the socket at path (replacing a stale one) and serves b.
 // A path too long for a Unix socket is replaced by one of the same name in
 // a per-user directory under the temp dir; Path reports what was used.
 func Listen(path string, b *Broker, h Hooks) (*Server, error) {
 	if len(path) > maxSocketPath {
-		dir := filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))
+		dir := SocketDir()
 		path = filepath.Join(dir, filepath.Base(path))
 		if len(path) > maxSocketPath {
 			return nil, fmt.Errorf("control: socket path too long even under %s", os.TempDir())

@@ -41,7 +41,12 @@ func Open(path, server string) (*Logger, error) {
 		return nil, err
 	}
 	// Never follow a symlink: a server that can write where the log lives
-	// must not be able to point it at another file.
+	// must not be able to point it at another file. O_NOFOLLOW does that
+	// atomically where it exists; the Lstat covers Windows, which has no
+	// such flag.
+	if st, err := os.Lstat(path); err == nil && st.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("%s: is a symlink", path)
+	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY|noFollow, 0o600)
 	if err != nil {
 		return nil, err
