@@ -122,6 +122,7 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		plan.Kind = "appcontainer"
 		plan.Hard = true
 		plan.Notes = append(plan.Notes, appContainerNotes(p)...)
+	case runtime.GOOS == "linux":
 		plan.Kind = "bwrap"
 		plan.Base = linuxBase
 		plan.Hard = true
