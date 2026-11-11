@@ -5,11 +5,14 @@ package sandbox
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func cmdExe() string {
@@ -81,16 +84,43 @@ func TestAppContainerIsolation(t *testing.T) {
 	if out, _ := exec.Command(icaclsPath(), granted).CombinedOutput(); strings.Contains(string(out), "S-1-15-2-") || strings.Contains(string(out), "Low Mandatory") {
 		t.Fatalf("container ACE or label left behind:\n%s", out)
 	}
-	curl := filepath.Join(filepath.Dir(cmdExe()), "curl.exe")
-	if _, err := os.Stat(curl); err != nil {
-		t.Skip("no curl.exe for the network check")
+	// The network probe is this test binary, started inside the container
+	// from its (granted) directory: TestNetProbeHelper does one HTTP GET.
+	self, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatal(err)
 	}
-	if c := run("none", nil, nil, curl+" -sS -I --max-time 20 https://example.com"); c == 0 {
+	probe := func(net string) int {
+		t.Helper()
+		code, err := RunAppContainer(AppContainerOptions{Profile: profile, Network: net, ReadOnly: []string{filepath.Dir(self)},
+			Set: []string{"MCP_JAIL_NET_PROBE=1"}, Command: []string{self, "-test.run=^TestNetProbeHelper$"}}, t.Logf)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return code
+	}
+	if c := probe("none"); c == 0 {
 		t.Fatal("network none: the container reached the internet")
 	}
-	if c := run("all", nil, nil, curl+" -sS -I --max-time 20 https://example.com"); c != 0 {
-		t.Fatalf("network all: curl exit %d", c)
+	if c := probe("all"); c != 0 {
+		t.Fatalf("network all: probe exit %d", c)
 	}
+}
+
+// TestNetProbeHelper is the body of the network probe above; on its own it
+// does nothing.
+func TestNetProbeHelper(t *testing.T) {
+	if os.Getenv("MCP_JAIL_NET_PROBE") != "1" {
+		t.Skip("helper for TestAppContainerIsolation")
+	}
+	c := &http.Client{Timeout: 20 * time.Second}
+	resp, err := c.Get("http://example.com/")
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "probe:", err)
+		os.Exit(1)
+	}
+	_ = resp.Body.Close()
+	os.Exit(0)
 }
 
 func TestPlainScrubsEnvAndKeepsExitCode(t *testing.T) {
