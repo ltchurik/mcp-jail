@@ -164,13 +164,13 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	acl := &aclGrants{sid: sidStr, record: filepath.Join(folder, aclRecord)}
 	acl.removeStale(logf)
 	for _, d := range o.ReadOnly {
-		if err := acl.grant(d, "(OI)(CI)(RX)"); err != nil {
+		if err := acl.grant(d, "(OI)(CI)(RX)", false); err != nil {
 			acl.removeAll(logf)
 			return 2, err
 		}
 	}
 	for _, d := range o.ReadWrite {
-		if err := acl.grant(d, "(OI)(CI)(M)"); err != nil {
+		if err := acl.grant(d, "(OI)(CI)(M)", true); err != nil {
 			acl.removeAll(logf)
 			return 2, err
 		}
@@ -398,6 +398,10 @@ type aclGrants struct {
 	record string
 	Grants []string `json:"grants"`
 	Denies []string `json:"denies"`
+	// Labels are the read_write directories given a Low integrity label:
+	// the container runs at low integrity and could not write to a
+	// medium-integrity directory even with the grant. Restored to Medium.
+	Labels []string `json:"labels"`
 }
 
 func icaclsPath() string {
@@ -425,12 +429,19 @@ func (a *aclGrants) save() error {
 }
 
 // grant gives the container SID the rights on dir (a directory: inherited
-// by everything below it) and records it.
-func (a *aclGrants) grant(dir, rights string) error {
+// by everything below it) and records it; a writable directory also gets
+// the Low integrity label the container needs to write there.
+func (a *aclGrants) grant(dir, rights string, writable bool) error {
 	if err := a.icacls(dir, "/grant", "*"+a.sid+":"+rights); err != nil {
 		return fmt.Errorf("appcontainer: %w", err)
 	}
 	a.Grants = append(a.Grants, dir)
+	if writable {
+		if err := a.icacls(dir, "/setintegritylevel", "(OI)(CI)L"); err != nil {
+			return fmt.Errorf("appcontainer: %w", err)
+		}
+		a.Labels = append(a.Labels, dir)
+	}
 	return a.save()
 }
 
@@ -460,7 +471,12 @@ func (a *aclGrants) removeAll(logf func(string, ...any)) {
 			logf("appcontainer: cleanup: %v", err)
 		}
 	}
-	a.Grants, a.Denies = nil, nil
+	for _, d := range a.Labels {
+		if err := a.icacls(d, "/setintegritylevel", "(OI)(CI)M"); err != nil {
+			logf("appcontainer: cleanup: %v", err)
+		}
+	}
+	a.Grants, a.Denies, a.Labels = nil, nil, nil
 	_ = os.Remove(a.record)
 }
 
@@ -471,8 +487,8 @@ func (a *aclGrants) removeStale(logf func(string, ...any)) {
 		return
 	}
 	var old aclGrants
-	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0) {
-		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies))
+	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0 || len(old.Labels) > 0) {
+		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies)+len(old.Labels))
 		old.sid, old.record = a.sid, a.record
 		old.removeAll(logf)
 	}

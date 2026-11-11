@@ -42,39 +42,53 @@ func TestAppContainerIsolation(t *testing.T) {
 	profile := profileName("test-" + hex.EncodeToString(rnd[:]))
 	t.Cleanup(func() { _ = deleteProfile(profile) })
 
-	run := func(net string, ro []string, script string) int {
+	run := func(net string, ro, rw []string, script string) int {
 		t.Helper()
-		code, err := RunAppContainer(AppContainerOptions{Profile: profile, Network: net, ReadOnly: ro,
+		code, err := RunAppContainer(AppContainerOptions{Profile: profile, Network: net, ReadOnly: ro, ReadWrite: rw,
 			Command: []string{cmdExe(), "/c", script}}, t.Logf)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return code
 	}
-	if c := run("none", []string{granted}, "type "+filepath.Join(granted, "f.txt")+" >NUL"); c != 0 {
+	diagnose := func() {
+		t.Helper()
+		out, _ := exec.Command(icaclsPath(), filepath.Join(granted, "f.txt")).CombinedOutput()
+		t.Logf("acl of the file after the run:\n%s", out)
+		_ = run("none", []string{granted}, nil, "whoami /all & icacls "+filepath.Join(granted, "f.txt"))
+	}
+	if c := run("none", []string{granted}, nil, "type "+filepath.Join(granted, "f.txt")+" >NUL"); c != 0 {
+		diagnose()
 		t.Fatalf("granted file unreadable: exit %d", c)
 	}
-	if c := run("none", []string{granted}, "type "+filepath.Join(outside, "f.txt")+" >NUL"); c == 0 {
+	if c := run("none", []string{granted}, nil, "type "+filepath.Join(outside, "f.txt")+" >NUL"); c == 0 {
 		t.Fatal("a file outside the granted directories was readable")
 	}
-	if c := run("none", []string{granted}, "echo x > "+filepath.Join(granted, "new.txt")); c == 0 {
+	if c := run("none", []string{granted}, nil, "echo x > "+filepath.Join(granted, "new.txt")); c == 0 {
 		t.Fatal("a read-only grant allowed a write")
 	}
 	if _, err := os.Stat(filepath.Join(granted, "new.txt")); err == nil {
 		t.Fatal("new.txt was created through a read-only grant")
 	}
-	// the grant is gone once the server has exited
-	if out, _ := exec.Command(icaclsPath(), granted).CombinedOutput(); strings.Contains(string(out), "S-1-15-2-") {
-		t.Fatalf("container ACE left behind:\n%s", out)
+	if c := run("none", nil, []string{granted}, "echo x > "+filepath.Join(granted, "rw.txt")); c != 0 {
+		diagnose()
+		t.Fatalf("a read_write grant refused a write: exit %d", c)
+	}
+	if _, err := os.Stat(filepath.Join(granted, "rw.txt")); err != nil {
+		t.Fatal("rw.txt was not created through a read_write grant")
+	}
+	// the grant and the label are gone once the server has exited
+	if out, _ := exec.Command(icaclsPath(), granted).CombinedOutput(); strings.Contains(string(out), "S-1-15-2-") || strings.Contains(string(out), "Low Mandatory") {
+		t.Fatalf("container ACE or label left behind:\n%s", out)
 	}
 	curl := filepath.Join(filepath.Dir(cmdExe()), "curl.exe")
 	if _, err := os.Stat(curl); err != nil {
 		t.Skip("no curl.exe for the network check")
 	}
-	if c := run("none", nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c == 0 {
+	if c := run("none", nil, nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c == 0 {
 		t.Fatal("network none: the container reached the internet")
 	}
-	if c := run("all", nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c != 0 {
+	if c := run("all", nil, nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c != 0 {
 		t.Fatalf("network all: curl exit %d", c)
 	}
 }

@@ -42,7 +42,14 @@ func TestBuildDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if argv[0] != "env" || argv[len(argv)-2] != "srv" || argv[len(argv)-1] != "--flag" {
+	if runtime.GOOS == "windows" { // no env -i: the launcher in plain mode
+		if argv[1] != AppContainerCommand || !contains(argv, "--plain") || contains(argv, "--profile") {
+			t.Fatalf("argv = %v", argv)
+		}
+	} else if argv[0] != "env" {
+		t.Fatalf("argv = %v", argv)
+	}
+	if argv[len(argv)-2] != "srv" || argv[len(argv)-1] != "--flag" {
 		t.Fatalf("argv = %v", argv)
 	}
 	if !contains(argv, "HTTP_PROXY=http://127.0.0.1:1") {
