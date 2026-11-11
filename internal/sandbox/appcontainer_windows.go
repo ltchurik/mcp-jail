@@ -127,12 +127,11 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	}
 	env := mergeEnv(windowsBaseEnv(), passthroughEnv(o.Env), o.Set)
 	// Whatever ends this process ends the server too: the job dies with
-	// its last handle, which is ours. Best effort: a host that forbids
-	// nested jobs still gets the sandbox.
-	if job, err := keepTogether(); err != nil {
+	// its last handle, which is ours and stays open until we exit (closing
+	// it earlier would kill us as well, we are a member). Best effort: a
+	// host that forbids nested jobs still gets the sandbox.
+	if _, err := keepTogether(); err != nil {
 		logf("appcontainer: job object: %v (the server may outlive the jail)", err)
-	} else {
-		defer func() { _ = syscall.CloseHandle(job) }()
 	}
 	if o.Plain {
 		return runPlainWindows(exe, o, env)
