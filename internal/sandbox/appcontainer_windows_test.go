@@ -57,11 +57,11 @@ func TestAppContainerIsolation(t *testing.T) {
 		t.Logf("acl of the file after the run:\n%s", out)
 		_ = run("none", []string{granted}, nil, "whoami /all & icacls "+filepath.Join(granted, "f.txt"))
 	}
-	if c := run("none", []string{granted}, nil, "type "+filepath.Join(granted, "f.txt")+" >NUL"); c != 0 {
+	if c := run("none", []string{granted}, nil, "type "+filepath.Join(granted, "f.txt")); c != 0 {
 		diagnose()
 		t.Fatalf("granted file unreadable: exit %d", c)
 	}
-	if c := run("none", []string{granted}, nil, "type "+filepath.Join(outside, "f.txt")+" >NUL"); c == 0 {
+	if c := run("none", []string{granted}, nil, "type "+filepath.Join(outside, "f.txt")); c == 0 {
 		t.Fatal("a file outside the granted directories was readable")
 	}
 	if c := run("none", []string{granted}, nil, "echo x > "+filepath.Join(granted, "new.txt")); c == 0 {
@@ -85,10 +85,10 @@ func TestAppContainerIsolation(t *testing.T) {
 	if _, err := os.Stat(curl); err != nil {
 		t.Skip("no curl.exe for the network check")
 	}
-	if c := run("none", nil, nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c == 0 {
+	if c := run("none", nil, nil, curl+" -sS -I --max-time 20 https://example.com"); c == 0 {
 		t.Fatal("network none: the container reached the internet")
 	}
-	if c := run("all", nil, nil, curl+" -sS -o NUL --max-time 20 https://example.com"); c != 0 {
+	if c := run("all", nil, nil, curl+" -sS -I --max-time 20 https://example.com"); c != 0 {
 		t.Fatalf("network all: curl exit %d", c)
 	}
 }

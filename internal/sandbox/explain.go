@@ -120,7 +120,7 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		return plan
 	case runtime.GOOS == "windows":
 		plan.Kind = "appcontainer"
-		plan.Hard = true
+		plan.Hard = p.Network.Mode != policy.NetAllowlist // allowlist is refused: nothing is enforced
 		plan.Notes = append(plan.Notes, appContainerNotes(p)...)
 	case runtime.GOOS == "linux":
 		plan.Kind = "bwrap"
