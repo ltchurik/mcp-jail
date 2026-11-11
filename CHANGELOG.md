@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.9.0 — 2026-11-11
+
+Windows: binaries in every release, the test suite on Windows in CI, the Docker backend working on a Windows host, and a native sandbox: `sandbox.backend: appcontainer` runs the server as an AppContainer process with the policy's directories granted for the run and the network capabilities the mode calls for.
 
 ### Added
 
