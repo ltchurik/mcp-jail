@@ -96,6 +96,9 @@ func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error)
 		if len(p.Exec.Allow) > 0 {
 			return nil, "", "", fmt.Errorf("exec.allow cannot be enforced with sandbox.disabled")
 		}
+		if runtime.GOOS == "windows" { // no `env -i` there
+			return buildWindowsPlain(p, s, "sandbox disabled by policy")
+		}
 		return append([]string{"env", "-i"}, append(env, s.Command...)...), "sandbox disabled by policy", "", nil
 	}
 	if err := checkExec(p); err != nil {
@@ -114,12 +117,19 @@ func build(p *policy.Policy, s Spec) (argv []string, how, dir string, err error)
 			return nil, "", "", fmt.Errorf("sandbox.backend sandbox-exec needs macOS (this is %s); use auto or docker", runtime.GOOS)
 		}
 		return buildDarwin(p, s, env)
+	case policy.BackendAppContainer:
+		if runtime.GOOS != "windows" {
+			return nil, "", "", fmt.Errorf("sandbox.backend appcontainer needs Windows (this is %s); use auto or docker", runtime.GOOS)
+		}
+		return buildWindows(p, s)
 	}
 	switch runtime.GOOS {
 	case "linux":
 		return buildLinux(p, s, env)
 	case "darwin":
 		return buildDarwin(p, s, env)
+	case "windows":
+		return buildWindows(p, s)
 	}
 	if len(p.Exec.Allow) > 0 {
 		return nil, "", "", fmt.Errorf("exec.allow cannot be enforced on %s (no sandbox)", runtime.GOOS)

@@ -4,6 +4,17 @@
 
 ### Added
 
+- Windows native sandbox: `sandbox.backend: appcontainer` (what `auto` picks
+  on Windows) runs the server as an AppContainer process. The policy's
+  directories are granted to the container's SID for the run (`icacls`
+  entries, removed at exit, stale ones removed at the next start), the
+  toolchain and working directories read-only, mcp-jail's own files denied;
+  `network.mode: none` is a process without network capabilities, `all`
+  grants them; `allowlist` and `exec.allow` are refused. The container has a
+  private home and temp under `%LOCALAPPDATA%\Packages`. `sandbox.disabled`
+  on Windows now works too (there is no `env -i`): the same launcher scrubs
+  the environment and ties the server to the jail. `doctor`, `show` and
+  `wrap` know the backend.
 - Windows binaries (`windows_amd64`, `windows_arm64`, as `.zip`) in every
   release, attested like the tarballs; the test suite runs on Windows in CI.
 

@@ -94,12 +94,20 @@ func TestDarwinAndWindows(t *testing.T) {
 			t.Fatalf("docker on darwin must mention the allowlist limit: %+v", c)
 		}
 	}
-	r = Run(fake("windows", map[string]string{"docker": `C:\docker.exe`}, map[string]string{`C:\docker.exe info`: "28.0.1"}, nil), "test")
-	if !r.Usable || r.Native != "" || !r.Docker || !strings.Contains(r.Summary, "use sandbox.backend: docker") {
+	r = Run(fake("windows", map[string]string{"icacls": `C:\Windows\System32\icacls.exe`, "docker": `C:\docker.exe`}, map[string]string{`C:\docker.exe info`: "28.0.1"}, nil), "test")
+	if !r.Usable || r.Native != "appcontainer" || !r.Docker || status(r, "appcontainer") != OK {
 		t.Fatalf("windows: %+v", r)
 	}
+	r = Run(fake("windows", map[string]string{"docker": `C:\docker.exe`}, map[string]string{`C:\docker.exe info`: "28.0.1"}, nil), "test")
+	if !r.Usable || r.Native != "" || !r.Docker || !strings.Contains(r.Summary, "use sandbox.backend: docker") {
+		t.Fatalf("windows without icacls: %+v", r)
+	}
 	r = Run(fake("windows", nil, nil, nil), "test")
-	if r.Usable || status(r, "native sandbox") != Missing || status(r, "docker") != Missing {
+	if r.Usable || status(r, "appcontainer") != Missing || status(r, "docker") != Missing {
 		t.Fatalf("bare windows: %+v", r)
+	}
+	r = Run(fake("freebsd", nil, nil, nil), "test")
+	if r.Usable || status(r, "native sandbox") != Missing {
+		t.Fatalf("bare freebsd: %+v", r)
 	}
 }

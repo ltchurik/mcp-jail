@@ -83,7 +83,7 @@ sudo apt install bubblewrap      # Debian / Ubuntu
 sudo dnf install bubblewrap      # Fedora
 ```
 
-Without bubblewrap, on Windows, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)). `mcp-jail doctor` says what this host can do: bubblewrap and its version, whether unprivileged user namespaces are allowed (and which sysctl closes them), `sandbox-exec`, a docker or podman daemon, and where the state lives; it exits 1 when no sandbox at all is usable.
+On Windows the sandbox is an [AppContainer](#windows-sandbox-appcontainer); nothing to install. Without bubblewrap, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)). `mcp-jail doctor` says what this host can do: bubblewrap and its version, whether unprivileged user namespaces are allowed (and which sysctl closes them), `sandbox-exec`, a docker or podman daemon, and where the state lives; it exits 1 when no sandbox at all is usable.
 
 ## Quick start
 
@@ -237,6 +237,7 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail, see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
 | `network.mode: allowlist` (macOS) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy, and the `sandbox-exec` profile lets the server open **only** that loopback port | **Hard** for the network (HTTP(S) via proxy only); a server that ignores `HTTP_PROXY` has no network at all |
 | `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
+| AppContainer (Windows) | A lowbox process: its token passes an access check only where the container SID is granted too, so the user's files are out of reach except the policy's directories (granted read+execute or modify for the run), the system stays readable, `network.mode: none` is a process without the network capabilities. No PID isolation | **Hard** for the filesystem and `none` / `all`; `allowlist` is refused (the proxy on loopback is unreachable from a container) |
 | `sandbox.backend: docker` | A container from `sandbox.image` with every capability dropped, `no-new-privileges`, a read-only root and a private `/tmp`; the policy's paths bind-mounted at their host paths, nothing else of the host. `network.mode: none` is a container without a network; `allowlist` mounts the egress relay into the container (Linux host only) | **Hard** (the image is the toolchain, so `exec.allow` does not apply) |
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `exec.allow` / `exec.sha256` | Each listed executable is made visible on its own (Linux: a read-only file bind, so its siblings do not exist in the jail; macOS: `process-exec` denied under the hidden trees, re-allowed for the listed files and the shared directories). A pinned digest is checked before start; a mismatch or a missing file refuses to start | **Hard** (the check is on the host before the jail starts: it catches an update, not someone who already writes to that directory) |
@@ -289,6 +290,14 @@ sandbox:
 An image named by tag gets the same warning a floating `npx` package gets (`run` audits it as `policy` / `warn`, `show` and `wrap` repeat it) with the `docker image inspect` line that prints the digest. A missing image is pulled quietly before the server starts, with one log line, instead of a progress bar on stderr while the client waits for the handshake; a pull that fails refuses the start.
 
 `network.mode: allowlist` stays **hard** on a Linux host: the container has no network and the egress relay's socket directory is mounted into it, with mcp-jail as the in-container shim (`net.ipv4.ip_unprivileged_port_start=0` lets it bind :53/:80/:443 unprivileged). Docker Desktop cannot pass a Unix socket into its VM, so on macOS and Windows the allowlist is refused rather than downgraded to a cooperative proxy: use `none`, `all`, or the native sandbox. `exec.allow` does not apply either, the image is the pin. `mcp-jail show` prints the image, `mcp-jail wrap --backend docker [--image …]` writes such policies.
+
+## Windows sandbox (AppContainer)
+
+On Windows `sandbox.backend: auto` (or `appcontainer`) runs the server as an [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) process, the isolation Store apps run under. An AppContainer token passes an access check only when both the user *and* the container (or a capability it holds) are granted, so the server sees Windows and Program Files (readable by every package), the policy's directories, and nothing else of yours: not the profile, not the other projects, not mcp-jail's own state. The policy means the same thing as elsewhere: `filesystem.read_only` directories are granted read+execute to the container's SID, `read_write` ones modify, the server's toolchain directory and the working directory read-only as under bubblewrap, and mcp-jail's own files inside a granted directory get a deny entry. `network.mode: none` is a process without the `internetClient` capability, which has no network at all; `all` grants internet and private-network access. The container gets a private home and temp folder (`%LOCALAPPDATA%\Packages\mcp-jail-<name>-<hash>\AC`, where npx and uvx caches survive between runs), and `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP` and `TMP` point there unless `sandbox.env` sets them.
+
+The grants are access-control entries on your directories, written with `icacls` when the jail starts and removed when the server exits; a run that was killed before its cleanup leaves them, and the next start of the same policy removes them first (the list is kept in the container's folder). They name the container's SID only: no other process can use them.
+
+What it does not do: `network.mode: allowlist` is refused, because Windows blocks an AppContainer's loopback connections and the filtering proxy is out of reach (use `none` or `all`, or `sandbox.backend: none` for the cooperative proxy); `exec.allow` is refused, since there is no process-exec filter (list the toolchain directory instead); there is no PID or mount namespace, the server sees the process list. `sandbox.disabled` on Windows still scrubs the environment and ends the server with the jail. `mcp-jail doctor` reports the backend.
 
 ## Headless approvals
 
@@ -495,7 +504,7 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 |---|---|---|
 | Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist. Or `sandbox.backend: docker` | ✓ |
 | macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
-| Windows | `sandbox.backend: docker` (Docker Desktop or podman with Linux containers; host paths at `/mnt/<drive>/…`; `network.mode` none or all). Native binaries ship; tests run on Windows in CI | ✓ (WSL for the native sandbox) |
+| Windows | AppContainer: the user's files hidden except the policy's directories (granted for the run), network none / all; no PID isolation, `allowlist` refused. Or `sandbox.backend: docker` (Docker Desktop or podman with Linux containers; host paths at `/mnt/<drive>/…`) | ✓ |
 | Remote server (`server.url`) | none needed: the jail is the only process talking to the server, over a guarded HTTPS client | ✓ |
 
 `sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
@@ -552,7 +561,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] `lock.first: review`, `mcp-jail show`, `exec.allow` / `exec.sha256` pins (v0.6)
 - [x] Content lint on definitions and results, `server_requests`, `limits`, `tools.secrets`, launcher pin warnings (v0.7)
 - [x] `lock.scope: item`, Docker / Podman backend (v0.8)
-- [ ] Windows native sandbox (AppContainer; the Docker backend covers Windows today)
+- [x] Windows native sandbox via AppContainer (v0.9)
 
 ## Non-goals
 

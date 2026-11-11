@@ -23,7 +23,7 @@ type Options struct {
 	Bin       string // mcp-jail binary to put in "command" (absolute path recommended)
 	PolicyDir string // where <name>.yml files go
 	Network   string // network.mode for new policies: none | all
-	Backend   string // sandbox.backend for new policies: auto | bwrap | sandbox-exec | docker | none
+	Backend   string // sandbox.backend for new policies: auto | bwrap | sandbox-exec | appcontainer | docker | none
 	Image     string // sandbox.image for new policies (docker backend)
 	Force     bool   // overwrite existing policy files
 	DryRun    bool   // compute everything, write nothing
@@ -410,7 +410,7 @@ func Policy(name, command string, args, envKeys []string, network string, warnin
 	if backend == "" {
 		backend = "auto"
 	}
-	b.WriteString("  backend: " + backend + "        # auto (bwrap / sandbox-exec) | bwrap | sandbox-exec | docker | none\n")
+	b.WriteString("  backend: " + backend + "        # auto (bwrap / sandbox-exec / appcontainer) | bwrap | sandbox-exec | appcontainer | docker | none\n")
 	if image != "" {
 		b.WriteString("  image: " + image + "\n")
 	} else if backend == "docker" {

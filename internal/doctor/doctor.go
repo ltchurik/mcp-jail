@@ -97,6 +97,15 @@ func Run(h Host, version string) Report {
 		} else {
 			add(Check{Status: Missing, Name: "sandbox-exec", Detail: "not found", Hint: "it ships with macOS; sandbox.backend: docker is the alternative"})
 		}
+	case "windows":
+		// AppContainer is part of Windows 8 and later; icacls (System32)
+		// is how the policy's directories are granted to the container.
+		if path, err := h.Look("icacls"); err == nil {
+			add(Check{Status: OK, Name: "appcontainer", Detail: "Windows AppContainer; grants via " + path})
+			r.Native = "appcontainer"
+		} else {
+			add(Check{Status: Missing, Name: "appcontainer", Detail: "icacls.exe not found in PATH", Hint: "it ships in %SystemRoot%\\System32; sandbox.backend: docker is the alternative"})
+		}
 	default:
 		add(Check{Status: Missing, Name: "native sandbox", Detail: "none on " + h.GOOS, Hint: "sandbox.backend: docker is the sandbox here (Docker Desktop or podman)"})
 	}

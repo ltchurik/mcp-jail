@@ -71,11 +71,12 @@ const (
 type Backend string
 
 const (
-	BackendAuto        Backend = "auto"
-	BackendBwrap       Backend = "bwrap"
-	BackendSandboxExec Backend = "sandbox-exec"
-	BackendDocker      Backend = "docker"
-	BackendNone        Backend = "none"
+	BackendAuto         Backend = "auto"
+	BackendBwrap        Backend = "bwrap"
+	BackendSandboxExec  Backend = "sandbox-exec"
+	BackendAppContainer Backend = "appcontainer"
+	BackendDocker       Backend = "docker"
+	BackendNone         Backend = "none"
 )
 
 // SecretsMode is what a credential found in tool arguments does.
@@ -242,9 +243,10 @@ type Policy struct {
 		// Backend none is the same thing.
 		Disabled bool `yaml:"disabled"`
 		// Backend picks the isolation: auto (default: bwrap on Linux,
-		// sandbox-exec on macOS), bwrap, sandbox-exec, docker (a container
-		// from Image with the policy's paths bind-mounted; works wherever
-		// docker or podman does, Windows included) or none.
+		// sandbox-exec on macOS, appcontainer on Windows), bwrap,
+		// sandbox-exec, appcontainer, docker (a container from Image with
+		// the policy's paths bind-mounted; works wherever docker or podman
+		// does) or none.
 		Backend Backend `yaml:"backend"`
 		// Image is the container image for the docker backend. Empty: derived
 		// from the launcher (node/npx, bun/bunx, uv/uvx, python), otherwise
@@ -530,9 +532,9 @@ func (p *Policy) Validate() error {
 		p.Sandbox.Backend = BackendAuto
 	case BackendNone:
 		p.Sandbox.Disabled = true
-	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendDocker:
+	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendAppContainer, BackendDocker:
 	default:
-		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|docker|none, got %q", p.Sandbox.Backend)
+		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|appcontainer|docker|none, got %q", p.Sandbox.Backend)
 	}
 	if p.Sandbox.Disabled {
 		p.Sandbox.Backend = BackendNone
@@ -1048,10 +1050,11 @@ audit:
 
 sandbox:
   disabled: false
-  # auto (bwrap on Linux, sandbox-exec on macOS) | bwrap | sandbox-exec | none
+  # auto (bwrap on Linux, sandbox-exec on macOS, appcontainer on Windows)
+  #   | bwrap | sandbox-exec | appcontainer | none
   # docker: run the server in a container (docker or podman) with the policy's
-  #         paths bind-mounted; the only sandbox on Windows. network allowlist
-  #         needs a Linux host; exec pins do not apply (the image is the pin)
+  #         paths bind-mounted, on any host. network allowlist needs a Linux
+  #         host; exec pins do not apply (the image is the pin)
   backend: auto
   # image: node:22-slim         # docker only; derived from npx/uvx/python when omitted
   env: [PATH, HOME, LANG]       # NAME passes the host's value through, NAME=value sets one
