@@ -103,6 +103,12 @@ func main() {
 			fmt.Fprintln(os.Stderr, "mcp-jail:", err)
 		}
 		os.Exit(code)
+	case sandbox.AppContainerCommand: // internal: the Windows launcher
+		code, err := cmdAppContainer(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mcp-jail:", err)
+		}
+		os.Exit(code)
 	case "version", "--version", "-v":
 		fmt.Println("mcp-jail", version)
 	case "help", "-h", "--help":
@@ -432,6 +438,32 @@ func cmdShim(args []string) (int, error) {
 		}
 	}
 	return egress.RunShim(*sock, hosts, *uid, *gid, *plain, fs.Args(), logf)
+}
+
+// cmdAppContainer is the Windows launcher: see sandbox.RunAppContainer.
+func cmdAppContainer(args []string) (int, error) {
+	fs := flag.NewFlagSet(sandbox.AppContainerCommand, flag.ContinueOnError)
+	var o sandbox.AppContainerOptions
+	fs.StringVar(&o.Profile, "profile", "", "AppContainer profile name")
+	fs.BoolVar(&o.Plain, "plain", false, "no container: environment and lifetime only")
+	fs.StringVar(&o.Network, "net", "none", "none | all")
+	fs.StringVar(&o.Cwd, "cwd", "", "working directory")
+	list := func(dst *[]string) func(string) error {
+		return func(v string) error { *dst = append(*dst, v); return nil }
+	}
+	fs.Func("ro", "directory granted read+execute", list(&o.ReadOnly))
+	fs.Func("rw", "directory granted modify", list(&o.ReadWrite))
+	fs.Func("deny", "path denied inside a granted directory", list(&o.Deny))
+	fs.Func("env", "sandbox.env entry", list(&o.Env))
+	fs.Func("set", "NAME=value to add", list(&o.Set))
+	if err := fs.Parse(args); err != nil {
+		return 2, err
+	}
+	o.Command = fs.Args()
+	if !o.Plain && o.Profile == "" {
+		return 2, errors.New("appcontainer: --profile is required")
+	}
+	return sandbox.RunAppContainer(o, logf)
 }
 
 func cmdInit(args []string) error {

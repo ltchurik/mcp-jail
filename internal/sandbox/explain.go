@@ -14,8 +14,8 @@ import (
 // derived with the same helpers Build uses (toolchain prefix, working
 // directory, masks), so it names the mounts a server really gets.
 type Plan struct {
-	// Kind is bwrap, sandbox-exec, docker, none (a platform without a
-	// sandbox), disabled (sandbox.disabled) or remote (server.url).
+	// Kind is bwrap, sandbox-exec, appcontainer, docker, none (a platform
+	// without a sandbox), disabled (sandbox.disabled) or remote (server.url).
 	Kind string `json:"kind"`
 	// Image is the container image of the docker backend; "" otherwise.
 	Image string `json:"image,omitempty"`
@@ -114,6 +114,14 @@ func Explain(p *policy.Policy, s Spec) Plan {
 		return plan
 	case p.Sandbox.Backend == policy.BackendDocker:
 		return explainDocker(p, s, plan)
+	case p.Sandbox.Backend == policy.BackendAppContainer && runtime.GOOS != "windows":
+		plan.Kind = "appcontainer"
+		plan.Notes = append(plan.Notes, appContainerNotes(p)...)
+		return plan
+	case runtime.GOOS == "windows":
+		plan.Kind = "appcontainer"
+		plan.Hard = p.Network.Mode != policy.NetAllowlist // allowlist is refused: nothing is enforced
+		plan.Notes = append(plan.Notes, appContainerNotes(p)...)
 	case runtime.GOOS == "linux":
 		plan.Kind = "bwrap"
 		plan.Base = linuxBase
