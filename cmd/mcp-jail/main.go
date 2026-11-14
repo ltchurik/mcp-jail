@@ -335,8 +335,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = real
 		}
-		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow,
-			UID: os.Getuid(), GID: os.Getgid(), ResolvConf: resolv}
+		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow, ResolvConf: resolv}
 		for k, v := range egress.ProxyEnv() {
 			spec.Env[k] = v
 		}
@@ -422,9 +421,6 @@ func cmdShim(args []string) (int, error) {
 	fs := flag.NewFlagSet(sandbox.ShimCommand, flag.ContinueOnError)
 	sock := fs.String("socket", "", "relay socket")
 	allow := fs.String("allow", "", "comma-separated network.allow")
-	uid := fs.Int("uid", os.Getuid(), "uid for the server")
-	gid := fs.Int("gid", os.Getgid(), "gid for the server")
-	plain := fs.Bool("plain", false, "start the server as this user, without a nested user namespace (containers)")
 	if err := fs.Parse(args); err != nil {
 		return 2, err
 	}
@@ -437,7 +433,7 @@ func cmdShim(args []string) (int, error) {
 			hosts = append(hosts, h)
 		}
 	}
-	return egress.RunShim(*sock, hosts, *uid, *gid, *plain, fs.Args(), logf)
+	return egress.RunShim(*sock, hosts, fs.Args(), logf)
 }
 
 // cmdAppContainer is the Windows launcher: see sandbox.RunAppContainer.

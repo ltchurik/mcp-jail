@@ -2,6 +2,22 @@
 
 ## v0.9.1 — 2026-11-14
 
+Fix for the hard egress allowlist on Ubuntu 26.04, where AppArmor confines bubblewrap: the jail no longer needs any capability. Also a social preview banner at the top of the README.
+
+### Fixed
+
+- The hard egress allowlist on Ubuntu 26.04 (and any system whose AppArmor
+  confines bubblewrap): the shim could not bind :53 (`permission denied`)
+  because the `unpriv_bwrap` profile strips every capability from what
+  bubblewrap runs, `--cap-add` included. The jail no longer asks for any:
+  bubblewrap writes `0` into the jail's own
+  `net.ipv4.ip_unprivileged_port_start` before it executes the shim, which
+  then binds its ports as your normal uid and starts the server as a plain
+  child. The server's nested user namespace is gone: writing its id maps
+  needs `CAP_SYS_ADMIN` over the new namespace, which the same profile
+  denies, and it protected nothing once the shim itself is unprivileged.
+  Found by CI when `ubuntu-latest` moved to 26.04.
+
 ### Changed
 
 - The README opens with a social preview banner (`docs/social-preview.jpg`,

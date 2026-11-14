@@ -140,7 +140,7 @@ func TestBuildDockerHardEgress(t *testing.T) {
 	p := dockerPolicy()
 	p.Network.Mode = policy.NetAllowlist
 	p.Network.Allow = []string{"api.example.com", "127.0.0.1"}
-	eg := &Egress{Dir: "/tmp/relay", Exe: "/usr/local/bin/mcp-jail", Allow: p.Network.Allow, UID: 1000, GID: 1000, ResolvConf: "/tmp/relay/resolv.conf"}
+	eg := &Egress{Dir: "/tmp/relay", Exe: "/usr/local/bin/mcp-jail", Allow: p.Network.Allow, ResolvConf: "/tmp/relay/resolv.conf"}
 	argv, how, _, err := build(p, Spec{Command: []string{"srv"}, Egress: eg, Env: map[string]string{"HTTP_PROXY": "http://127.0.0.1:3128"}})
 	if err != nil {
 		t.Fatal(err)
@@ -150,7 +150,7 @@ func TestBuildDockerHardEgress(t *testing.T) {
 		"--network none", "--sysctl net.ipv4.ip_unprivileged_port_start=0",
 		"-v /tmp/relay/resolv.conf:/etc/resolv.conf:ro", "-v /tmp/relay:/run/mcp-jail", "-v /usr/local/bin/mcp-jail:/opt/mcp-jail/mcp-jail:ro",
 		"-e HTTP_PROXY=http://127.0.0.1:3128",
-		"python:3.12-slim /opt/mcp-jail/mcp-jail _egress-shim --plain --socket /run/mcp-jail/egress.sock --allow api.example.com,127.0.0.1 -- srv",
+		"python:3.12-slim /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.example.com,127.0.0.1 -- srv",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
