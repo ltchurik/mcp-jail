@@ -208,7 +208,7 @@ func buildDocker(p *policy.Policy, s Spec, env []string) ([]string, string, stri
 	}
 	args = append(args, image)
 	if hard {
-		args = append(args, jailExe, ShimCommand, "--plain",
+		args = append(args, jailExe, ShimCommand,
 			"--socket", jailRunDir+"/egress.sock",
 			"--allow", strings.Join(s.Egress.Allow, ","), "--")
 	}

@@ -10,9 +10,11 @@
   bubblewrap runs, `--cap-add` included. The jail no longer asks for any:
   bubblewrap writes `0` into the jail's own
   `net.ipv4.ip_unprivileged_port_start` before it executes the shim, which
-  then binds its ports as your normal uid; the server's nested user
-  namespace maps that uid onto itself. Found by CI when `ubuntu-latest`
-  moved to 26.04.
+  then binds its ports as your normal uid and starts the server as a plain
+  child. The server's nested user namespace is gone: writing its id maps
+  needs `CAP_SYS_ADMIN` over the new namespace, which the same profile
+  denies, and it protected nothing once the shim itself is unprivileged.
+  Found by CI when `ubuntu-latest` moved to 26.04.
 
 ## v0.9.0 — 2026-11-11
 

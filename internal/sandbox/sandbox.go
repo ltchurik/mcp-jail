@@ -50,7 +50,6 @@ type Egress struct {
 	Dir        string   // host directory holding egress.sock and resolv.conf
 	Exe        string   // mcp-jail binary, re-executed inside the jail as the shim
 	Allow      []string // network.allow
-	UID, GID   int      // ids the server runs as inside the jail
 	ResolvConf string   // file to mount as /etc/resolv.conf
 }
 
@@ -280,8 +279,7 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 	if hard {
 		args = append(args, jailExe, ShimCommand,
 			"--socket", jailRunDir+"/egress.sock",
-			"--allow", strings.Join(s.Egress.Allow, ","),
-			"--uid", strconv.Itoa(s.Egress.UID), "--gid", strconv.Itoa(s.Egress.GID), "--")
+			"--allow", strings.Join(s.Egress.Allow, ","), "--")
 	}
 	args = append(args, s.Command...)
 

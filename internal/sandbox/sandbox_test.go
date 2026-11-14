@@ -137,7 +137,7 @@ func TestBuildHardEgress(t *testing.T) {
 		t.Fatal("allowlist without egress relay must fail")
 	}
 
-	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, UID: 1001, GID: 1002, ResolvConf: "/tmp/relay/resolv.conf"}
+	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, ResolvConf: "/tmp/relay/resolv.conf"}
 	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, Egress: eg, Env: map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}})
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +149,7 @@ func TestBuildHardEgress(t *testing.T) {
 		"--ro-bind /tmp/relay/resolv.conf /etc/resolv.conf",
 		"--bind /tmp/relay /run/mcp-jail", "--ro-bind /x/mcp-jail /opt/mcp-jail/mcp-jail",
 		"--setenv HTTPS_PROXY http://127.0.0.1:3128",
-		"-- /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.github.com,*.githubusercontent.com --uid 1001 --gid 1002 -- /usr/bin/true -x",
+		"-- /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.github.com,*.githubusercontent.com -- /usr/bin/true -x",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
@@ -174,6 +174,17 @@ func TestBuildHardEgress(t *testing.T) {
 	if b, _ := io.ReadAll(cmd.ExtraFiles[0]); string(b) != "0" {
 		t.Errorf("sysctl pipe holds %q, want 0", b)
 	}
+	if !strings.Contains(how, "egress allowlist (hard)") {
+		t.Errorf("how = %q", how)
+	}
+	if HardEgress(p) != true {
+		t.Error("HardEgress should be true on linux with sandbox enabled")
+	}
+	p.Sandbox.Disabled = true
+	if HardEgress(p) {
+		t.Error("HardEgress must be false when the sandbox is disabled")
+	}
+	p.Sandbox.Disabled = false
 	// The soft modes neither write the sysctl nor carry the pipe.
 	p.Network.Mode = policy.NetNone
 	argv, _, _, err = build(p, Spec{Command: []string{"/usr/bin/true"}})
@@ -185,16 +196,6 @@ func TestBuildHardEgress(t *testing.T) {
 	}
 	if cmd, _, err := Build(p, Spec{Command: []string{"/usr/bin/true"}}); err != nil || len(cmd.ExtraFiles) != 0 {
 		t.Errorf("network none: ExtraFiles = %v, err = %v", cmd.ExtraFiles, err)
-	}
-	if !strings.Contains(how, "egress allowlist (hard)") {
-		t.Errorf("how = %q", how)
-	}
-	if HardEgress(p) != true {
-		t.Error("HardEgress should be true on linux with sandbox enabled")
-	}
-	p.Sandbox.Disabled = true
-	if HardEgress(p) {
-		t.Error("HardEgress must be false when the sandbox is disabled")
 	}
 }
 

@@ -273,7 +273,7 @@ jail (netns: lo only)                          host (mcp-jail process)
 - Anything else (raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed) fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
 - Needs unprivileged user namespaces (same requirement as bubblewrap itself) and nothing else: no `CAP_NET_ADMIN`, no `CAP_NET_BIND_SERVICE`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
 
-Nothing inside the jail holds a capability. Before bubblewrap executes the shim it writes `0` into the jail's own `net.ipv4.ip_unprivileged_port_start` (a per-namespace sysctl, written through `--file` while bubblewrap still has `CAP_NET_ADMIN` over the new namespace), so the shim binds :53/:80/:443 as your normal uid; the server is started in a nested user namespace under the same uid/gid. This holds where bubblewrap is confined by AppArmor and its children get no capabilities at all (Ubuntu 26.04).
+Nothing inside the jail holds a capability. Before bubblewrap executes the shim it writes `0` into the jail's own `net.ipv4.ip_unprivileged_port_start` (a per-namespace sysctl, written through `--file` while bubblewrap still has `CAP_NET_ADMIN` over the new namespace), so the shim binds :53/:80/:443 as your normal uid and the server is a plain child of it: same uid/gid, nothing privileged to inherit. This holds where bubblewrap is confined by AppArmor and its children get no capabilities at all (Ubuntu 26.04).
 
 ## Docker backend
 
