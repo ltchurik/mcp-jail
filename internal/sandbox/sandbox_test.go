@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 )
 
 func TestToolchainPrefix(t *testing.T) {
+	skipWindows(t, "symlinks and extension-less executables")
 	root := t.TempDir()
 	bin := filepath.Join(root, "node-v22", "bin")
 	if err := os.MkdirAll(bin, 0o750); err != nil {
@@ -41,7 +43,14 @@ func TestBuildDisabled(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if argv[0] != "env" || argv[len(argv)-2] != "srv" || argv[len(argv)-1] != "--flag" {
+	if runtime.GOOS == "windows" { // no env -i: the launcher in plain mode
+		if argv[1] != AppContainerCommand || !contains(argv, "--plain") || contains(argv, "--profile") {
+			t.Fatalf("argv = %v", argv)
+		}
+	} else if argv[0] != "env" {
+		t.Fatalf("argv = %v", argv)
+	}
+	if argv[len(argv)-2] != "srv" || argv[len(argv)-1] != "--flag" {
 		t.Fatalf("argv = %v", argv)
 	}
 	if !contains(argv, "HTTP_PROXY=http://127.0.0.1:1") {
@@ -128,18 +137,19 @@ func TestBuildHardEgress(t *testing.T) {
 		t.Fatal("allowlist without egress relay must fail")
 	}
 
-	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, UID: 1001, GID: 1002, ResolvConf: "/tmp/relay/resolv.conf"}
+	eg := &Egress{Dir: "/tmp/relay", Exe: "/x/mcp-jail", Allow: p.Network.Allow, ResolvConf: "/tmp/relay/resolv.conf"}
 	argv, how, _, err := build(p, Spec{Command: []string{"/usr/bin/true", "-x"}, Egress: eg, Env: map[string]string{"HTTPS_PROXY": "http://127.0.0.1:3128"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{
-		"--unshare-user --uid 0 --gid 0 --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP", "--unshare-net",
+		"--unshare-user --unshare-pid",
+		"--unshare-net --bind /proc/sys/net/ipv4 /proc/sys/net/ipv4 --file 3 /proc/sys/net/ipv4/ip_unprivileged_port_start --ro-bind /proc/sys/net/ipv4 /proc/sys/net/ipv4",
 		"--ro-bind /tmp/relay/resolv.conf /etc/resolv.conf",
 		"--bind /tmp/relay /run/mcp-jail", "--ro-bind /x/mcp-jail /opt/mcp-jail/mcp-jail",
 		"--setenv HTTPS_PROXY http://127.0.0.1:3128",
-		"-- /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.github.com,*.githubusercontent.com --uid 1001 --gid 1002 -- /usr/bin/true -x",
+		"-- /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.github.com,*.githubusercontent.com -- /usr/bin/true -x",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
@@ -147,6 +157,22 @@ func TestBuildHardEgress(t *testing.T) {
 	}
 	if strings.Contains(joined, "--unshare-user-try") || strings.Contains(joined, "--ro-bind-try /etc/resolv.conf") {
 		t.Errorf("hard egress must not use the soft variants: %s", joined)
+	}
+	// Nothing in the jail holds a capability: AppArmor-confined bwrap strips
+	// them anyway, and the unprivileged-port sysctl makes them unnecessary.
+	if strings.Contains(joined, "--cap-add") || strings.Contains(joined, "--uid 0") {
+		t.Errorf("hard egress must not ask for capabilities or root: %s", joined)
+	}
+	// Build hands bwrap the sysctl value on fd 3.
+	cmd, _, err := Build(p, Spec{Command: []string{"/usr/bin/true"}, Egress: eg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("ExtraFiles = %v, want the sysctl pipe", cmd.ExtraFiles)
+	}
+	if b, _ := io.ReadAll(cmd.ExtraFiles[0]); string(b) != "0" {
+		t.Errorf("sysctl pipe holds %q, want 0", b)
 	}
 	if !strings.Contains(how, "egress allowlist (hard)") {
 		t.Errorf("how = %q", how)
@@ -158,9 +184,23 @@ func TestBuildHardEgress(t *testing.T) {
 	if HardEgress(p) {
 		t.Error("HardEgress must be false when the sandbox is disabled")
 	}
+	p.Sandbox.Disabled = false
+	// The soft modes neither write the sysctl nor carry the pipe.
+	p.Network.Mode = policy.NetNone
+	argv, _, _, err = build(p, Spec{Command: []string{"/usr/bin/true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := strings.Join(argv, " "); strings.Contains(j, "--file") || strings.Contains(j, "/proc/sys/net") {
+		t.Errorf("network none must not touch the sysctl: %s", j)
+	}
+	if cmd, _, err := Build(p, Spec{Command: []string{"/usr/bin/true"}}); err != nil || len(cmd.ExtraFiles) != 0 {
+		t.Errorf("network none: ExtraFiles = %v, err = %v", cmd.ExtraFiles, err)
+	}
 }
 
 func TestDarwinProfile(t *testing.T) {
+	skipWindows(t, "sandbox-exec profiles are built from Unix paths")
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)
 	mk := func(rel string) string {
@@ -271,6 +311,7 @@ func TestTooBroadAndToolchainBind(t *testing.T) {
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home) // what os.UserHomeDir reads on Windows
 	for _, d := range []string{"home/bin", "home/.local/bin", "home/.config/mcp-jail/run", "home/projects/x", "opt/tool/bin"} {
 		if err := os.MkdirAll(filepath.Join(root, d), 0o750); err != nil {
 			t.Fatal(err)
@@ -295,6 +336,7 @@ func TestTooBroadAndToolchainBind(t *testing.T) {
 		}
 	}
 
+	skipWindows(t, "toolchainBind looks the binary up in PATH, which needs an extension on Windows")
 	// ~/bin/foo: the prefix would be ~ itself; fall back to ~/bin
 	exe := filepath.Join(home, "bin", "foo")
 	writeExec(t, exe)
@@ -359,6 +401,7 @@ func TestMasks(t *testing.T) {
 }
 
 func TestDarwinProfileProtectsState(t *testing.T) {
+	skipWindows(t, "sandbox-exec profiles are built from Unix paths")
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")
@@ -440,5 +483,14 @@ func TestPassthroughEnvSetsAndHardens(t *testing.T) {
 	want := []string{"DO_NOT_TRACK=0", "NO_UPDATE_NOTIFIER=1", "npm_config_update_notifier=false", "MCPJ_T=host", "FOO=bar=baz"}
 	if strings.Join(got, " ") != strings.Join(want, " ") {
 		t.Fatalf("got %q\nwant %q", got, want)
+	}
+}
+
+// skipWindows skips a test of the bubblewrap or sandbox-exec path, which
+// works with Unix paths, symlinks and shell scripts.
+func skipWindows(t *testing.T, why string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip(why)
 	}
 }

@@ -47,7 +47,7 @@ Usage:
   mcp-jail init [--policy FILE]        write a starter policy
   mcp-jail wrap <client-config.json>   route every server in a client config through mcp-jail
   mcp-jail diff    <name>              show pending tool changes
-  mcp-jail approve <name>              accept pending tool changes
+  mcp-jail approve <name> [--only tools:a,prompts:b]   accept pending changes (all, or the named items)
   mcp-jail reset   <name>              forget the lock
   mcp-jail locks                       list locks
   mcp-jail ps                          list running jails
@@ -57,6 +57,7 @@ Usage:
                                        local dashboard: servers, audit events, pending changes
   mcp-jail report [--since 24h] [--server NAME] [--json|--csv] [--audit FILE]...
                                        summarise the audit logs
+  mcp-jail doctor [--json]             what this host can do: sandbox, user namespaces, docker, state
   mcp-jail version
 
 Client config (Claude Desktop, Cursor, Claude Code, …):
@@ -94,8 +95,16 @@ func main() {
 		err = cmdUI(os.Args[2:])
 	case "report":
 		err = cmdReport(os.Args[2:])
+	case "doctor":
+		err = cmdDoctor(os.Args[2:])
 	case sandbox.ShimCommand: // internal: mcp-jail re-executed inside the jail
 		code, err := cmdShim(os.Args[2:])
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "mcp-jail:", err)
+		}
+		os.Exit(code)
+	case sandbox.AppContainerCommand: // internal: the Windows launcher
+		code, err := cmdAppContainer(os.Args[2:])
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "mcp-jail:", err)
 		}
@@ -204,7 +213,7 @@ func cmdRun(args []string) error {
 		logf("%s: %s | net=%s tools.default=%s lock=%v", p.Name, how, p.Network.Mode, p.Tools.Default, p.Lock.Enabled)
 	}
 	al.Log(audit.Event{Kind: "start", Reason: how})
-	for _, w := range append(p.MountWarnings(), launcher.Check(cmdline)...) {
+	for _, w := range append(append(p.MountWarnings(), p.ImageWarnings()...), launcher.Check(cmdline)...) {
 		if !*quiet {
 			logf("warning: %s", w)
 		}
@@ -326,8 +335,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		if real, err := filepath.EvalSymlinks(exe); err == nil {
 			exe = real
 		}
-		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow,
-			UID: os.Getuid(), GID: os.Getgid(), ResolvConf: resolv}
+		spec.Egress = &sandbox.Egress{Dir: relay.Dir(), Exe: exe, Allow: p.Network.Allow, ResolvConf: resolv}
 		for k, v := range egress.ProxyEnv() {
 			spec.Env[k] = v
 		}
@@ -349,6 +357,9 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		spec.Env["NODE_USE_ENV_PROXY"] = "1"
 	}
 
+	if err := sandbox.Prepare(p, spec, logf); err != nil {
+		return fail(err)
+	}
 	var cmd *exec.Cmd
 	cmd, how, err = sandbox.Build(p, spec)
 	if err != nil {
@@ -385,8 +396,7 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 // the policy file, the audit log, the lock and registry directories (with
 // the control socket) and the per-user socket directory under the temp dir.
 func protectPaths(p *policy.Policy, pol string) []string {
-	return []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(),
-		filepath.Join(os.TempDir(), fmt.Sprintf("mcp-jail-%d", os.Getuid()))}
+	return []string{absPath(pol), p.Audit.Path, lock.Dir(), registry.Dir(), control.SocketDir()}
 }
 
 // startRemote connects to a Streamable HTTP server named by server.url.
@@ -411,9 +421,6 @@ func cmdShim(args []string) (int, error) {
 	fs := flag.NewFlagSet(sandbox.ShimCommand, flag.ContinueOnError)
 	sock := fs.String("socket", "", "relay socket")
 	allow := fs.String("allow", "", "comma-separated network.allow")
-	uid := fs.Int("uid", os.Getuid(), "uid for the server")
-	gid := fs.Int("gid", os.Getgid(), "gid for the server")
-	plain := fs.Bool("plain", false, "start the server as this user, without a nested user namespace (containers)")
 	if err := fs.Parse(args); err != nil {
 		return 2, err
 	}
@@ -426,7 +433,33 @@ func cmdShim(args []string) (int, error) {
 			hosts = append(hosts, h)
 		}
 	}
-	return egress.RunShim(*sock, hosts, *uid, *gid, *plain, fs.Args(), logf)
+	return egress.RunShim(*sock, hosts, fs.Args(), logf)
+}
+
+// cmdAppContainer is the Windows launcher: see sandbox.RunAppContainer.
+func cmdAppContainer(args []string) (int, error) {
+	fs := flag.NewFlagSet(sandbox.AppContainerCommand, flag.ContinueOnError)
+	var o sandbox.AppContainerOptions
+	fs.StringVar(&o.Profile, "profile", "", "AppContainer profile name")
+	fs.BoolVar(&o.Plain, "plain", false, "no container: environment and lifetime only")
+	fs.StringVar(&o.Network, "net", "none", "none | all")
+	fs.StringVar(&o.Cwd, "cwd", "", "working directory")
+	list := func(dst *[]string) func(string) error {
+		return func(v string) error { *dst = append(*dst, v); return nil }
+	}
+	fs.Func("ro", "directory granted read+execute", list(&o.ReadOnly))
+	fs.Func("rw", "directory granted modify", list(&o.ReadWrite))
+	fs.Func("deny", "path denied inside a granted directory", list(&o.Deny))
+	fs.Func("env", "sandbox.env entry", list(&o.Env))
+	fs.Func("set", "NAME=value to add", list(&o.Set))
+	if err := fs.Parse(args); err != nil {
+		return 2, err
+	}
+	o.Command = fs.Args()
+	if !o.Plain && o.Profile == "" {
+		return 2, errors.New("appcontainer: --profile is required")
+	}
+	return sandbox.RunAppContainer(o, logf)
 }
 
 func cmdInit(args []string) error {
@@ -542,10 +575,14 @@ func cmdDiff(args []string) error {
 			continue
 		}
 		var old map[string]string
-		if o := cur.Section(k); o != nil {
+		switch o := cur.Section(k); {
+		case o != nil && sec.Held:
+			old = o.Items
+			fmt.Printf("%s (held under lock.scope item: the recorded items keep working, these wait):\n", k)
+		case o != nil:
 			old = o.Items
 			fmt.Printf("%s:\n", k)
-		} else {
+		default:
 			fmt.Printf("%s (seen for the first time, nothing recorded yet):\n", k)
 		}
 		d := lock.Compare(old, sec.Items)
@@ -563,19 +600,58 @@ func cmdDiff(args []string) error {
 		}
 	}
 	fmt.Println("\nreview the server, then: mcp-jail approve", name)
+	fmt.Println("or some of it:          mcp-jail approve", name, "--only tools:<name>,prompts:<name>")
 	return nil
 }
 
 func cmdApprove(args []string) error {
-	name, err := nameArg(args)
+	// mcp-jail approve <name> [--only kind:key,…]; the flag may come first
+	var name, only string
+	for i := 0; i < len(args); i++ {
+		switch a := args[i]; {
+		case strings.HasPrefix(a, "--only="):
+			only = strings.TrimPrefix(a, "--only=")
+		case a == "--only":
+			if i+1 >= len(args) {
+				return errors.New("--only needs kind:key[,kind:key…]; a bare key means tools")
+			}
+			i++
+			only = args[i]
+		case strings.HasPrefix(a, "-"):
+			return fmt.Errorf("approve: unknown flag %s", a)
+		case name == "":
+			name = a
+		default:
+			return errors.New("usage: mcp-jail approve <name> [--only kind:key,…]")
+		}
+	}
+	name, err := nameArg([]string{name})
 	if err != nil {
 		return err
 	}
-	f, err := lock.Approve(name)
+	var f *lock.File
+	if only == "" {
+		f, err = lock.Approve(name)
+	} else {
+		sel, perr := lock.ParseItems([]string{only})
+		if perr != nil {
+			return perr
+		}
+		f, err = lock.ApproveItems(name, sel)
+	}
 	if err != nil {
 		return err
 	}
 	fmt.Printf("approved %s: %s\n", name, summarize(f))
+	if p, _ := lock.LoadPending(name); p != nil && len(p.Sections) > 0 {
+		var left []string
+		for _, k := range lock.Kinds {
+			if sec, ok := p.Sections[k]; ok {
+				left = append(left, fmt.Sprintf("%s (%s)", k, lock.Compare(f.Section(k).Items, sec.Items)))
+			}
+		}
+		fmt.Printf("still pending: %s\n", strings.Join(left, "; "))
+	}
 	return nil
 }
 

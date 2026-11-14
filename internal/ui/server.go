@@ -11,6 +11,7 @@
 package ui
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"crypto/subtle"
@@ -19,6 +20,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"net"
 	"net/http"
@@ -239,12 +241,23 @@ type ApproveResponse struct {
 }
 
 // handleApprove promotes the pending sections of one server into its lock,
-// exactly like `mcp-jail approve <name>`. A running jail picks the new lock
-// up on the next list request from the client.
+// exactly like `mcp-jail approve <name>`; a body {"only": {"tools": ["a"]}}
+// approves those items only, like --only. A running jail picks the new
+// lock up on the next list request from the client.
 func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	name := r.PathValue("name")
 	if name == "" || strings.ContainsAny(name, "/\\") || name == "." || name == ".." {
 		http.Error(w, "bad server name", http.StatusBadRequest)
+		return
+	}
+	var body struct {
+		Only map[lock.Kind][]string `json:"only"`
+	}
+	if raw, err := io.ReadAll(http.MaxBytesReader(w, r.Body, 64<<10)); err != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
+		return
+	} else if len(bytes.TrimSpace(raw)) > 0 && json.Unmarshal(raw, &body) != nil {
+		http.Error(w, "bad body", http.StatusBadRequest)
 		return
 	}
 	pend, err := lock.LoadPending(name)
@@ -256,9 +269,18 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "nothing pending for "+name, http.StatusNotFound)
 		return
 	}
-	f, err := lock.Approve(name)
+	var f *lock.File
+	if len(body.Only) == 0 {
+		f, err = lock.Approve(name)
+	} else {
+		f, err = lock.ApproveItems(name, body.Only)
+	}
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
+		code := http.StatusInternalServerError
+		if strings.Contains(err.Error(), "not pending") || strings.Contains(err.Error(), "nothing pending") {
+			code = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), code)
 		return
 	}
 	resp := ApproveResponse{Name: name, Lock: []SectionState{}}
@@ -553,6 +575,9 @@ type PendingSection struct {
 	Removed []string `json:"removed"`
 	Changed []string `json:"changed"`
 	First   bool     `json:"first,omitempty"`
+	// Held: written under lock.scope item, the recorded items keep working
+	// and only these wait for approval.
+	Held bool `json:"held,omitempty"`
 	// Lint lists the content findings the list had when it was seen
 	// ("<item>: <where>: <rule> (<detail>)"), from the lint.lists scan.
 	Lint []string `json:"lint,omitempty"`
@@ -643,7 +668,7 @@ func (s *Server) state() State {
 					old, first = o.Items, false
 				}
 				d := lock.Compare(old, sec.Items)
-				ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed), First: first, Lint: sec.Lint}
+				ps.Sections[string(k)] = PendingSection{Added: nz(d.Added), Removed: nz(d.Removed), Changed: nz(d.Changed), First: first, Held: sec.Held, Lint: sec.Lint}
 			}
 			v.Pending = ps
 		}

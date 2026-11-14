@@ -49,6 +49,7 @@ type showDoc struct {
 		Enabled  bool          `json:"enabled"`
 		First    string        `json:"first"`
 		Scope    string        `json:"scope"`
+		Notify   bool          `json:"notify"`
 		Sections []showSection `json:"sections"`
 		Pending  []string      `json:"pending,omitempty"`
 	} `json:"lock"`
@@ -187,7 +188,7 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 	for m, d := range p.ServerRequests.Rules {
 		doc.ServerRequests.Rules[m] = string(d)
 	}
-	doc.Lock.Enabled, doc.Lock.First, doc.Lock.Scope = p.Lock.Enabled, string(p.Lock.First), string(p.Lock.Scope)
+	doc.Lock.Enabled, doc.Lock.First, doc.Lock.Scope, doc.Lock.Notify = p.Lock.Enabled, string(p.Lock.First), string(p.Lock.Scope), p.LockNotify()
 	doc.Lock.Sections = []showSection{}
 	if f, err := lock.Load(p.Name); err == nil && f != nil {
 		for _, k := range lock.Kinds {
@@ -202,7 +203,11 @@ func fill(doc *showDoc, p *policy.Policy, plan sandbox.Plan) {
 					continue
 				}
 				if o := f.Section(k); o != nil {
-					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String()+lintCount(sec))
+					held := ""
+					if sec.Held {
+						held = " (held: the recorded items keep working)"
+					}
+					doc.Lock.Pending = append(doc.Lock.Pending, string(k)+" "+lock.Compare(o.Items, sec.Items).String()+held+lintCount(sec))
 				} else {
 					doc.Lock.Pending = append(doc.Lock.Pending, fmt.Sprintf("%s: %d item(s) seen for the first time, awaiting review%s", k, len(sec.Items), lintCount(sec)))
 				}
@@ -331,6 +336,9 @@ func (d *showDoc) write(w io.Writer) error {
 		lk = "on, first contact: " + d.Lock.First
 		if d.Lock.Scope == "item" {
 			lk += ", scope: item (unchanged items keep working, new or changed ones are held)"
+		}
+		if !d.Lock.Notify {
+			lk += ", notify: off (the client is not told about an approve)"
 		}
 		if len(d.Lock.Sections) == 0 {
 			lk += "; nothing recorded yet"

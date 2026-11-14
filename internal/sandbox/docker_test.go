@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -10,12 +11,17 @@ import (
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
 
-// fakeDocker puts an executable named docker first in PATH.
+// fakeDocker puts an executable named docker first in PATH (docker.exe on
+// Windows, where LookPath wants an extension); build never runs it.
 func fakeDocker(t *testing.T) {
 	t.Helper()
 	bin := t.TempDir()
-	writeExec(t, filepath.Join(bin, "docker"))
-	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	name := "docker"
+	if runtime.GOOS == "windows" {
+		name = "docker.exe"
+	}
+	writeExec(t, filepath.Join(bin, name))
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 }
 
 func dockerPolicy() *policy.Policy {
@@ -36,9 +42,12 @@ func TestBuildDockerArgs(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	joined := strings.Join(argv, " ")
+	if base := filepath.Base(argv[0]); !strings.HasPrefix(base, "docker") {
+		t.Fatalf("argv[0] = %s", argv[0])
+	}
+	joined := strings.Join(argv[1:], " ")
 	for _, want := range []string{
-		"docker run --rm -i --init --cap-drop ALL --security-opt no-new-privileges --read-only --user ",
+		"run --rm -i --init --cap-drop ALL --security-opt no-new-privileges --read-only --user ",
 		"--tmpfs /tmp:rw,exec,nosuid,nodev,size=1g", "--network none",
 		"-v /opt/ro:/opt/ro:ro", "-v /opt/rw:/opt/rw", "-e LANG=C", "-e HOME=/tmp", "-e DO_NOT_TRACK=1",
 		" python:3.12-slim python3 srv.py",
@@ -131,7 +140,7 @@ func TestBuildDockerHardEgress(t *testing.T) {
 	p := dockerPolicy()
 	p.Network.Mode = policy.NetAllowlist
 	p.Network.Allow = []string{"api.example.com", "127.0.0.1"}
-	eg := &Egress{Dir: "/tmp/relay", Exe: "/usr/local/bin/mcp-jail", Allow: p.Network.Allow, UID: 1000, GID: 1000, ResolvConf: "/tmp/relay/resolv.conf"}
+	eg := &Egress{Dir: "/tmp/relay", Exe: "/usr/local/bin/mcp-jail", Allow: p.Network.Allow, ResolvConf: "/tmp/relay/resolv.conf"}
 	argv, how, _, err := build(p, Spec{Command: []string{"srv"}, Egress: eg, Env: map[string]string{"HTTP_PROXY": "http://127.0.0.1:3128"}})
 	if err != nil {
 		t.Fatal(err)
@@ -141,7 +150,7 @@ func TestBuildDockerHardEgress(t *testing.T) {
 		"--network none", "--sysctl net.ipv4.ip_unprivileged_port_start=0",
 		"-v /tmp/relay/resolv.conf:/etc/resolv.conf:ro", "-v /tmp/relay:/run/mcp-jail", "-v /usr/local/bin/mcp-jail:/opt/mcp-jail/mcp-jail:ro",
 		"-e HTTP_PROXY=http://127.0.0.1:3128",
-		"python:3.12-slim /opt/mcp-jail/mcp-jail _egress-shim --plain --socket /run/mcp-jail/egress.sock --allow api.example.com,127.0.0.1 -- srv",
+		"python:3.12-slim /opt/mcp-jail/mcp-jail _egress-shim --socket /run/mcp-jail/egress.sock --allow api.example.com,127.0.0.1 -- srv",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("missing %q in %s", want, joined)
@@ -151,6 +160,64 @@ func TestBuildDockerHardEgress(t *testing.T) {
 		t.Errorf("how = %q", how)
 	}
 }
+
+// fakeDockerScript puts a docker stand-in in PATH that logs its arguments
+// and answers "image inspect" with inspect (exit 0) or not (exit 1).
+func fakeDockerScript(t *testing.T, present bool, pullOK bool) string {
+	t.Helper()
+	skipWindows(t, "the docker stand-in is a shell script")
+	bin := t.TempDir()
+	log := filepath.Join(bin, "log")
+	inspect, pull := "exit 1", "exit 0"
+	if present {
+		inspect = "echo sha256:abc; exit 0"
+	}
+	if !pullOK {
+		pull = "echo 'Error response from daemon: manifest unknown' >&2; exit 1"
+	}
+	script := "#!/bin/sh\necho \"$@\" >> " + log + "\ncase \"$1\" in image) " + inspect + ";; pull) " + pull + ";; esac\nexit 0\n"
+	if err := os.WriteFile(filepath.Join(bin, "docker"), []byte(script), 0o700); err != nil { //nolint:gosec // test fixture
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	return log
+}
+
+func TestPreparePullsAMissingImage(t *testing.T) {
+	log := fakeDockerScript(t, false, true)
+	var lines []string
+	logf := func(f string, a ...any) { lines = append(lines, sprintf(f, a...)) }
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(log)
+	if !strings.Contains(string(b), "image inspect --format {{.Id}} python:3.12-slim") || !strings.Contains(string(b), "pull --quiet python:3.12-slim") {
+		t.Fatalf("docker calls: %s", b)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "pulling python:3.12-slim") {
+		t.Fatalf("log: %v", lines)
+	}
+
+	log = fakeDockerScript(t, true, true)
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(log); strings.Contains(string(b), "pull") {
+		t.Fatalf("present image must not be pulled: %s", b)
+	}
+
+	fakeDockerScript(t, false, false)
+	if err := Prepare(dockerPolicy(), Spec{Command: []string{"srv"}}, logf); err == nil || !strings.Contains(err.Error(), "manifest unknown") {
+		t.Fatalf("failed pull must refuse the start: %v", err)
+	}
+	p := policy.Default() // other backends: nothing to do, no docker needed
+	t.Setenv("PATH", t.TempDir())
+	if err := Prepare(p, Spec{Command: []string{"srv"}}, logf); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func sprintf(f string, a ...any) string { return fmt.Sprintf(f, a...) }
 
 func TestExplainDocker(t *testing.T) {
 	fakeDocker(t)
@@ -166,7 +233,20 @@ func TestExplainDocker(t *testing.T) {
 	if !strings.Contains(strings.Join(plan.Notes, "\n"), "derived from uvx") {
 		t.Fatalf("notes: %v", plan.Notes)
 	}
-	abs := Explain(p, Spec{Command: []string{"/usr/bin/python3", "srv.py"}})
+	p.Sandbox.Image = "node:22-slim"
+	if notes := strings.Join(Explain(p, Spec{Command: []string{"npx", "srv"}}).Notes, "\n"); !strings.Contains(notes, "sandbox.image node:22-slim is not pinned to a digest") {
+		t.Fatalf("unpinned image note missing: %s", notes)
+	}
+	p.Sandbox.Image = "node:22-slim@sha256:0123"
+	if notes := strings.Join(Explain(p, Spec{Command: []string{"npx", "srv"}}).Notes, "\n"); strings.Contains(notes, "not pinned") {
+		t.Fatalf("pinned image must not warn: %s", notes)
+	}
+	p.Sandbox.Image = ""
+	hostPy := "/usr/bin/python3"
+	if runtime.GOOS == "windows" {
+		hostPy = `C:\Python\python3`
+	}
+	abs := Explain(p, Spec{Command: []string{hostPy, "srv.py"}})
 	if !strings.Contains(strings.Join(abs.Notes, "\n"), "resolved inside the image; use a bare name (python3)") {
 		t.Fatalf("absolute command note missing: %v", abs.Notes)
 	}
@@ -175,5 +255,39 @@ func TestExplainDocker(t *testing.T) {
 	plan = Explain(p, Spec{Command: []string{"uvx", "srv"}})
 	if (runtime.GOOS == "linux") != plan.Hard {
 		t.Fatalf("allowlist hard=%v on %s: %v", plan.Hard, runtime.GOOS, plan.Notes)
+	}
+}
+
+func TestContainerPath(t *testing.T) {
+	for _, c := range []struct{ goos, host, want string }{
+		{"linux", "/opt/ro", "/opt/ro"},
+		{"darwin", "/Users/me/proj", "/Users/me/proj"},
+		{"windows", `C:\work\proj`, "/mnt/c/work/proj"},
+		{"windows", `d:\Data`, "/mnt/d/Data"},
+		{"windows", `\tmp\x`, "/tmp/x"},
+	} {
+		got, err := containerPath(c.goos, c.host)
+		if err != nil || got != c.want {
+			t.Errorf("containerPath(%s, %q) = %q, %v; want %q", c.goos, c.host, got, err, c.want)
+		}
+	}
+	if _, err := containerPath("windows", `\\server\share\x`); err == nil || !strings.Contains(err.Error(), "UNC") {
+		t.Errorf("UNC path: err = %v", err)
+	}
+}
+
+func TestDockerUserAndTmp(t *testing.T) {
+	u := dockerUser()
+	if os.Getuid() < 0 && u != "65534:65534" {
+		t.Errorf("no uid: user = %s", u)
+	}
+	if os.Getuid() >= 0 && u == "65534:65534" {
+		t.Errorf("uid %d: user = %s", os.Getuid(), u)
+	}
+	if strings.Contains(u, "-1") {
+		t.Errorf("user = %s", u)
+	}
+	if hostTmp("linux") != "/tmp" || hostTmp("windows") != os.TempDir() {
+		t.Errorf("hostTmp: %s / %s", hostTmp("linux"), hostTmp("windows"))
 	}
 }

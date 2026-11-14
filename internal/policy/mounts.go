@@ -56,9 +56,10 @@ func (p *Policy) MountWarnings() []string {
 // covered reports whether path is one of dirs or inside one of them.
 func covered(path string, dirs []string) bool {
 	path = filepath.Clean(path)
+	sep := string(filepath.Separator)
 	for _, d := range dirs {
 		d = filepath.Clean(d)
-		if path == d || strings.HasPrefix(path, strings.TrimSuffix(d, "/")+"/") {
+		if path == d || strings.HasPrefix(path, strings.TrimSuffix(d, sep)+sep) {
 			return true
 		}
 	}

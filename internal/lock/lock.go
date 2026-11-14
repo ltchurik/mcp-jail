@@ -24,10 +24,41 @@ const (
 	Prompts           Kind = "prompts"
 	Resources         Kind = "resources"
 	ResourceTemplates Kind = "resource_templates"
+	// Instructions is the initialize result's instructions text, locked as
+	// a single item named "instructions" (see InstructionsItems).
+	Instructions Kind = "instructions"
 )
 
 // Kinds in display order.
-var Kinds = []Kind{Tools, Prompts, Resources, ResourceTemplates}
+var Kinds = []Kind{Tools, Prompts, Resources, ResourceTemplates, Instructions}
+
+// InstructionsItems turns an initialize result into the one-item list the
+// lock and the lint work on: {"name":"instructions","description":text}.
+// No or empty instructions give no item; a non-string value is an error,
+// so a server cannot smuggle structure past the lock.
+func InstructionsItems(result json.RawMessage) ([]json.RawMessage, error) {
+	var res struct {
+		Instructions json.RawMessage `json:"instructions"`
+	}
+	if err := json.Unmarshal(result, &res); err != nil {
+		return nil, err
+	}
+	if len(res.Instructions) == 0 || string(res.Instructions) == "null" {
+		return nil, nil
+	}
+	var text string
+	if err := json.Unmarshal(res.Instructions, &text); err != nil {
+		return nil, fmt.Errorf("instructions is not a string")
+	}
+	if text == "" {
+		return nil, nil
+	}
+	item, err := json.Marshal(map[string]string{"name": "instructions", "description": text})
+	if err != nil {
+		return nil, err
+	}
+	return []json.RawMessage{item}, nil
+}
 
 // KindOf maps a list method to its kind; "" for anything else.
 func KindOf(method string) Kind {
@@ -71,6 +102,9 @@ type Section struct {
 	Hash  string            `json:"hash"`
 	Items map[string]string `json:"items"`
 	Lint  []string          `json:"lint,omitempty"`
+	// Held marks a pending section written under lock.scope item: the
+	// recorded items keep working, only the added or changed ones wait.
+	Held bool `json:"held,omitempty"`
 }
 
 // File is the on-disk lock. Tools keep their original top-level fields so
@@ -160,6 +194,11 @@ func Compute(k Kind, items []json.RawMessage) (Section, error) {
 		}
 		per[key] = hash
 	}
+	return Section{Hash: sectionHash(per), Items: per}, nil
+}
+
+// sectionHash covers the sorted per-item hashes.
+func sectionHash(per map[string]string) string {
 	names := make([]string, 0, len(per))
 	for n := range per {
 		names = append(names, n)
@@ -172,7 +211,7 @@ func Compute(k Kind, items []json.RawMessage) (Section, error) {
 		h.Write([]byte(per[n]))
 		h.Write([]byte{'\n'})
 	}
-	return Section{Hash: hex.EncodeToString(h.Sum(nil)), Items: per}, nil
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // ItemHash returns the key (name, uri or uriTemplate) of one item of kind k
@@ -399,6 +438,112 @@ func approve(name string, only Kind) (*File, error) {
 		return f, nil
 	}
 	return f, writeAtomic(pending(name), p)
+}
+
+// ApproveItems promotes only the named items of the pending sections into
+// the lock: an item the server added or changed is recorded as pending has
+// it, an item it removed is dropped from the lock. Everything else stays
+// pending; a section with nothing left to approve leaves the pending
+// record, and the record itself is removed when it is empty. The lint
+// findings of an approved item move to the recorded section.
+func ApproveItems(name string, only map[Kind][]string) (*File, error) {
+	if len(only) == 0 {
+		return nil, errors.New("approve: no items named")
+	}
+	p, err := LoadPending(name)
+	if err != nil {
+		return nil, err
+	}
+	if p == nil || len(p.Sections) == 0 {
+		return nil, fmt.Errorf("nothing pending for %q", name)
+	}
+	f, err := Load(name)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	if f == nil {
+		f = &File{Name: name, CreatedAt: now}
+	}
+	for k, keys := range only {
+		pend, ok := p.Sections[k]
+		if !ok {
+			return nil, fmt.Errorf("nothing pending for %q %s", name, k)
+		}
+		rec := Section{Items: map[string]string{}}
+		if old := f.Section(k); old != nil {
+			rec = Section{Items: map[string]string{}, Lint: append([]string{}, old.Lint...)}
+			for n, h := range old.Items {
+				rec.Items[n] = h
+			}
+		}
+		for _, key := range keys {
+			h, inPending := pend.Items[key]
+			_, inLock := rec.Items[key]
+			switch {
+			case inPending:
+				rec.Items[key] = h
+			case inLock:
+				delete(rec.Items, key) // the server removed it; accept that
+			default:
+				return nil, fmt.Errorf("%s %q is not pending for %q", strings.TrimSuffix(string(k), "s"), key, name)
+			}
+			var keep []string
+			for _, l := range pend.Lint {
+				if strings.HasPrefix(l, key+": ") {
+					rec.Lint = append(rec.Lint, l)
+				} else {
+					keep = append(keep, l)
+				}
+			}
+			pend.Lint = keep
+		}
+		rec.Hash = sectionHash(rec.Items)
+		f.Set(k, rec)
+		if Compare(rec.Items, pend.Items).Empty() {
+			delete(p.Sections, k)
+		} else {
+			p.Sections[k] = pend
+		}
+	}
+	f.UpdatedAt = now
+	if err := Save(f); err != nil {
+		return nil, err
+	}
+	if len(p.Sections) == 0 {
+		_ = os.Remove(pending(name))
+		return f, nil
+	}
+	return f, writeAtomic(pending(name), p)
+}
+
+// ParseItems reads "kind:key" selectors (a bare key means tools) into the
+// map ApproveItems takes.
+func ParseItems(sel []string) (map[Kind][]string, error) {
+	out := map[Kind][]string{}
+	for _, s := range sel {
+		for _, one := range strings.Split(s, ",") {
+			one = strings.TrimSpace(one)
+			if one == "" {
+				continue
+			}
+			k, key := Tools, one
+			if prefix, rest, ok := strings.Cut(one, ":"); ok {
+				switch Kind(prefix) {
+				case Tools, Prompts, Resources, ResourceTemplates, Instructions:
+					k, key = Kind(prefix), rest
+				}
+			}
+			if key == "" {
+				return nil, fmt.Errorf("approve: empty item in %q", s)
+			}
+			out[k] = append(out[k], key)
+		}
+	}
+	if len(out) == 0 {
+		return nil, errors.New("approve: --only needs at least one kind:key")
+	}
+	return out, nil
 }
 
 // OtherTools maps every tool name recorded in the locks of servers other

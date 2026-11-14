@@ -23,7 +23,7 @@ type Options struct {
 	Bin       string // mcp-jail binary to put in "command" (absolute path recommended)
 	PolicyDir string // where <name>.yml files go
 	Network   string // network.mode for new policies: none | all
-	Backend   string // sandbox.backend for new policies: auto | bwrap | sandbox-exec | docker | none
+	Backend   string // sandbox.backend for new policies: auto | bwrap | sandbox-exec | appcontainer | docker | none
 	Image     string // sandbox.image for new policies (docker backend)
 	Force     bool   // overwrite existing policy files
 	DryRun    bool   // compute everything, write nothing
@@ -193,6 +193,9 @@ func wrapOne(name string, srv map[string]json.RawMessage, o Options, res *Result
 		sort.Strings(envKeys)
 	}
 	warnings := launcher.Check(append([]string{command}, args...))
+	if o.Backend == "docker" && o.Image != "" && !strings.Contains(o.Image, "@sha256:") {
+		warnings = append(warnings, "sandbox.image "+o.Image+" is not pinned to a digest: a tag can move; pin it, e.g. "+o.Image+"@sha256:<digest>")
+	}
 	res.policyText[name] = Policy(name, command, args, envKeys, o.Network, warnings, o.Backend, o.Image)
 	res.Policies = append(res.Policies, polPath)
 
@@ -370,7 +373,8 @@ func Policy(name, command string, args, envKeys []string, network string, warnin
 	for _, a := range args {
 		if filepath.IsAbs(a) {
 			if st, err := os.Stat(a); err == nil && st.IsDir() {
-				if a := filepath.Clean(a); a == "/" || a == home || (home != "" && strings.HasPrefix(home, a+"/")) {
+				sep := string(filepath.Separator)
+				if a := filepath.Clean(a); a == "/" || a == filepath.VolumeName(a)+sep || a == home || (home != "" && strings.HasPrefix(home, strings.TrimSuffix(a, sep)+sep)) {
 					// the root or the home directory: too much to hand a
 					// server read-write; the user picks a narrower path
 					b.WriteString("  # NOT added: " + a + " is the root or home directory; list a narrower read_write path yourself\n")
@@ -406,7 +410,7 @@ func Policy(name, command string, args, envKeys []string, network string, warnin
 	if backend == "" {
 		backend = "auto"
 	}
-	b.WriteString("  backend: " + backend + "        # auto (bwrap / sandbox-exec) | bwrap | sandbox-exec | docker | none\n")
+	b.WriteString("  backend: " + backend + "        # auto (bwrap / sandbox-exec / appcontainer) | bwrap | sandbox-exec | appcontainer | docker | none\n")
 	if image != "" {
 		b.WriteString("  image: " + image + "\n")
 	} else if backend == "docker" {

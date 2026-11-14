@@ -40,7 +40,10 @@ Known limitations, documented in the README and **not** vulnerabilities:
 - the macOS sandbox scopes the filesystem and the network only: no PID or
   mount isolation, system locations outside `/Users` stay readable, and Mach
   IPC, `sysctl` and other system services are not restricted
-- no sandbox on Windows yet; policy, lock and audit still apply
+- the Windows AppContainer scopes the filesystem (through access-control
+  entries for the container SID on the policy's directories, present while
+  the jail runs) and the network (none / all) only: no PID isolation,
+  Windows and Program Files stay readable, `allowlist` is refused there
 - a hostile MCP *client* is out of scope
 
 ## Supported versions

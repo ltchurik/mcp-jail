@@ -50,6 +50,9 @@ type Proxy struct {
 	// environment to their values (scan.EnvSecrets); an argument carrying
 	// one is a credential leaving the machine.
 	EnvSecrets map[string]string
+	// NotifyPoll is how often a jail with a pending change checks the lock
+	// for an out-of-band approve (lock.notify); 0: one second.
+	NotifyPoll time.Duration
 	// MaxPending bounds the requests awaiting a server response; past it
 	// the oldest is dropped and answered with CodeNoResponse, so a server
 	// that stops answering cannot grow the proxy without bound. 0: 1024.
@@ -92,9 +95,14 @@ type lockState struct {
 	why      string // reason for the taint when it was not a hash mismatch
 	items    map[string]string
 	held     map[string]bool
-	paging   bool
-	acc      []json.RawMessage
-	next     string
+	// watching: a change is pending for this section; watchHash is the
+	// recorded section's hash at that moment ("" when none), so a later
+	// approve shows up as a different hash (see notify.go).
+	watching  bool
+	watchHash string
+	paging    bool
+	acc       []json.RawMessage
+	next      string
 }
 
 type pendingReq struct {
@@ -136,8 +144,13 @@ func (p *Proxy) Run(clientIn io.Reader, clientOut io.Writer, serverIn io.Writer,
 	errc := make(chan error, 2)
 	go func() { errc <- p.pump(clientIn, p.fromClient) }()
 	go func() { errc <- p.pump(serverOut, p.fromServer) }()
+	stopWatch := make(chan struct{})
+	if p.Policy.Lock.Enabled && p.Policy.LockNotify() {
+		go p.watchApprovals(stopWatch)
+	}
 	err := <-errc
 	p.drain(errc, drainGrace)
+	close(stopWatch)
 	p.lmu.Lock()
 	for _, st := range p.sections {
 		st.tainted = true // release anyone parked in waitVerified with a deny
@@ -361,9 +374,15 @@ func (p *Proxy) Reload(np *policy.Policy) error {
 	cp.Tools = np.Tools
 	cp.Ask = np.Ask
 	cp.ServerRequests = np.ServerRequests
+	cp.Limits = np.Limits
 	p.live.Store(&cp)
-	p.Audit.Log(audit.Event{Kind: "reload", Reason: fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))})
-	p.Logf("policy reloaded: tools.default=%s, %d rule(s)", cp.Tools.Default, len(cp.Tools.Rules))
+	p.Limits.Reload(cp.Limits.Calls, cp.Limits.ArgsBytes, cp.Limits.EgressBytes, cp.Limits.Tools)
+	reason := fmt.Sprintf("tools.default=%s rules=%d", cp.Tools.Default, len(cp.Tools.Rules))
+	if n := len(cp.Limits.Tools); !cp.Limits.Calls.Zero() || !cp.Limits.ArgsBytes.Zero() || !cp.Limits.EgressBytes.Zero() || n > 0 {
+		reason += fmt.Sprintf(" limits=calls:%s,args_bytes:%s,egress_bytes:%s,tools:%d", cp.Limits.Calls, cp.Limits.ArgsBytes, cp.Limits.EgressBytes, n)
+	}
+	p.Audit.Log(audit.Event{Kind: "reload", Reason: reason})
+	p.Logf("policy reloaded: %s", reason)
 	return nil
 }
 
@@ -395,7 +414,7 @@ func (p *Proxy) allowCall(m *jsonrpc.Message, tc jsonrpc.ToolCallParams) bool {
 		}
 	}
 	if d != policy.Deny {
-		pat, _ := p.Policy.ToolLimit(tc.Name)
+		pat, _ := pol.ToolLimit(tc.Name)
 		if why := p.Limits.Call(pat, len(tc.Arguments)); why != "" {
 			p.Audit.Log(audit.Event{Kind: "tool_call", Tool: tc.Name, Decision: "deny", Reason: why, Args: args})
 			p.Logf("deny tools/call %s (%s)", tc.Name, why)
@@ -549,6 +568,7 @@ func (p *Proxy) setLockHeld(k lock.Kind, verified, tainted bool, items map[strin
 	p.lmu.Lock()
 	st := p.sections[k]
 	st.verified, st.tainted, st.why, st.items, st.held = verified, tainted, "", items, held
+	st.watching, st.watchHash = false, ""
 	p.lcond.Broadcast()
 	p.lmu.Unlock()
 }
@@ -653,6 +673,10 @@ func (p *Proxy) fromServer(line []byte) {
 		}
 		{
 			switch pr.method {
+			case "initialize":
+				if m.Error == nil && !p.checkInstructions(m) {
+					return
+				}
 			case "tools/list", "prompts/list", "resources/list", "resources/templates/list":
 				k := lock.KindOf(pr.method)
 				ok := p.checkLock(k, pr, m)
@@ -790,7 +814,7 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	// does not hold, so a description the operator never approved does not
 	// reach the model even before the list is complete. Resource templates
 	// stay list-scoped: a read URI cannot be matched to one template.
-	perItem := p.Policy.Lock.Scope == policy.ScopeItem && k != lock.ResourceTemplates && old != nil
+	perItem := p.Policy.Lock.Scope == policy.ScopeItem && k != lock.ResourceTemplates && k != lock.Instructions && old != nil
 	var shown []json.RawMessage
 	var heldOnPage []string
 	if perItem {
@@ -842,6 +866,7 @@ func (p *Proxy) checkLock(k lock.Kind, pr pendingReq, m *jsonrpc.Message) bool {
 	d := lock.Compare(old.Items, sec.Items)
 	_ = lock.SavePending(p.Policy.Name, k, sec)
 	p.setLock(k, false, true, nil)
+	p.watch(k, old.Hash)
 	reason := string(k) + " " + d.String()
 	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: reason})
 	p.Logf("RUG-PULL: %s changed: %s", k, d)
@@ -878,10 +903,12 @@ func (p *Proxy) holdChanged(k lock.Kind, old *lock.Section, sec lock.Section, it
 		}
 	}
 	p.lintList(k, heldItems, &sec, false)
+	sec.Held = true
 	if err := lock.SavePending(p.Policy.Name, k, sec); err != nil {
 		p.Logf("lock: save pending: %v", err)
 	}
 	p.setLockHeld(k, true, false, verified, held)
+	p.watch(k, old.Hash)
 	if len(held) == 0 {
 		// only removals: nothing to hold, the lock just no longer matches
 		p.Audit.Log(audit.Event{Kind: "lock", Decision: "warn", Reason: fmt.Sprintf("%s %s: nothing held; approve to record the removal", k, d)})
@@ -892,6 +919,69 @@ func (p *Proxy) holdChanged(k lock.Kind, old *lock.Section, sec lock.Section, it
 	p.Logf("lock: %s changed: %s", k, d)
 	p.Logf("      %d held until `mcp-jail approve %s`, %d forwarded; inspect with `mcp-jail diff %s`", len(held), p.Policy.Name, len(verified), p.Policy.Name)
 	return forward()
+}
+
+// checkInstructions locks the initialize result's instructions, the one
+// text a server addresses to the model without any tool being called:
+// recorded on first contact (lock.first applies, lint.lists too), refused
+// with CodeRugPull when it changed, like a list. Without instructions and
+// without a recorded section there is nothing to do. Returns false when
+// the response was replaced with an error.
+func (p *Proxy) checkInstructions(m *jsonrpc.Message) bool {
+	if !p.Policy.Lock.Enabled {
+		return true
+	}
+	k := lock.Instructions
+	refuse := func(reason, msg string) bool {
+		p.Logf("initialize: %s", reason)
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: string(k) + ": " + reason})
+		p.setLock(k, false, true, nil)
+		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+msg))
+		return false
+	}
+	items, err := lock.InstructionsItems(m.Result)
+	if err != nil {
+		return refuse("cannot hash: "+err.Error(), "cannot verify instructions against the lock: "+err.Error())
+	}
+	cur, err := lock.Load(p.Policy.Name)
+	if err != nil {
+		return refuse(err.Error(), "cannot read lock: "+err.Error())
+	}
+	old := cur.Section(k)
+	if old == nil && len(items) == 0 {
+		return true // nothing said, nothing recorded
+	}
+	sec, err := lock.Compute(k, items)
+	if err != nil {
+		return refuse("cannot hash: "+err.Error(), "cannot verify instructions against the lock: "+err.Error())
+	}
+	if old != nil && old.Hash == sec.Hash {
+		p.setLock(k, true, false, sec.Items)
+		return true
+	}
+	held := p.lintList(k, items, &sec, old == nil)
+	if old == nil && (p.Policy.Lock.First == policy.FirstReview || held) {
+		return p.reviewFirst(k, m, sec, items)
+	}
+	if old == nil {
+		if _, err := lock.Record(p.Policy.Name, k, sec); err != nil {
+			p.Logf("lock: save: %v", err)
+		}
+		p.Audit.Log(audit.Event{Kind: "lock", Decision: "created", Reason: string(k) + " " + lock.Short(sec.Hash)})
+		p.Logf("lock: recorded instructions (%s)", lock.Short(sec.Hash))
+		p.setLock(k, true, false, sec.Items)
+		return true
+	}
+	d := lock.Compare(old.Items, sec.Items)
+	_ = lock.SavePending(p.Policy.Name, k, sec)
+	p.setLock(k, false, true, nil)
+	p.watch(k, old.Hash)
+	p.Audit.Log(audit.Event{Kind: "lock", Decision: "blocked", Reason: string(k) + " " + d.String()})
+	p.Logf("RUG-PULL: instructions changed: %s", d)
+	p.Logf("          inspect with `mcp-jail diff %s`, accept with `mcp-jail approve %s`", p.Policy.Name, p.Policy.Name)
+	p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull,
+		"mcp-jail: instructions changed since last approval ("+d.String()+"); run `mcp-jail approve "+p.Policy.Name+"` and reconnect"))
+	return false
 }
 
 // maxLintLines bounds the findings kept for one list.

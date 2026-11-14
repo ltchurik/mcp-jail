@@ -113,6 +113,7 @@ func TestBuildBwrapExecPins(t *testing.T) {
 }
 
 func TestDarwinProfileExecPins(t *testing.T) {
+	skipWindows(t, "sandbox-exec profiles are built from Unix paths")
 	root := t.TempDir()
 	root, _ = filepath.EvalSymlinks(root)
 	home := filepath.Join(root, "home")

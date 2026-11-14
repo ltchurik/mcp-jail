@@ -1,5 +1,95 @@
 # Changelog
 
+## v0.9.1 — 2026-11-14
+
+Fix for the hard egress allowlist on Ubuntu 26.04, where AppArmor confines bubblewrap: the jail no longer needs any capability. Also a social preview banner at the top of the README.
+
+### Fixed
+
+- The hard egress allowlist on Ubuntu 26.04 (and any system whose AppArmor
+  confines bubblewrap): the shim could not bind :53 (`permission denied`)
+  because the `unpriv_bwrap` profile strips every capability from what
+  bubblewrap runs, `--cap-add` included. The jail no longer asks for any:
+  bubblewrap writes `0` into the jail's own
+  `net.ipv4.ip_unprivileged_port_start` before it executes the shim, which
+  then binds its ports as your normal uid and starts the server as a plain
+  child. The server's nested user namespace is gone: writing its id maps
+  needs `CAP_SYS_ADMIN` over the new namespace, which the same profile
+  denies, and it protected nothing once the shim itself is unprivileged.
+  Found by CI when `ubuntu-latest` moved to 26.04.
+
+### Changed
+
+- The README opens with a social preview banner (`docs/social-preview.jpg`,
+  1280×640): what mcp-jail does, the stdio path through the jail, the
+  layers and the sandbox per platform.
+
+## v0.9.0 — 2026-11-11
+
+Windows: binaries in every release, the test suite on Windows in CI, the Docker backend working on a Windows host, and a native sandbox: `sandbox.backend: appcontainer` runs the server as an AppContainer process with the policy's directories granted for the run and the network capabilities the mode calls for.
+
+### Added
+
+- Windows native sandbox: `sandbox.backend: appcontainer` (what `auto` picks
+  on Windows) runs the server as an AppContainer process. The policy's
+  directories are granted to the container's SID for the run (`icacls`
+  entries, removed at exit, stale ones removed at the next start), the
+  toolchain and working directories read-only, mcp-jail's own files denied;
+  `network.mode: none` is a process without network capabilities, `all`
+  grants them; `allowlist` and `exec.allow` are refused. The container has a
+  private home and temp under `%LOCALAPPDATA%\Packages`. `sandbox.disabled`
+  on Windows now works too (there is no `env -i`): the same launcher scrubs
+  the environment and ties the server to the jail. `doctor`, `show` and
+  `wrap` know the backend.
+- Windows binaries (`windows_amd64`, `windows_arm64`, as `.zip`) in every
+  release, attested like the tarballs; the test suite runs on Windows in CI.
+
+### Fixed
+
+- The Docker backend on a Windows host: the container ran as `--user -1:-1`
+  (there is no uid; it is `nobody` now), a drive path was mounted at its
+  `C:\...` spelling inside the Linux container and the drive colon was
+  taken for a mount separator (paths are mounted at `/mnt/<drive>/...`, with
+  a note in `show` and `run`), `/tmp` was shared from a host without one
+  (the host temp dir is), and the per-user socket directory under the temp
+  dir carried the uid `-1`.
+
+## v0.8.1 — 2026-11-10
+
+Follow-ups to v0.8.0: a pending change can be approved item by item and a running jail tells the client when that happened; `mcp-jail doctor` explains what a host can do; the Docker backend warns about an unpinned image and pulls a missing one quietly; the `initialize` instructions join the lock; budgets reload with the policy.
+
+### Added
+
+- `mcp-jail approve <name> --only tools:a,prompts:b` (a bare key means
+  tools) records only those items of a pending change and leaves the rest
+  pending; the dashboard's Pending box lists the items with checkboxes and
+  sends the ticked ones. A pending section written under `lock.scope: item`
+  is flagged `held` in `diff`, `show` and the dashboard.
+- A running jail with a pending change watches its lock and, once the
+  change is approved elsewhere (CLI, dashboard, another terminal), sends
+  the client `notifications/tools/list_changed` (prompts / resources
+  likewise), so the client lists again without a restart; audit `lock` /
+  `notified`. `lock.notify: false` turns it off; `show` says so.
+- `mcp-jail doctor [--json]`: what this host can do, with a hint per
+  problem: bubblewrap (version, the three user-namespace knobs, a probe
+  jail), `sandbox-exec`, docker or podman and whether a daemon answers,
+  the state directory; exit 1 when no sandbox at all is usable.
+- A `sandbox.image` named by tag rather than digest is warned about like a
+  floating `npx` package (`run` audits `policy` / `warn`, `show` notes it,
+  `wrap --image` writes the warning header). A missing image is pulled
+  quietly before the server starts (one log line); a failed pull refuses
+  the start.
+- The `initialize` result's `instructions` are locked and linted like a
+  list, as a single item named `instructions`: recorded on first contact
+  (`lock.first` applies), refused with `-32002` on the `initialize`
+  response when they change, approved with `mcp-jail approve` (or `--only
+  instructions:instructions`); `diff`, `show`, `locks` and the dashboard
+  show the section.
+- `limits` are reloaded with `tools`, `ask` and `server_requests`: an
+  existing budget keeps its balance (clamped to the new cap), a new one
+  starts full, a zero rate removes one; the `reload` audit line names the
+  rates.
+
 ## v0.8.0 — 2026-11-10
 
 Two answers to the questions a Docker-sandboxing post raised about mcp-jail: a lock that copes with servers whose tool list legitimately changes, and a container backend for hosts without bubblewrap, Windows included. Existing policies and locks keep working unchanged.

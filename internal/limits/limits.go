@@ -166,12 +166,15 @@ func (b *bucket) take(n int64) bool {
 }
 
 // Limiter enforces the budgets of one jail. A nil *Limiter allows all.
+// Reload replaces the rates at runtime; mu guards the bucket pointers.
 type Limiter struct {
+	mu                  sync.RWMutex
 	calls, args, egress *bucket
 	tools               map[string]*bucket // by rule pattern
 	// OnEgress is told once per refused connection or write (host and why).
 	OnEgress func(host, why string)
 	egressR  Rate
+	now      func() time.Time
 }
 
 // New builds a Limiter; a zero Rate means no limit on that budget. tools
@@ -181,7 +184,7 @@ func New(calls, args, egress Rate, tools map[string]Rate, now func() time.Time) 
 	if now == nil {
 		now = time.Now
 	}
-	l := &Limiter{tools: map[string]*bucket{}, egressR: egress}
+	l := &Limiter{tools: map[string]*bucket{}, egressR: egress, now: now}
 	if !calls.Zero() {
 		l.calls = newBucket(calls, now)
 	}
@@ -199,6 +202,48 @@ func New(calls, args, egress Rate, tools map[string]Rate, now func() time.Time) 
 	return l
 }
 
+// Reload replaces the rates. A budget that already exists keeps its
+// balance, clamped to the new cap (a raised limit refills faster, it does
+// not hand out the difference at once); a budget that is new starts
+// full; a zero rate removes one. Connections metered before an egress
+// budget existed stay unmetered until they end.
+func (l *Limiter) Reload(calls, args, egress Rate, tools map[string]Rate) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.calls = reset(l.calls, calls, l.now)
+	l.args = reset(l.args, args, l.now)
+	l.egress = reset(l.egress, egress, l.now)
+	l.egressR = egress
+	next := make(map[string]*bucket, len(tools))
+	for pat, r := range tools {
+		if b := reset(l.tools[pat], r, l.now); b != nil {
+			next[pat] = b
+		}
+	}
+	l.tools = next
+}
+
+// reset applies rate r to bucket b (nil: none yet) and returns the bucket
+// to keep, nil when r is zero.
+func reset(b *bucket, r Rate, now func() time.Time) *bucket {
+	if r.Zero() {
+		return nil
+	}
+	if b == nil {
+		return newBucket(r, now)
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.rate = r
+	if b.tokens > float64(r.N) {
+		b.tokens = float64(r.N)
+	}
+	return b
+}
+
 // Call charges one tools/call of argBytes bytes under the per-tool pattern
 // (or "" for none). It returns "" when every budget had room, otherwise
 // the one that did not. Nothing is charged on a refusal.
@@ -206,6 +251,8 @@ func (l *Limiter) Call(pattern string, argBytes int) string {
 	if l == nil {
 		return ""
 	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
 	var charged []*bucket
 	undo := func() {
 		for _, b := range charged {
@@ -241,23 +288,39 @@ var ErrBudget = errors.New("egress budget exceeded")
 // Egress charges n bytes leaving towards host; n == 0 asks whether a new
 // connection may start at all. A refusal is reported to OnEgress.
 func (l *Limiter) Egress(host string, n int64) bool {
-	if l == nil || l.egress == nil {
+	if l == nil {
 		return true
 	}
-	if l.egress.take(n) {
+	l.mu.RLock()
+	b, rate := l.egress, l.egressR
+	l.mu.RUnlock()
+	if b == nil {
+		return true
+	}
+	if b.take(n) {
 		return true
 	}
 	if l.OnEgress != nil {
-		l.OnEgress(host, "egress_bytes "+l.egressR.String()+" exceeded")
+		l.OnEgress(host, "egress_bytes "+rate.String()+" exceeded")
 	}
 	return false
+}
+
+// hasEgress reports whether an egress budget is set right now.
+func (l *Limiter) hasEgress() bool {
+	if l == nil {
+		return false
+	}
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return l.egress != nil
 }
 
 // Wrap meters what is written to c (bytes leaving towards host): a write
 // past the budget fails with ErrBudget. c is returned as is when there is
 // no egress budget.
 func (l *Limiter) Wrap(c net.Conn, host string) net.Conn {
-	if l == nil || l.egress == nil {
+	if !l.hasEgress() {
 		return c
 	}
 	return &conn{Conn: c, l: l, host: host}
@@ -286,7 +349,7 @@ func (c *conn) CloseWrite() error {
 
 // Reader meters what is read from r (a request body on its way out).
 func (l *Limiter) Reader(r io.Reader, host string) io.Reader {
-	if l == nil || l.egress == nil {
+	if !l.hasEgress() {
 		return r
 	}
 	return &reader{Reader: r, l: l, host: host}

@@ -68,6 +68,32 @@ func TestItemScopeHoldsOnlyTheChangedTool(t *testing.T) {
 	}
 }
 
+func TestItemScopePartialApprove(t *testing.T) {
+	p := itemPolicy(t)
+	s := start(t, p, `[{"name":"read_file","description":"Read. Now also ~/.ssh"},{"name":"delete_file","description":"Delete"},{"name":"extra","description":"New"}]`)
+	s.call(listReq)
+	s.close()
+	pend, _ := lock.LoadPending("test")
+	if pend == nil || !pend.Sections[lock.Tools].Held {
+		t.Fatalf("pending must be marked held: %+v", pend)
+	}
+	if _, err := lock.ApproveItems("test", map[lock.Kind][]string{lock.Tools: {"extra"}}); err != nil {
+		t.Fatal(err)
+	}
+	s = start(t, p, `[{"name":"read_file","description":"Read. Now also ~/.ssh"},{"name":"delete_file","description":"Delete"},{"name":"extra","description":"New"}]`)
+	defer s.close()
+	m := s.call(listReq)
+	if m.Error != nil || !strings.Contains(string(m.Result), "extra") || strings.Contains(string(m.Result), "read_file") {
+		t.Fatalf("extra approved, read_file still held: %s %v", m.Result, m.Error)
+	}
+	if m := s.call(toolCall(2, "extra")); m.Error != nil {
+		t.Fatalf("approved item must work: %+v", m.Error)
+	}
+	if m := s.call(toolCall(3, "read_file")); m.Error == nil || !strings.Contains(m.Error.Message, "held for review") {
+		t.Fatalf("unapproved item stays held: %s", m.Raw)
+	}
+}
+
 func TestItemScopeHoldsAnAddedTool(t *testing.T) {
 	p := itemPolicy(t)
 	s := start(t, p, `[{"name":"read_file","description":"Read"},{"name":"delete_file","description":"Delete"},{"name":"extra","description":"New"}]`)

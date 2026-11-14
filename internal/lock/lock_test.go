@@ -190,6 +190,25 @@ func TestSplitAndWithItems(t *testing.T) {
 	}
 }
 
+func TestInstructionsItems(t *testing.T) {
+	items, err := InstructionsItems(raw(`{"protocolVersion":"x","instructions":"Be nice."}`))
+	if err != nil || len(items) != 1 || string(items[0]) != `{"description":"Be nice.","name":"instructions"}` {
+		t.Fatalf("%s %v", items, err)
+	}
+	for _, in := range []string{`{}`, `{"instructions":""}`, `{"instructions":null}`} {
+		if items, err := InstructionsItems(raw(in)); err != nil || items != nil {
+			t.Fatalf("%s: %s %v", in, items, err)
+		}
+	}
+	if _, err := InstructionsItems(raw(`{"instructions":["a"]}`)); err == nil || !strings.Contains(err.Error(), "not a string") {
+		t.Fatalf("array: %v", err)
+	}
+	sec, err := Compute(Instructions, items)
+	if err != nil || sec.Items["instructions"] == "" {
+		t.Fatalf("compute: %+v %v", sec, err)
+	}
+}
+
 func TestParsePage(t *testing.T) {
 	pg, err := ParsePage(Tools, raw(`{"tools":[{"name":"a"}],"nextCursor":"abc"}`))
 	if err != nil || len(pg.Items) != 1 || pg.Next != "abc" {
@@ -228,6 +247,76 @@ func TestApproveKind(t *testing.T) {
 	}
 	if p, _ := LoadPending("y"); p != nil {
 		t.Fatal("pending should be cleared once the last section is approved")
+	}
+}
+
+func TestApproveItems(t *testing.T) {
+	t.Setenv("MCP_JAIL_HOME", t.TempDir())
+	a, b, c := raw(`{"name":"a","description":"A"}`), raw(`{"name":"b","description":"B"}`), raw(`{"name":"c"}`)
+	b2 := raw(`{"name":"b","description":"B2"}`)
+	rec, _ := Compute(Tools, []json.RawMessage{a, b, c})
+	if _, err := Record("z", Tools, rec); err != nil {
+		t.Fatal(err)
+	}
+	// the server changed b, added d and removed c
+	pend, _ := Compute(Tools, []json.RawMessage{a, b2, raw(`{"name":"d"}`)})
+	pend.Lint = []string{"b: description: instruction (x)", "d: description: encoded (y)"}
+	pend.Held = true
+	if err := SavePending("z", Tools, pend); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Tools: {"nope"}}); err == nil || !strings.Contains(err.Error(), "not pending") {
+		t.Fatalf("unknown item: %v", err)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Prompts: {"x"}}); err == nil {
+		t.Fatal("a kind that is not pending must fail")
+	}
+	f, err := ApproveItems("z", map[Kind][]string{Tools: {"b", "c"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	sec := f.Section(Tools)
+	if sec.Items["b"] != pend.Items["b"] || sec.Items["a"] != rec.Items["a"] {
+		t.Fatalf("b must be the pending version, a untouched: %+v", sec.Items)
+	}
+	if _, ok := sec.Items["c"]; ok {
+		t.Fatal("c was removed by the server and accepted: must leave the lock")
+	}
+	if _, ok := sec.Items["d"]; ok {
+		t.Fatal("d was not approved")
+	}
+	if len(sec.Lint) != 1 || !strings.HasPrefix(sec.Lint[0], "b: ") {
+		t.Fatalf("b's lint must move to the lock: %v", sec.Lint)
+	}
+	want, _ := Compute(Tools, []json.RawMessage{a, b2})
+	if sec.Hash != want.Hash {
+		t.Fatal("section hash must be recomputed")
+	}
+	p, _ := LoadPending("z")
+	if p == nil || len(p.Sections[Tools].Lint) != 1 || !p.Sections[Tools].Held {
+		t.Fatalf("d must stay pending with its lint and the held flag: %+v", p)
+	}
+	if _, err := ApproveItems("z", map[Kind][]string{Tools: {"d"}}); err != nil {
+		t.Fatal(err)
+	}
+	if p, _ := LoadPending("z"); p != nil {
+		t.Fatal("pending must be gone once nothing is left")
+	}
+	if f, _ := Load("z"); f.Section(Tools).Hash != pend.Hash {
+		t.Fatal("after approving everything the lock must equal the pending list")
+	}
+}
+
+func TestParseItems(t *testing.T) {
+	m, err := ParseItems([]string{"read_file,prompts:summarize", "resources:file:///readme", "tools:x", "instructions:instructions"})
+	if err != nil || len(m[Tools]) != 2 || m[Prompts][0] != "summarize" || m[Resources][0] != "file:///readme" || m[Instructions][0] != "instructions" {
+		t.Fatalf("%v %v", m, err)
+	}
+	if _, err := ParseItems([]string{" , "}); err == nil {
+		t.Fatal("empty selection must fail")
+	}
+	if _, err := ParseItems([]string{"tools:"}); err == nil {
+		t.Fatal("empty key must fail")
 	}
 }
 

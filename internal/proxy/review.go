@@ -49,6 +49,7 @@ func (p *Proxy) reviewFirst(k lock.Kind, m *jsonrpc.Message, sec lock.Section, i
 		st.why = why
 		p.lcond.Broadcast()
 		p.lmu.Unlock()
+		p.watch(k, "")
 		p.toClient(jsonrpc.NewErrorResponse(m.ID, jsonrpc.CodeRugPull, "mcp-jail: "+why))
 		return false
 	}

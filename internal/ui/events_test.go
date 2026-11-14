@@ -134,3 +134,16 @@ func TestScanSkipsOversizedLineAndContinues(t *testing.T) {
 		t.Fatalf("%+v", evs)
 	}
 }
+
+func TestReadEventsKeepsFileOrderOnTies(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "a.jsonl")
+	ts := `"ts":"2026-11-10T10:00:00Z"`
+	if err := os.WriteFile(path, []byte(`{`+ts+`,"kind":"start"}`+"\n"+`{`+ts+`,"kind":"tool_call"}`+"\n"+`{`+ts+`,"kind":"net"}`+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	evs, skipped := ReadEvents([]string{path}, Filter{}, 2)
+	if skipped != 0 || len(evs) != 2 || evs[0].Kind != "net" || evs[1].Kind != "tool_call" {
+		t.Fatalf("got %+v (skipped %d)", evs, skipped)
+	}
+}

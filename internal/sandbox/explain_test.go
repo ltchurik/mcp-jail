@@ -29,6 +29,10 @@ func TestExplain(t *testing.T) {
 		if plan.Kind != "sandbox-exec" || len(plan.Hidden) == 0 || !plan.Hard {
 			t.Fatalf("darwin plan: %+v", plan)
 		}
+	case "windows": // allowlist is refused there, so the plan is not hard
+		if plan.Kind != "appcontainer" || plan.Hard || !strings.Contains(strings.Join(plan.Notes, "\n"), "allowlist cannot be enforced under AppContainer") {
+			t.Fatalf("windows plan: %+v", plan)
+		}
 	default:
 		if plan.Kind != "none" || plan.Hard {
 			t.Fatalf("plan on %s: %+v", runtime.GOOS, plan)

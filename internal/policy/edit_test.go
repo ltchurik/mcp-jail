@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -18,6 +19,10 @@ func writeTemp(t *testing.T, text string) string {
 }
 
 func TestSetRuleKeepsCommentsAndOrder(t *testing.T) {
+	tmp, quoted := "/tmp", "/tmp" // an absolute path on this OS, and how the writer spells it
+	if runtime.GOOS == "windows" {
+		tmp, quoted = `C:\tmp`, `'C:\tmp'`
+	}
 	p := writeTemp(t, `# my policy
 name: demo
 
@@ -33,7 +38,7 @@ tools:
     write_file:
       decision: ask
       args:
-        path: { under: [/tmp] }
+        path: { under: [`+tmp+`] }
 
 lock: { enabled: false }
 `)
@@ -54,7 +59,7 @@ lock: { enabled: false }
 	got := string(b)
 	for _, want := range []string{
 		"# my policy\n", "mode: none # no egress\n", "  # defaults first\n", `"read_*": allow # cheap`,
-		"    delete_file: deny\n", "      decision: allow\n      args:\n        path: {under: [/tmp]}\n",
+		"    delete_file: deny\n", "      decision: allow\n      args:\n        path: {under: [" + quoted + "]}\n",
 		`    "send_*": deny` + "\n", "    create_issue: allow\n", "lock: {enabled: false}\n",
 	} {
 		if !strings.Contains(got, want) {
@@ -64,8 +69,7 @@ lock: { enabled: false }
 	if i, j := strings.Index(got, "name:"), strings.Index(got, "tools:"); i > j {
 		t.Errorf("key order changed:\n%s", got)
 	}
-	st, _ := os.Stat(p)
-	if st.Mode().Perm() != 0o640 {
+	if st, _ := os.Stat(p); runtime.GOOS != "windows" && st.Mode().Perm() != 0o640 {
 		t.Errorf("mode changed to %v", st.Mode().Perm())
 	}
 	pol, err := Load(p)

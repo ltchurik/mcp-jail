@@ -71,11 +71,12 @@ const (
 type Backend string
 
 const (
-	BackendAuto        Backend = "auto"
-	BackendBwrap       Backend = "bwrap"
-	BackendSandboxExec Backend = "sandbox-exec"
-	BackendDocker      Backend = "docker"
-	BackendNone        Backend = "none"
+	BackendAuto         Backend = "auto"
+	BackendBwrap        Backend = "bwrap"
+	BackendSandboxExec  Backend = "sandbox-exec"
+	BackendAppContainer Backend = "appcontainer"
+	BackendDocker       Backend = "docker"
+	BackendNone         Backend = "none"
 )
 
 // SecretsMode is what a credential found in tool arguments does.
@@ -174,6 +175,11 @@ type Policy struct {
 		// whole list; "item" forwards the unchanged items and holds only the
 		// added or changed ones for approval.
 		Scope LockScope `yaml:"scope"`
+		// Notify, unless false, makes a running jail watch the lock while a
+		// change is pending and tell the client (notifications/tools/
+		// list_changed and the prompts/resources equivalents) once it was
+		// approved out of band, so the client lists again without a restart.
+		Notify *bool `yaml:"notify"`
 	} `yaml:"lock"`
 
 	// ServerRequests decides the requests a server sends to the client:
@@ -237,9 +243,10 @@ type Policy struct {
 		// Backend none is the same thing.
 		Disabled bool `yaml:"disabled"`
 		// Backend picks the isolation: auto (default: bwrap on Linux,
-		// sandbox-exec on macOS), bwrap, sandbox-exec, docker (a container
-		// from Image with the policy's paths bind-mounted; works wherever
-		// docker or podman does, Windows included) or none.
+		// sandbox-exec on macOS, appcontainer on Windows), bwrap,
+		// sandbox-exec, appcontainer, docker (a container from Image with
+		// the policy's paths bind-mounted; works wherever docker or podman
+		// does) or none.
 		Backend Backend `yaml:"backend"`
 		// Image is the container image for the docker backend. Empty: derived
 		// from the launcher (node/npx, bun/bunx, uv/uvx, python), otherwise
@@ -278,6 +285,20 @@ type Policy struct {
 		Headers map[string]string `yaml:"headers"` // values support ${ENV} expansion
 	} `yaml:"server"`
 }
+
+// ImageWarnings says when sandbox.image names a tag rather than a digest:
+// a tag can move, so the container the jail starts tomorrow may not be
+// the one reviewed today. Empty when there is nothing to say.
+func (p *Policy) ImageWarnings() []string {
+	img := p.Sandbox.Image
+	if p.Sandbox.Backend != BackendDocker || img == "" || strings.Contains(img, "@sha256:") {
+		return nil
+	}
+	return []string{"sandbox.image " + img + " is not pinned to a digest: a tag can move; pin it, e.g. " + img + "@sha256:<digest> (docker image inspect --format '{{index .RepoDigests 0}}' " + img + ")"}
+}
+
+// LockNotify reports lock.notify (default true).
+func (p *Policy) LockNotify() bool { return p.Lock.Notify == nil || *p.Lock.Notify }
 
 // Remote reports whether the policy names a remote server (server.url).
 func (p *Policy) Remote() bool { return p.Server.URL != "" }
@@ -511,9 +532,9 @@ func (p *Policy) Validate() error {
 		p.Sandbox.Backend = BackendAuto
 	case BackendNone:
 		p.Sandbox.Disabled = true
-	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendDocker:
+	case BackendAuto, BackendBwrap, BackendSandboxExec, BackendAppContainer, BackendDocker:
 	default:
-		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|docker|none, got %q", p.Sandbox.Backend)
+		return fmt.Errorf("sandbox.backend must be auto|bwrap|sandbox-exec|appcontainer|docker|none, got %q", p.Sandbox.Backend)
 	}
 	if p.Sandbox.Disabled {
 		p.Sandbox.Backend = BackendNone
@@ -1011,6 +1032,7 @@ lock:
   # item – the unchanged items keep working; only the added or changed ones
   #        are held back until approved (for servers whose tool list varies)
   scope: list
+  # notify: false  # do not tell the client (notifications/*/list_changed) when a pending change is approved
 
 # Content heuristics on what the server defines, applied whenever the lock
 # has something new to decide: hidden markup or invisible characters, text
@@ -1028,10 +1050,11 @@ audit:
 
 sandbox:
   disabled: false
-  # auto (bwrap on Linux, sandbox-exec on macOS) | bwrap | sandbox-exec | none
+  # auto (bwrap on Linux, sandbox-exec on macOS, appcontainer on Windows)
+  #   | bwrap | sandbox-exec | appcontainer | none
   # docker: run the server in a container (docker or podman) with the policy's
-  #         paths bind-mounted; the only sandbox on Windows. network allowlist
-  #         needs a Linux host; exec pins do not apply (the image is the pin)
+  #         paths bind-mounted, on any host. network allowlist needs a Linux
+  #         host; exec pins do not apply (the image is the pin)
   backend: auto
   # image: node:22-slim         # docker only; derived from npx/uvx/python when omitted
   env: [PATH, HOME, LANG]       # NAME passes the host's value through, NAME=value sets one

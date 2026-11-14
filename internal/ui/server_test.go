@@ -357,9 +357,40 @@ func TestApprove(t *testing.T) {
 	if code, _ := post(t, ts.URL+"/api/servers/demo/approve", ok); code != http.StatusNotFound {
 		t.Errorf("second approve: %d", code)
 	}
+
+	// a partial approve: only the named item moves, the rest stays pending
+	pend2, _ := lock.Compute(lock.Tools, []json.RawMessage{json.RawMessage(`{"name":"a"}`), json.RawMessage(`{"name":"b"}`), json.RawMessage(`{"name":"c"}`), json.RawMessage(`{"name":"d"}`)})
+	pend2.Held = true
+	if err := lock.SavePending("demo", lock.Tools, pend2); err != nil {
+		t.Fatal(err)
+	}
 	var st State
 	getJSON(t, ts.URL+"/api/state", map[string]string{"Authorization": "Bearer " + tok}, &st)
-	if len(st.Servers) != 1 || st.Servers[0].Pending != nil || st.Servers[0].Lock[0].Count != 2 {
+	if ps := st.Servers[0].Pending; ps == nil || !ps.Sections["tools"].Held || len(ps.Sections["tools"].Added) != 2 {
+		t.Fatalf("held pending state: %+v", st.Servers[0].Pending)
+	}
+	if code, body := postBody(t, ts.URL+"/api/servers/demo/approve", same, `{"only":{"tools":["c"]}}`); code != http.StatusOK {
+		t.Fatalf("partial approve: %d %s", code, body)
+	}
+	f, _ = lock.Load("demo")
+	if _, ok := f.Section(lock.Tools).Items["c"]; !ok || len(f.Section(lock.Tools).Items) != 3 {
+		t.Fatalf("c must be recorded, d not: %+v", f.Section(lock.Tools).Items)
+	}
+	if p, _ := lock.LoadPending("demo"); p == nil {
+		t.Fatal("d must stay pending")
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/demo/approve", same, `{"only":{"tools":["ghost"]}}`); code != http.StatusBadRequest {
+		t.Errorf("unknown item: %d", code)
+	}
+	if code, _ := postBody(t, ts.URL+"/api/servers/demo/approve", same, `{"only":`); code != http.StatusBadRequest {
+		t.Errorf("bad body: %d", code)
+	}
+	if code, body := post(t, ts.URL+"/api/servers/demo/approve", same); code != http.StatusOK { // the rest, as a whole
+		t.Fatalf("approve the rest: %d %s", code, body)
+	}
+	st = State{}
+	getJSON(t, ts.URL+"/api/state", map[string]string{"Authorization": "Bearer " + tok}, &st)
+	if len(st.Servers) != 1 || st.Servers[0].Pending != nil || st.Servers[0].Lock[0].Count != 4 {
 		t.Fatalf("state after approve: %+v", st.Servers)
 	}
 }

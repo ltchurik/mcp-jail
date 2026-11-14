@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/social-preview.jpg" alt="mcp-jail: run any MCP server in a jail. Claude, Cursor or Claude Code talk to mcp-jail over stdio, mcp-jail talks to the MCP server in a jail; egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, dashboard and approvals; Linux bwrap, macOS sandbox-exec, Windows AppContainer, Docker" width="100%">
+</p>
+
 # mcp-jail by [Ľubomír Tchurik](https://lubomirtchurik.sk)
 
 **Run any MCP server in a jail.** Egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, and a local dashboard to watch and approve what your servers do.
@@ -70,7 +74,7 @@ Scanners pattern-match descriptions and produce [mostly false positives](https:/
 go install github.com/ltchurik/mcp-jail/cmd/mcp-jail@latest
 ```
 
-Or download a static binary for Linux or macOS (amd64, arm64) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
+Or download a static binary for Linux, macOS or Windows (amd64, arm64; `.tar.gz`, `.zip` on Windows) from [Releases](https://github.com/ltchurik/mcp-jail/releases); `checksums.txt` is attached. Every archive carries a build provenance attestation, so you can check that it was built by the release workflow from this repository before running it:
 
 ```sh
 gh attestation verify mcp-jail_<version>_linux_amd64.tar.gz --repo ltchurik/mcp-jail
@@ -83,7 +87,7 @@ sudo apt install bubblewrap      # Debian / Ubuntu
 sudo dnf install bubblewrap      # Fedora
 ```
 
-Without bubblewrap, on Windows, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)).
+On Windows the sandbox is an [AppContainer](#windows-sandbox-appcontainer); nothing to install. Without bubblewrap, or for a server whose toolchain you do not want on the host, `sandbox.backend: docker` runs it in a container instead (see [Docker backend](#docker-backend)). `mcp-jail doctor` says what this host can do: bubblewrap and its version, whether unprivileged user namespaces are allowed (and which sysctl closes them), `sandbox-exec`, a docker or podman daemon, and where the state lives; it exits 1 when no sandbox at all is usable.
 
 ## Quick start
 
@@ -140,7 +144,7 @@ mcp-jail report --since 7d      # the same aggregation as text; --json, --csv, -
 
 `mcp-jail show <name>` prints what one jail actually enforces and what the server can still reach: the sandbox kind, every read-only and read-write path (the policy's lists, the server's toolchain prefix, the working directory, the base system paths), the private tmp, mcp-jail's own files masked inside otherwise visible directories, the network mode with its allowlist and whether the OS or only `HTTP_PROXY` enforces it, the variables passed in, the tools default and rule counts, the lock sections with their age and anything pending, and the audit path. `mcp-jail show --policy FILE -- <command>` does the same for a policy that has not run yet; `--json` for scripts.
 
-**Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, a **Stop** button on a running jail (confirmed in place; the jail sends its server SIGTERM and exits, with a `stop` event in the audit log), and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does. Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
+**Overview.** A card per server that ever ran through `mcp-jail run`, running or not: sandbox, network mode, tools default, lock sections, the last 24 hours of decisions, a **Stop** button on a running jail (confirmed in place; the jail sends its server SIGTERM and exits, with a `stop` event in the audit log), and a **Pending change** box when a rug-pull was caught, with an **Approve** button that does what `mcp-jail approve` does (untick an item to leave it pending, like `--only`). Below it the **report** for the chosen range: decisions over time, calls per tool with how many were refused, hosts reached or blocked, the reasons things were refused, lock events, with CSV and JSON export.
 
 **Waiting for your decision.** Headless `ask` calls (Claude Desktop and Cursor have no terminal) appear at the top of the page with their arguments and a countdown. **Allow** sends the call on, **Deny** refuses it, the deadline refuses it. **Always allow** / **Always deny** first write the rule into the policy file, then answer. See [Headless approvals](#headless-approvals).
 
@@ -237,13 +241,14 @@ An `under:` directory only lets a call *through the policy*; the mounts decide w
 | `network.mode: allowlist` (Linux) | Empty network namespace + in-jail shim: fake DNS, transparent :80/:443 (Host/SNI) and an `HTTP_PROXY` on :3128, all relayed through a Unix socket to a host-side filter. Nothing else leaves the jail, see [Hard egress allowlist](#hard-egress-allowlist) | **Hard** |
 | `network.mode: allowlist` (macOS) | `HTTP_PROXY`/`HTTPS_PROXY` → local filtering proxy, and the `sandbox-exec` profile lets the server open **only** that loopback port | **Hard** for the network (HTTP(S) via proxy only); a server that ignores `HTTP_PROXY` has no network at all |
 | `network.mode: allowlist` (`sandbox.disabled`) | the same proxy, nothing stops a server from ignoring it | Cooperative |
+| AppContainer (Windows) | A lowbox process: its token passes an access check only where the container SID is granted too, so the user's files are out of reach except the policy's directories (granted read+execute or modify for the run), the system stays readable, `network.mode: none` is a process without the network capabilities. No PID isolation | **Hard** for the filesystem and `none` / `all`; `allowlist` is refused (the proxy on loopback is unreachable from a container) |
 | `sandbox.backend: docker` | A container from `sandbox.image` with every capability dropped, `no-new-privileges`, a read-only root and a private `/tmp`; the policy's paths bind-mounted at their host paths, nothing else of the host. `network.mode: none` is a container without a network; `allowlist` mounts the egress relay into the container (Linux host only) | **Hard** (the image is the toolchain, so `exec.allow` does not apply) |
 | `filesystem.*` | Linux: bubblewrap bind-mounts; nothing else from `$HOME` is visible. macOS: `sandbox-exec` denies `/Users`, the per-user temp dir and all writes, then re-allows the listed paths | **Hard** |
 | `exec.allow` / `exec.sha256` | Each listed executable is made visible on its own (Linux: a read-only file bind, so its siblings do not exist in the jail; macOS: `process-exec` denied under the hidden trees, re-allowed for the listed files and the shared directories). A pinned digest is checked before start; a mismatch or a missing file refuses to start | **Hard** (the check is on the host before the jail starts: it catches an update, not someone who already writes to that directory) |
 | `tools.rules` | `tools/call` is answered with a JSON-RPC error before it reaches the server | **Hard** |
 | `tools.rules.*.args` | Argument constraints: `under` (absolute path inside a directory, `..` cleaned first) and `host` (URL or `host:port` matching patterns or `network.allow`). A constrained argument that is missing (unless `optional: true`), of the wrong type or out of bounds ⇒ denied | **Hard** (on the request; the sandbox is the backstop for what the server does on its own) |
 | `tools: ask` | Prompt on `/dev/tty`; without a tty, wait up to `ask.timeout` for an open dashboard and/or POST to `ask.webhook` and wait for `{"decision":"allow"}`; nobody to ask, timeout, error or any other answer ⇒ denied | **Hard** |
-| `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list` and `resources/templates/list`, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
+| `lock` | SHA-256 of canonical `tools/list`, `prompts/list`, `resources/list`, `resources/templates/list` and the `initialize` instructions, each locked separately; a mismatch ⇒ that list and its uses (`tools/call`, `prompts/get`, `resources/read`) fail until approved. A use sent before (or racing) its list is held until the list is verified, or refused. `lock.first: review` refuses a list seen for the first time until it is approved too | **Hard** |
 | `tools.secrets` | A `tools/call` argument that looks like a credential (AWS key, private key, JWT, vendor tokens, `Bearer …`, `user:password@`, `password = …`, the value of a secret-looking variable in mcp-jail's environment) is audited, refused or asked about; the value never reaches the log | **Hard** (`deny` / `ask`) or hint (`warn`) |
 | `limits` | Token-bucket budgets: `tools/call` overall and per pattern, bytes of arguments, bytes out to the network (relay / `HTTP_PROXY` / remote POSTs). Over budget ⇒ the call is answered with `-32007` before the server sees it; a connection past its budget ends | **Hard** |
 | `server_requests` | A request the *server* sends to the client (`sampling/createMessage`: generate text under a prompt the server wrote; `elicitation/create`: a form for the user; `roots/list`; `ping`) is decided like a tool call, allow / deny / ask, and a denied one is answered to the server with a JSON-RPC error without reaching the client. Default: `ping` and `roots/list` allowed, everything else denied | **Hard** |
@@ -270,13 +275,15 @@ jail (netns: lo only)                          host (mcp-jail process)
 - What an allowed name resolves to is checked as well (relay and `HTTP_PROXY` filter alike): a loopback, private, link-local or otherwise non-public address is refused unless that literal address is itself in `network.allow`. Whoever controls the DNS of `api.example.com` cannot point the jail at `127.0.0.1` or `10.0.0.0/8` to reach the host's own services.
 - Servers that honour `HTTP_PROXY` use the proxy on :3128 (set automatically, including `NODE_USE_ENV_PROXY=1` for Node's `fetch`). Servers that don't still work for plain HTTP and HTTPS through the transparent listeners.
 - Anything else (raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed) fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
-- Needs unprivileged user namespaces (same requirement as bubblewrap itself) and bubblewrap ≥ 0.5 for `--cap-add`. No `CAP_NET_ADMIN`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
+- Needs unprivileged user namespaces (same requirement as bubblewrap itself) and nothing else: no `CAP_NET_ADMIN`, no `CAP_NET_BIND_SERVICE`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
 
-Inside the jail the shim briefly runs as the user namespace's root so it can bind the privileged ports; the server itself is started in a nested user namespace under your normal uid/gid with no capabilities.
+Nothing inside the jail holds a capability. Before bubblewrap executes the shim it writes `0` into the jail's own `net.ipv4.ip_unprivileged_port_start` (a per-namespace sysctl, written through `--file` while bubblewrap still has `CAP_NET_ADMIN` over the new namespace), so the shim binds :53/:80/:443 as your normal uid and the server is a plain child of it: same uid/gid, nothing privileged to inherit. This holds where bubblewrap is confined by AppArmor and its children get no capabilities at all (Ubuntu 26.04).
 
 ## Docker backend
 
 `sandbox.backend: docker` runs the server in a container (docker, or podman when docker is absent) instead of a namespace or `sandbox-exec` jail. It is the only sandbox on Windows, works on a Linux host without bubblewrap, and keeps a server's toolchain off the host altogether. The policy means the same thing: `filesystem.read_only` / `read_write` become bind mounts at their host paths (tool arguments keep working), `network.mode: none` is a container without a network, `sandbox.env` is the container's environment. The container runs as your uid with every capability dropped, `no-new-privileges`, a read-only root, a private `/tmp` (`exec` allowed, since npx and uvx run what they cache) and `HOME=/tmp`, since the host's home does not exist in the container (`sandbox.env: [HOME=/path]` overrides it). The working directory is shared read-only as under bubblewrap, mcp-jail's own files are masked, and the client sees nothing different. The command is resolved inside the image: write `python3 server.py`, not `/usr/bin/python3 server.py` (`show` and `run` say so when they see a host path).
+
+On a Windows host (Docker Desktop or podman with Linux containers) the same policy applies, with two differences the container forces: a drive path is mounted at `/mnt/<drive>/…` (`C:\work\proj` becomes `/mnt/c/work/proj`, UNC paths are refused), so tool arguments must use the container path, and the server runs as `nobody` (65534), since the host has no uid; `show` and `run` print the mapping note. `network.mode` must be `none` or `all` there, see below.
 
 ```yaml
 sandbox:
@@ -284,7 +291,17 @@ sandbox:
   image: node:22-slim@sha256:…     # omitted: derived from npx / bunx / uvx / python, with a note to pin one
 ```
 
+An image named by tag gets the same warning a floating `npx` package gets (`run` audits it as `policy` / `warn`, `show` and `wrap` repeat it) with the `docker image inspect` line that prints the digest. A missing image is pulled quietly before the server starts, with one log line, instead of a progress bar on stderr while the client waits for the handshake; a pull that fails refuses the start.
+
 `network.mode: allowlist` stays **hard** on a Linux host: the container has no network and the egress relay's socket directory is mounted into it, with mcp-jail as the in-container shim (`net.ipv4.ip_unprivileged_port_start=0` lets it bind :53/:80/:443 unprivileged). Docker Desktop cannot pass a Unix socket into its VM, so on macOS and Windows the allowlist is refused rather than downgraded to a cooperative proxy: use `none`, `all`, or the native sandbox. `exec.allow` does not apply either, the image is the pin. `mcp-jail show` prints the image, `mcp-jail wrap --backend docker [--image …]` writes such policies.
+
+## Windows sandbox (AppContainer)
+
+On Windows `sandbox.backend: auto` (or `appcontainer`) runs the server as an [AppContainer](https://learn.microsoft.com/en-us/windows/win32/secauthz/appcontainer-isolation) process, the isolation Store apps run under. An AppContainer token passes an access check only when both the user *and* the container (or a capability it holds) are granted, so the server sees Windows and Program Files (readable by every package), the policy's directories, and nothing else of yours: not the profile, not the other projects, not mcp-jail's own state. The policy means the same thing as elsewhere: `filesystem.read_only` directories are granted read+execute to the container's SID, `read_write` ones modify, the server's toolchain directory and the working directory read-only as under bubblewrap, and mcp-jail's own files inside a granted directory get a deny entry. `network.mode: none` is a process without the `internetClient` capability, which has no network at all; `all` grants internet and private-network access. The container gets a private home and temp folder (`%LOCALAPPDATA%\Packages\mcp-jail-<name>-<hash>\AC`, where npx and uvx caches survive between runs), and `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP` and `TMP` point there unless `sandbox.env` sets them.
+
+The grants are access-control entries on your directories, written with `icacls` when the jail starts and removed when the server exits; a run that was killed before its cleanup leaves them, and the next start of the same policy removes them first (the list is kept in the container's folder). They name the container's SID only: no other process can use them.
+
+What it does not do: `network.mode: allowlist` is refused, because Windows blocks an AppContainer's loopback connections and the filtering proxy is out of reach (use `none` or `all`, or `sandbox.backend: none` for the cooperative proxy); `exec.allow` is refused, since there is no process-exec filter (list the toolchain directory instead); there is no PID or mount namespace, the server sees the process list. `sandbox.disabled` on Windows still scrubs the environment and ends the server with the jail. `mcp-jail doctor` reports the backend.
 
 ## Headless approvals
 
@@ -326,6 +343,8 @@ limits:
 
 A budget is a token bucket: the whole window's worth is available at once and refills continuously, so a burst up to the limit passes and a steady drip above it does not. A call over budget is answered with error `-32007` before it reaches the server and audited as `deny` with `reason: limit: …`; a refused call is not charged. `egress_bytes` is enforced where the bytes leave: on the Linux relay and the `HTTP_PROXY` filter (so it needs `network.mode: allowlist`), and on every POST to a remote server; a connection that runs out mid-stream ends and the audit shows `kind: net`, `decision: blocked`, `reason: egress_bytes … exceeded`. Units `KB`, `MB`, `GB` are 1024-based; windows take `s`, `m`, `h`, `d`. `mcp-jail show` lists the budgets in force.
 
+The `limits` section is reloaded with `tools`, `ask` and `server_requests` (the dashboard's rule buttons, or a `reload` over the control socket): an existing budget keeps its balance, clamped to the new cap, a new one starts full, a zero rate removes one.
+
 ## Server-initiated requests
 
 MCP is not one-directional. A server may send the client `sampling/createMessage` (please run the model on *this* prompt and give me the answer), `elicitation/create` (please show the user *this* form), `roots/list` or `ping`. Sampling and elicitation are a channel through which a server puts words in the model's mouth or asks the user for a token, in the client's own UI, without any tool having been called. `server_requests` decides them like tool calls, exact method or glob, `allow` / `deny` / `ask` (terminal, dashboard, webhook, as for tools). A denied or unapproved request is answered to the server with a JSON-RPC error (`-32001` / `-32003`) and never reaches the client; the audit log carries it as `kind: server_request`. Without rules, `ping` and `roots/list` are allowed and everything else denied; listing rules replaces those defaults. The section is reloaded with `tools` and `ask`.
@@ -362,9 +381,12 @@ A `tools/call` or `prompts/get` for a name that the verified list does not conta
 ```sh
 mcp-jail diff filesystem      # what changed, per section
 mcp-jail approve filesystem   # accept the new set (or click Approve in the dashboard)
+mcp-jail approve filesystem --only read_file,prompts:summarize   # accept these items, keep the rest pending
 mcp-jail locks                # overview of all locks
 mcp-jail reset filesystem     # forget everything
 ```
+
+A running jail notices the approve (it watches its lock while a change is pending) and sends the client `notifications/tools/list_changed` (or the prompts / resources equivalent), so the client lists again and the approved definitions appear without a restart; the audit log carries `lock`/`notified`. `lock.notify: false` turns that off.
 
 Locks live in `$XDG_CONFIG_HOME/mcp-jail/locks/` (override with `MCP_JAIL_HOME`).
 
@@ -378,7 +400,9 @@ lock:
 
 `mcp-jail wrap` keeps `record` so a freshly wrapped config starts without interaction; switch the policies you care about to `review` afterwards.
 
-**Dynamic tool lists.** Some servers legitimately change their tool list: feature flags, per-account capabilities, plugins discovered at start. Under the default `lock.scope: list` every such change refuses the whole list until it is approved. `lock.scope: item` keeps the lock but changes what a mismatch invalidates: items whose hash still matches are forwarded and usable, while the added or changed ones are filtered out of the list (page by page, so an unapproved description never reaches the model), held as pending, linted, and refused on use with `tool "x" is held for review` until `mcp-jail approve` or the dashboard's **Approve** records the new list. The audit log carries `lock`/`review` with the names; a pure removal is only a `warn`, since nothing new arrived. A first contact still follows `lock.first` for the whole list, and resource templates stay list-scoped because a read URI cannot be matched to one template.
+**Instructions.** The `initialize` result may carry `instructions`, free text the client puts in front of the model before any tool is called. It is locked like a list, as a single item named `instructions`: recorded on first contact (`lock.first` and `lint.lists` apply, so "ignore previous instructions" in there is flagged), and when it changes the `initialize` response is answered with `-32002` and the handshake fails until `mcp-jail approve <name>` (or `--only instructions:instructions`); the client then has to reconnect, there is no `list_changed` for it. A server without instructions records nothing.
+
+**Dynamic tool lists.** Some servers legitimately change their tool list: feature flags, per-account capabilities, plugins discovered at start. Under the default `lock.scope: list` every such change refuses the whole list until it is approved. `lock.scope: item` keeps the lock but changes what a mismatch invalidates: items whose hash still matches are forwarded and usable, while the added or changed ones are filtered out of the list (page by page, so an unapproved description never reaches the model), held as pending, linted, and refused on use with `tool "x" is held for review` until `mcp-jail approve` or the dashboard's **Approve** records the new list, or `mcp-jail approve <name> --only tools:a,prompts:b` (the dashboard: untick what should stay held) records just those items and leaves the rest pending. The audit log carries `lock`/`review` with the names; a pure removal is only a `warn`, since nothing new arrived. A first contact still follows `lock.first` for the whole list, and resource templates stay list-scoped because a read URI cannot be matched to one template.
 
 ```yaml
 lock:
@@ -484,7 +508,7 @@ Pipe it into whatever you already use: `jq`, Loki, Vector, a cron job that mails
 |---|---|---|
 | Linux | bubblewrap (user, PID, IPC, UTS, net namespaces); hard egress allowlist. Or `sandbox.backend: docker` | ✓ |
 | macOS | `sandbox-exec` profile generated from the policy: home and per-user temp hidden except listed paths, writes only to `read_write` and a private `TMPDIR`, network none / proxy-only / all | ✓ |
-| Windows | `sandbox.backend: docker` (Docker Desktop or podman; `network.mode` none or all) | ✓ (WSL for the native sandbox) |
+| Windows | AppContainer: the user's files hidden except the policy's directories (granted for the run), network none / all; no PID isolation, `allowlist` refused. Or `sandbox.backend: docker` (Docker Desktop or podman with Linux containers; host paths at `/mnt/<drive>/…`) | ✓ |
 | Remote server (`server.url`) | none needed: the jail is the only process talking to the server, over a guarded HTTPS client | ✓ |
 
 `sandbox.disabled: true` runs the server without any of this; policy, lock, audit and the dashboard still apply.
@@ -541,7 +565,7 @@ Contributions: [CONTRIBUTING.md](CONTRIBUTING.md). Vulnerabilities: [SECURITY.md
 - [x] `lock.first: review`, `mcp-jail show`, `exec.allow` / `exec.sha256` pins (v0.6)
 - [x] Content lint on definitions and results, `server_requests`, `limits`, `tools.secrets`, launcher pin warnings (v0.7)
 - [x] `lock.scope: item`, Docker / Podman backend (v0.8)
-- [ ] Windows native sandbox (Docker backend covers Windows today)
+- [x] Windows native sandbox via AppContainer (v0.9)
 
 ## Non-goals
 
