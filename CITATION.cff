@@ -14,8 +14,8 @@ identifiers:
 repository-code: "https://github.com/ltchurik/mcp-jail"
 url: "https://lubomirtchurik.sk"
 license: Apache-2.0
-version: 0.9.0
-date-released: 2026-11-11
+version: 0.9.1
+date-released: 2026-11-14
 keywords:
   - mcp
   - model-context-protocol
