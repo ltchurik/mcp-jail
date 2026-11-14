@@ -1,5 +1,44 @@
 # Changelog
 
+## Unreleased
+
+Found by running the reference filesystem server (node, via `npx`) under the macOS sandbox for real rather than through the test suite's python servers. Four of the five are macOS-only.
+
+### Fixed
+
+- macOS: `filesystem.read_write` directories were not writable. SBPL does
+  not simply let a later rule win: a rule for a more specific operation
+  beats one for a broader operation whatever the order, so the global
+  `(deny file-write*)` beat the share's `(allow file*)`. Writes are now
+  re-allowed as `file-write*`; the same applies to the private tmp.
+- macOS: mcp-jail's own state (policy, audit log, locks, control socket)
+  inside a shared directory was readable, for the same reason: the share's
+  `(allow file-read*)` beat the final `(deny file*)`. The final deny now
+  names every operation (`file*`, `file-read*`, `file-write*`,
+  `file-read-metadata`, `network*`).
+- macOS: a share under a hidden tree (`~/projects/x`, something under
+  `$TMPDIR`) could not be resolved: node's `realpath`, npm's cache and the
+  filesystem server's own path check `lstat` every ancestor, and the hidden
+  tree's deny covered metadata too. The directories above every share may
+  now be stat'ed (the directory entry only, nothing in it); listing or
+  reading them stays denied.
+- node servers aborted at start when the client sent mcp-jail's stderr to a
+  file the jail hides (Claude Desktop logs to
+  `~/Library/Logs/Claude/mcp-server-*.log`): node checks fds 0-2 with
+  `fstat` and the macOS sandbox refused it. The server's stderr is now a
+  pipe mcp-jail relays to its own, so no descriptor in the jail has a path.
+- The e2e suite covers these on macOS: writes into `read_write`, denied
+  writes elsewhere, the state inside a share, ancestors, a node server with
+  its stderr in a hidden file.
+
+### Changed
+
+- The npx recipe (README, use case): `~/.npm/_cacache` must be
+  `read_write` too, not `read_only`. npm rewrites its cache index on every
+  lookup and treats a failed rewrite as "not cached", so a read-only cache
+  sent `npx` to the registry for a package it already had; with
+  `network.mode: none` the server never started.
+
 ## v0.9.1 — 2026-11-14
 
 Fix for the hard egress allowlist on Ubuntu 26.04, where AppArmor confines bubblewrap: the jail no longer needs any capability. Also a social preview banner at the top of the README.

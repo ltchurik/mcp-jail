@@ -16,8 +16,7 @@ network:
   mode: none                       # a filesystem server has no business online
 
 filesystem:
-  read_write: [~/projects/webshop]
-  read_only:  [~/.npm/_cacache]    # npx needs its cache; see README "Servers started with npx"
+  read_write: [~/projects/webshop, ~/.npm/_npx, ~/.npm/_cacache]   # npx needs both, writable; see README "Servers started with npx"
   tmp: true
 
 tools:
@@ -60,7 +59,7 @@ sandbox:
     "webshop-fs": {
       "command": "mcp-jail",
       "args": ["run", "--policy", "/home/me/mcp/webshop-fs.yml", "--",
-               "npx", "-y", "@modelcontextprotocol/server-filesystem", "/home/me/projects/webshop"]
+               "npx", "--prefer-offline", "-y", "@modelcontextprotocol/server-filesystem@2.3.0", "/home/me/projects/webshop"]
     }
   }
 }

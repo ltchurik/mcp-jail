@@ -365,7 +365,17 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 	if err != nil {
 		return fail(err)
 	}
-	cmd.Stderr = os.Stderr
+	// The server's stderr goes through a pipe, not our own descriptor. A
+	// client usually points our stderr at a log file in its own directory
+	// (Claude Desktop: ~/Library/Logs/Claude/mcp-server-*.log), which the
+	// jail hides; the macOS sandbox then refuses even fstat on that
+	// descriptor and node aborts at start (PlatformInit checks fds 0-2).
+	// A pipe has no path, so nothing in the jail can object to it.
+	errR, errW, err := os.Pipe()
+	if err != nil {
+		return fail(err)
+	}
+	cmd.Stderr = errW
 	if sin, err = cmd.StdinPipe(); err != nil {
 		return fail(err)
 	}
@@ -373,8 +383,17 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 		return fail(err)
 	}
 	if err := cmd.Start(); err != nil {
+		_ = errW.Close()
+		_ = errR.Close()
 		return fail(fmt.Errorf("start server: %w", err))
 	}
+	_ = errW.Close() // the server and its children hold the write end now
+	errDone := make(chan struct{})
+	go func() {
+		_, _ = io.Copy(os.Stderr, errR)
+		_ = errR.Close()
+		close(errDone)
+	}()
 	stop = func() {
 		_ = cmd.Process.Signal(syscall.SIGTERM)
 		// a server that ignores SIGTERM is killed; the proxy ends when its
@@ -384,7 +403,14 @@ func startLocal(p *policy.Policy, pol string, cmdline []string, al *audit.Logger
 	}
 	wait = func() int {
 		var ee *exec.ExitError
-		if err := cmd.Wait(); errors.As(err, &ee) {
+		err := cmd.Wait()
+		// Flush what the server wrote last; a grandchild that keeps the
+		// pipe open must not keep us here.
+		select {
+		case <-errDone:
+		case <-time.After(2 * time.Second):
+		}
+		if errors.As(err, &ee) {
 			return ee.ExitCode()
 		}
 		return 0

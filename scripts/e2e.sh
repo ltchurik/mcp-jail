@@ -726,6 +726,67 @@ YML
   assert "$OUT" '"home_visible\\": false'
   assert "$(cat "$WORK/audit-cwd.jsonl")" '"kind":"start","reason":"[^"]*cwd not shared \(home\)'
 
+  echo "== sandbox-exec: read_write is writable, the rest is not, our state inside a share stays hidden"
+  mkdir -p "$WORK/rw"
+  cat >"$WORK/w.yml" <<YML
+name: e2e-writes
+network: { mode: none }
+filesystem: { read_only: [$WORK], read_write: [$WORK/rw], tmp: true }
+tools: { default: allow }
+lock: { enabled: false }
+audit: { path: $WORK/audit-w.jsonl }
+YML
+  OUT=$(req "$INIT" | "$BIN" run --quiet --policy "$WORK/w.yml" -- python3 -c '
+import os, sys, tempfile
+W = sys.argv[1]
+def t(name, f):
+    try: f(); print(name, "OK", file=sys.stderr)
+    except OSError as e: print(name, "DENIED", e.errno, file=sys.stderr)
+t("rw-write", lambda: open(W + "/rw/x.txt", "w").write("x"))
+t("ro-write", lambda: open(W + "/y.txt", "w").write("x"))
+t("tmp-write", lambda: tempfile.NamedTemporaryFile(delete=False).write(b"x"))
+t("audit-read", lambda: open(W + "/audit-w.jsonl").read())
+t("policy-read", lambda: open(W + "/w.yml").read())
+t("policy-stat", lambda: os.stat(W + "/w.yml"))
+' "$WORK" 2>&1 >/dev/null)
+  assert "$OUT" '^rw-write OK$'
+  assert "$OUT" '^ro-write DENIED'
+  assert "$OUT" '^tmp-write OK$'
+  assert "$OUT" '^audit-read DENIED'
+  assert "$OUT" '^policy-read DENIED'
+  assert "$OUT" '^policy-stat DENIED'
+  assert "$(cat "$WORK/rw/x.txt")" '^x$'
+
+  echo "== sandbox-exec: the directories above a share can be stat'ed (realpath)"
+  # $WORK lives under the hidden per-user tmp; a server resolving its own
+  # directory walks every ancestor with lstat.
+  WREAL=$(cd "$WORK" && pwd -P)
+  OUT=$(req "$INIT" | "$BIN" run --quiet --policy "$WORK/s.yml" -- python3 -c '
+import os, sys
+w, real = sys.argv[1], sys.argv[2]
+d = os.path.dirname(real)
+while d != "/":
+    os.lstat(d)
+    d = os.path.dirname(d)
+got = os.path.realpath(w, strict=True)
+print("ANCESTORS-OK" if got == real else "REALPATH " + got, file=sys.stderr)
+' "$WORK" "$WREAL" 2>&1 >/dev/null)
+  assert "$OUT" 'ANCESTORS-OK'
+  OUT=$(req "$INIT" | "$BIN" run --quiet --policy "$WORK/s.yml" -- python3 -c 'import os, sys; os.listdir(os.environ["HOME"]); print("LISTED", file=sys.stderr)' 2>&1 >/dev/null || true)
+  refute "$OUT" '^LISTED$'   # stat on the way up, nothing inside
+  assert "$OUT" 'PermissionError'
+
+  if command -v node >/dev/null; then
+    echo "== sandbox-exec: a server's stderr may point at a hidden file (node checks fd 2 at start)"
+    # Clients log our stderr under their own directory (Claude Desktop:
+    # ~/Library/Logs/Claude/mcp-server-*.log), which the jail hides. node
+    # aborts when fstat on fd 2 is refused, so the server gets a pipe.
+    ELOG=$(mktemp "$HOME/.mcp-jail-e2e-stderr.XXXXXX")
+    OUT=$(req "$INIT" | "$BIN" run --quiet --policy "$WORK/s.yml" -- node -e 'console.error("stderr relayed"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0))' 2>"$ELOG") || { echo "FAIL: node under sandbox-exec exited non-zero"; cat "$ELOG"; exit 1; }
+    assert "$(cat "$ELOG")" '^stderr relayed$'
+    rm -f "$ELOG"
+  fi
+
   echo "== sandbox-exec: allowlist reachable only through the proxy"
   cat >"$WORK/a.yml" <<YML
 name: e2e-allowlist
