@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.9.1 — 2026-11-14
+
+Fix for the hard egress allowlist on Ubuntu 26.04, where AppArmor confines bubblewrap: the jail no longer needs any capability. Also a social preview banner at the top of the README.
 
 ### Fixed
 
@@ -15,6 +17,12 @@
   needs `CAP_SYS_ADMIN` over the new namespace, which the same profile
   denies, and it protected nothing once the shim itself is unprivileged.
   Found by CI when `ubuntu-latest` moved to 26.04.
+
+### Changed
+
+- The README opens with a social preview banner (`docs/social-preview.jpg`,
+  1280×640): what mcp-jail does, the stdio path through the jail, the
+  layers and the sandbox per platform.
 
 ## v0.9.0 — 2026-11-11
 

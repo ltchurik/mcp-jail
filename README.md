@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="docs/social-preview.jpg" alt="mcp-jail: run any MCP server in a jail. Claude, Cursor or Claude Code talk to mcp-jail over stdio, mcp-jail talks to the MCP server in a jail; egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, dashboard and approvals; Linux bwrap, macOS sandbox-exec, Windows AppContainer, Docker" width="100%">
+</p>
+
 # mcp-jail by [Ľubomír Tchurik](https://lubomirtchurik.sk)
 
 **Run any MCP server in a jail.** Egress allowlist, filesystem scope, per-tool policy, rug-pull lock, audit log, and a local dashboard to watch and approve what your servers do.
