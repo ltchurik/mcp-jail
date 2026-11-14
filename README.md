@@ -468,12 +468,13 @@ The jail only shows the paths in `filesystem.*`, plus the toolchain the server b
 
 ```yaml
 filesystem:
-  read_write: [~/.npm/_npx]      # npx
-  read_only:  [~/.npm/_cacache]  # npx, optional
-  # read_write: [~/.cache/uv]    # uvx
+  read_write: [~/.npm/_npx, ~/.npm/_cacache]   # npx
+  # read_write: [~/.cache/uv]                  # uvx
 ```
 
-Or install the server once (`npm i -g`) and point `command` at the binary; then nothing beyond the toolchain is needed.
+Both npm directories must be writable, `_cacache` included: npm rewrites its cache index on every lookup and treats a failed rewrite as "not cached", so a read-only cache sends `npx` to the registry even for a package it already has, and with `network.mode: none` the server never starts. Pass `--prefer-offline` as well (`npx --prefer-offline -y @scope/server@1.2.3`): without it `npx` asks the registry first and, with no network, retries for about a minute before it falls back to the cache, longer than most clients wait for `initialize`. The jail's own tmp and the private home keep everything else out of reach.
+
+Or install the server once (`npm i -g`, or `npm i --prefix ~/mcp/servers <pkg>`) and point `command` at the binary (`node ~/mcp/servers/node_modules/.bin/<server>`); then nothing beyond the toolchain and that directory is needed, and nothing resolves a package at start.
 
 **Pin the version.** `npx -y @scope/server` runs whatever version the registry serves *today*; the lock catches a changed tool list and `exec.sha256` a changed file, but neither helps when a new release behaves the same on the surface. `mcp-jail run`, `mcp-jail show` and `mcp-jail wrap` warn about a launcher that resolves its program at start: an npx / bunx / pnpm dlx / yarn dlx package without an exact version (`@latest`, a range or nothing), a uvx / pipx package without `==`, a deno remote module, a docker image without a digest, or `sh -c "curl … | sh"`. The warning shows the pinned form (`@scope/server@1.2.3`, `pkg==1.2.3`, `image@sha256:…`); `wrap` also writes it into the policy header. The audit log carries it as `kind: policy`, `decision: warn`.
 

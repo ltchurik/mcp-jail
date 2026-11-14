@@ -235,8 +235,10 @@ func TestDarwinProfile(t *testing.T) {
 		`(deny file* ` + subpaths(realPaths("/tmp")) + `)`, // /private/tmp on macOS, /tmp elsewhere
 		"(deny file-write*)", `(allow file-write-data (literal "/dev/null"))`,
 		`(allow file-read* (subpath "` + ro + `"))`,
-		`(allow file* (subpath "` + rw + `"))`, // symlink resolved
+		`(allow file* (subpath "` + rw + `"))`,       // symlink resolved
+		`(allow file-write* (subpath "` + rw + `"))`, // file-write* beats a later "allow file*"
 		`(allow file* (subpath "` + priv + `"))`,
+		`(allow file-write* (subpath "` + priv + `"))`,
 		`(allow file-read* (subpath "` + tool + `"))`,
 		"(deny network*)", `(allow network-outbound (remote tcp "localhost:4567"))`,
 		`policy "fs \"quoted\""`,
@@ -255,6 +257,21 @@ func TestDarwinProfile(t *testing.T) {
 	// Re-allows must come after the denies: later rules win in SBPL.
 	if strings.Index(prof, "(deny file-write*)") > strings.Index(prof, `(allow file* (subpath "`+rw+`"))`) {
 		t.Error("write re-allow must follow the global write deny")
+	}
+	// The directories above a share may be stat'ed (realpath walks them),
+	// but not the share itself through that rule and nothing below them.
+	meta := prof[strings.Index(prof, "(allow file-read-metadata "):]
+	meta = meta[:strings.Index(meta, "\n")]
+	for _, want := range []string{`(literal "` + home + `")`, `(literal "` + root + `")`, `(literal "` + filepath.Dir(priv) + `")`} {
+		if !strings.Contains(meta, want) {
+			t.Errorf("ancestor rule missing %q: %s", want, meta)
+		}
+	}
+	if strings.Contains(meta, `"`+rw+`"`) || strings.Contains(meta, `"/"`) || strings.Contains(meta, "subpath") {
+		t.Errorf("ancestor rule must list only the directories above the shares: %s", meta)
+	}
+	if strings.Index(prof, "(allow file-read-metadata ") < strings.Index(prof, `(deny file* (subpath "/Users")`) {
+		t.Error("ancestor rule must follow the hide deny")
 	}
 
 	p.Network.Mode = policy.NetNone
@@ -416,7 +433,10 @@ func TestDarwinProfileProtectsState(t *testing.T) {
 	p.Filesystem.ReadWrite = []string{home}
 	prof := darwinProfile(p, Spec{}, profilePaths{home: home, protect: []string{pol, run, ""}})
 	tail := prof[strings.LastIndex(prof, "(allow "):]
-	for _, want := range []string{`(deny file* (subpath "` + pol + `") (subpath "` + run + `"))`, `(deny network* (subpath "` + pol + `") (subpath "` + run + `"))`} {
+	// Every operation an allow above may have named: a more specific
+	// operation wins over a broader one regardless of order.
+	paths := `(subpath "` + pol + `") (subpath "` + run + `")`
+	for _, want := range []string{"(deny file* " + paths + ")", "(deny file-read* " + paths + ")", "(deny file-write* " + paths + ")", "(deny file-read-metadata " + paths + ")", "(deny network* " + paths + ")"} {
 		if !strings.Contains(tail, want) {
 			t.Errorf("state deny must come after every allow:\n%s", prof)
 		}

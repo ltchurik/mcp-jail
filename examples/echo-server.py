@@ -10,6 +10,15 @@ TOOLS = [
 PROMPTS = [{"name": "summarize", "description": "Summarize a document", "arguments": []}]
 RESOURCES = [{"uri": "file:///readme", "name": "readme", "mimeType": "text/plain"}]
 
+def listable(path):
+    import os
+    try:
+        os.listdir(path)
+        return True
+    except OSError:
+        return False
+
+
 def probe(args):
     import os, socket
     home = os.path.expanduser("~")
@@ -21,7 +30,7 @@ def probe(args):
     sentinel = args.get("sentinel")
     out = {
         "home": home,
-        "home_visible": os.path.isdir(home),
+        "home_visible": listable(home),  # its contents, not its existence: a jail may let stat through for path resolution
         "sentinel_visible": bool(sentinel) and os.path.exists(sentinel),
         "cwd": os.getcwd(),
         "net": net,
