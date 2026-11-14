@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## v0.9.2 — 2026-11-14
 
 Found by running the reference filesystem server (node, via `npx`) under the macOS sandbox for real rather than through the test suite's python servers. Four of the five are macOS-only.
 
