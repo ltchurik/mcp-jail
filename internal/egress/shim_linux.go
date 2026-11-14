@@ -15,13 +15,15 @@ const (
 	prCapAmbientClearAll = 4
 )
 
-// runServer starts the MCP server. The shim runs as uid 0 inside the jail's
-// user namespace (that is what lets it bind :53/:80/:443). The server must
-// not inherit that: it is started in a nested user namespace where our real
-// uid/gid are mapped back onto the jail's root, so it sees its usual ids,
-// owns its usual files and has no capability over the jail's network.
+// runServer starts the MCP server. The shim holds no capability: it binds
+// :53/:80/:443 as our normal uid because the jail's network namespace treats
+// no port as privileged (see sandbox.buildLinux). The server is still started
+// in a nested user namespace with our ids mapped onto themselves, so it sees
+// its usual ids and owns its usual files but shares nothing else with the
+// shim's namespace; mapping one's own id needs no capability.
 func runServer(argv []string, uid, gid int) (int, error) {
-	// Ambient capabilities (bwrap --cap-add) would otherwise survive execve.
+	// Ambient capabilities, should the jail ever hand some down, would
+	// otherwise survive execve.
 	_, _, _ = syscall.Syscall(syscall.SYS_PRCTL, prCapAmbient, prCapAmbientClearAll, 0)
 
 	cmd := exec.Command(argv[0], argv[1:]...)

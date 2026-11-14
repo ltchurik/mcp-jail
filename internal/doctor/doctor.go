@@ -141,7 +141,7 @@ func checkBwrap(h Host, add func(Check)) string {
 		detail += " (" + ver + ")"
 	}
 	if major, minor, ok := semver(ver); ok && (major == 0 && minor < 5) {
-		add(Check{Status: Warn, Name: "bwrap", Detail: detail, Hint: "bubblewrap 0.5 or newer is needed for the hard egress allowlist (--cap-add); network none and all work"})
+		add(Check{Status: Warn, Name: "bwrap", Detail: detail, Hint: "bubblewrap 0.5 or newer is needed for the hard egress allowlist; network none and all work"})
 	} else {
 		add(Check{Status: OK, Name: "bwrap", Detail: detail})
 	}

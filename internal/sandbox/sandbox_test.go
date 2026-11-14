@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -143,7 +144,8 @@ func TestBuildHardEgress(t *testing.T) {
 	}
 	joined := strings.Join(argv, " ")
 	for _, want := range []string{
-		"--unshare-user --uid 0 --gid 0 --cap-add CAP_NET_BIND_SERVICE --cap-add CAP_SETFCAP", "--unshare-net",
+		"--unshare-user --unshare-pid",
+		"--unshare-net --bind /proc/sys/net/ipv4 /proc/sys/net/ipv4 --file 3 /proc/sys/net/ipv4/ip_unprivileged_port_start --ro-bind /proc/sys/net/ipv4 /proc/sys/net/ipv4",
 		"--ro-bind /tmp/relay/resolv.conf /etc/resolv.conf",
 		"--bind /tmp/relay /run/mcp-jail", "--ro-bind /x/mcp-jail /opt/mcp-jail/mcp-jail",
 		"--setenv HTTPS_PROXY http://127.0.0.1:3128",
@@ -155,6 +157,34 @@ func TestBuildHardEgress(t *testing.T) {
 	}
 	if strings.Contains(joined, "--unshare-user-try") || strings.Contains(joined, "--ro-bind-try /etc/resolv.conf") {
 		t.Errorf("hard egress must not use the soft variants: %s", joined)
+	}
+	// Nothing in the jail holds a capability: AppArmor-confined bwrap strips
+	// them anyway, and the unprivileged-port sysctl makes them unnecessary.
+	if strings.Contains(joined, "--cap-add") || strings.Contains(joined, "--uid 0") {
+		t.Errorf("hard egress must not ask for capabilities or root: %s", joined)
+	}
+	// Build hands bwrap the sysctl value on fd 3.
+	cmd, _, err := Build(p, Spec{Command: []string{"/usr/bin/true"}, Egress: eg})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(cmd.ExtraFiles) != 1 {
+		t.Fatalf("ExtraFiles = %v, want the sysctl pipe", cmd.ExtraFiles)
+	}
+	if b, _ := io.ReadAll(cmd.ExtraFiles[0]); string(b) != "0" {
+		t.Errorf("sysctl pipe holds %q, want 0", b)
+	}
+	// The soft modes neither write the sysctl nor carry the pipe.
+	p.Network.Mode = policy.NetNone
+	argv, _, _, err = build(p, Spec{Command: []string{"/usr/bin/true"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if j := strings.Join(argv, " "); strings.Contains(j, "--file") || strings.Contains(j, "/proc/sys/net") {
+		t.Errorf("network none must not touch the sysctl: %s", j)
+	}
+	if cmd, _, err := Build(p, Spec{Command: []string{"/usr/bin/true"}}); err != nil || len(cmd.ExtraFiles) != 0 {
+		t.Errorf("network none: ExtraFiles = %v, err = %v", cmd.ExtraFiles, err)
 	}
 	if !strings.Contains(how, "egress allowlist (hard)") {
 		t.Errorf("how = %q", how)

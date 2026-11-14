@@ -1,5 +1,19 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- The hard egress allowlist on Ubuntu 26.04 (and any system whose AppArmor
+  confines bubblewrap): the shim could not bind :53 (`permission denied`)
+  because the `unpriv_bwrap` profile strips every capability from what
+  bubblewrap runs, `--cap-add` included. The jail no longer asks for any:
+  bubblewrap writes `0` into the jail's own
+  `net.ipv4.ip_unprivileged_port_start` before it executes the shim, which
+  then binds its ports as your normal uid; the server's nested user
+  namespace maps that uid onto itself. Found by CI when `ubuntu-latest`
+  moved to 26.04.
+
 ## v0.9.0 — 2026-11-11
 
 Windows: binaries in every release, the test suite on Windows in CI, the Docker backend working on a Windows host, and a native sandbox: `sandbox.backend: appcontainer` runs the server as an AppContainer process with the policy's directories granted for the run and the network capabilities the mode calls for.
