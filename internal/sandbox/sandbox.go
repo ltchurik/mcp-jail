@@ -50,7 +50,6 @@ type Egress struct {
 	Dir        string   // host directory holding egress.sock and resolv.conf
 	Exe        string   // mcp-jail binary, re-executed inside the jail as the shim
 	Allow      []string // network.allow
-	UID, GID   int      // ids the server runs as inside the jail
 	ResolvConf string   // file to mount as /etc/resolv.conf
 }
 
@@ -60,6 +59,11 @@ const (
 	jailExe    = "/opt/mcp-jail/mcp-jail"
 	// ShimCommand is the hidden subcommand the shim is started with.
 	ShimCommand = "_egress-shim"
+	// sysctlDir holds the per-network-namespace sysctl the hard allowlist
+	// relies on; sysctlFD is the descriptor bwrap reads its new value from
+	// (the first entry of cmd.ExtraFiles).
+	sysctlDir = "/proc/sys/net/ipv4"
+	sysctlFD  = 3
 )
 
 // HardEgress reports whether this run enforces network.allow in the kernel
@@ -79,7 +83,32 @@ func Build(p *policy.Policy, s Spec) (*exec.Cmd, string, error) {
 	}
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir // "" keeps the current directory
+	if HardEgress(p) && filepath.Base(argv[0]) == "bwrap" {
+		// bwrap --file reads the sysctl value from this descriptor.
+		zero, err := zeroFile()
+		if err != nil {
+			return nil, "", err
+		}
+		cmd.ExtraFiles = []*os.File{zero}
+	}
 	return cmd, how, nil
+}
+
+// zeroFile returns the read end of a pipe holding "0", the value bwrap writes
+// into the jail's ip_unprivileged_port_start. It stays open for the life of
+// the process: there is one jail per process.
+func zeroFile() (*os.File, error) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		return nil, err
+	}
+	_, werr := w.WriteString("0")
+	_ = w.Close()
+	if werr != nil {
+		_ = r.Close()
+		return nil, werr
+	}
+	return r, nil
 }
 
 // build is Build without the exec.Cmd, for tests.
@@ -151,13 +180,7 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 	}
 	var args []string
 	if hard {
-		// The shim must bind :53/:80/:443 inside the jail's network namespace.
-		// Only root of the user namespace that owns the netns may do that, so
-		// the jail's root is us. The shim then starts the server in a nested
-		// user namespace mapped back to our ids; mapping root to a non-root id
-		// needs CAP_SETFCAP since Linux 5.12.
-		args = append(args, "--unshare-user", "--uid", "0", "--gid", "0",
-			"--cap-add", "CAP_NET_BIND_SERVICE", "--cap-add", "CAP_SETFCAP")
+		args = append(args, "--unshare-user")
 	} else {
 		args = append(args, "--unshare-user-try")
 	}
@@ -180,7 +203,19 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 	)
 	switch {
 	case hard:
+		// The shim binds :53/:80/:443 inside the jail's network namespace
+		// without holding any capability: while bwrap still has them (it
+		// drops them when it executes the shim) it writes 0 into the
+		// namespace's own ip_unprivileged_port_start, so no port is privileged
+		// there. Capabilities would not do: where bwrap is confined by
+		// AppArmor (Ubuntu 26.04) everything it runs is stripped of them,
+		// --cap-add included. bwrap mounts its /proc/sys read-only, so the
+		// host's view of the directory (procfs resolves net sysctls per
+		// namespace) is bound for the write and covered read-only again.
 		args = append(args, "--unshare-net",
+			"--bind", sysctlDir, sysctlDir,
+			"--file", strconv.Itoa(sysctlFD), sysctlDir+"/ip_unprivileged_port_start",
+			"--ro-bind", sysctlDir, sysctlDir,
 			"--ro-bind", s.Egress.ResolvConf, "/etc/resolv.conf",
 			"--bind", s.Egress.Dir, jailRunDir,
 			"--ro-bind", s.Egress.Exe, jailExe)
@@ -244,8 +279,7 @@ func buildLinux(p *policy.Policy, s Spec, env []string) ([]string, string, strin
 	if hard {
 		args = append(args, jailExe, ShimCommand,
 			"--socket", jailRunDir+"/egress.sock",
-			"--allow", strings.Join(s.Egress.Allow, ","),
-			"--uid", strconv.Itoa(s.Egress.UID), "--gid", strconv.Itoa(s.Egress.GID), "--")
+			"--allow", strings.Join(s.Egress.Allow, ","), "--")
 	}
 	args = append(args, s.Command...)
 

@@ -271,9 +271,9 @@ jail (netns: lo only)                          host (mcp-jail process)
 - What an allowed name resolves to is checked as well (relay and `HTTP_PROXY` filter alike): a loopback, private, link-local or otherwise non-public address is refused unless that literal address is itself in `network.allow`. Whoever controls the DNS of `api.example.com` cannot point the jail at `127.0.0.1` or `10.0.0.0/8` to reach the host's own services.
 - Servers that honour `HTTP_PROXY` use the proxy on :3128 (set automatically, including `NODE_USE_ENV_PROXY=1` for Node's `fetch`). Servers that don't still work for plain HTTP and HTTPS through the transparent listeners.
 - Anything else (raw TCP to an IP, UDP, a port other than 80/443 without the proxy, a host that isn't listed) fails with `ENETUNREACH`, `NXDOMAIN` or a 403.
-- Needs unprivileged user namespaces (same requirement as bubblewrap itself) and bubblewrap ≥ 0.5 for `--cap-add`. No `CAP_NET_ADMIN`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
+- Needs unprivileged user namespaces (same requirement as bubblewrap itself) and nothing else: no `CAP_NET_ADMIN`, no `CAP_NET_BIND_SERVICE`, no pasta/slirp4netns, no iptables. If the jail cannot be set up, mcp-jail refuses to start rather than falling back to the cooperative proxy.
 
-Inside the jail the shim briefly runs as the user namespace's root so it can bind the privileged ports; the server itself is started in a nested user namespace under your normal uid/gid with no capabilities.
+Nothing inside the jail holds a capability. Before bubblewrap executes the shim it writes `0` into the jail's own `net.ipv4.ip_unprivileged_port_start` (a per-namespace sysctl, written through `--file` while bubblewrap still has `CAP_NET_ADMIN` over the new namespace), so the shim binds :53/:80/:443 as your normal uid and the server is a plain child of it: same uid/gid, nothing privileged to inherit. This holds where bubblewrap is confined by AppArmor and its children get no capabilities at all (Ubuntu 26.04).
 
 ## Docker backend
 

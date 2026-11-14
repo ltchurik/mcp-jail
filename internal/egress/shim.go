@@ -268,11 +268,12 @@ func ProxyEnv() map[string]string {
 }
 
 // RunShim is the entry point of `mcp-jail _egress-shim`: bind the listeners,
-// start the server with argv under the given uid/gid, wait, exit like it did.
-// plain starts the server as the shim's own user without a nested user
-// namespace: for a container, where the shim is already unprivileged and
-// binds the low ports thanks to net.ipv4.ip_unprivileged_port_start=0.
-func RunShim(socket string, allow []string, uid, gid int, plain bool, argv []string, logf func(string, ...any)) (int, error) {
+// start the server with argv, wait, exit like it did. The shim holds no
+// capability: the jail's network namespace treats no port as privileged
+// (net.ipv4.ip_unprivileged_port_start=0, set by bwrap or by the container
+// runtime), so it binds the low ports as the normal uid and the server is a
+// plain child with the same ids and nothing privileged to inherit.
+func RunShim(socket string, allow []string, argv []string, logf func(string, ...any)) (int, error) {
 	if len(argv) == 0 {
 		return 2, fmt.Errorf("egress shim: no server command")
 	}
@@ -281,20 +282,16 @@ func RunShim(socket string, allow []string, uid, gid int, plain bool, argv []str
 		return 1, fmt.Errorf("egress shim: %w (is the jail's net namespace ours?)", err)
 	}
 	go s.Serve()
-	var code int
-	var err error
-	if plain {
-		code, err = runPlain(argv)
-	} else {
-		code, err = runServer(argv, uid, gid)
-	}
+	code, err := runServer(argv)
 	s.Close()
 	return code, err
 }
 
-// runPlain starts the server as this process's user, forwarding the
-// termination signals, and returns its exit code.
-func runPlain(argv []string) (int, error) {
+// runServer starts the server as this process's user, forwarding the
+// termination signals, and returns its exit code. When the shim goes, so
+// does the server: it is PID 2's child in a pid namespace bwrap tears down,
+// or the container's.
+func runServer(argv []string) (int, error) {
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Start(); err != nil {
