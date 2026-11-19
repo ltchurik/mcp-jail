@@ -361,7 +361,7 @@ func TestRealServer(t *testing.T) {
 		want := map[string]string{
 			"read_rw": "ok", "write_rw": "ok", "read_ro": "ok",
 			"write_ro": "err", "read_hidden": "err", "write_hidden": "err",
-			"read_state": "err", "list_root": "err", "list_home": "err",
+			"read_state": "err",
 		}
 		for k, w := range want {
 			got := r[k]
@@ -370,6 +370,33 @@ func TestRealServer(t *testing.T) {
 			}
 			if got != w {
 				t.Errorf("%s: want %s, got %q", k, w, got)
+			}
+		}
+		// Listing the directories above a share is denied (macOS, Windows)
+		// or shows the empty skeleton bubblewrap makes for its mounts: the
+		// names of the shares (and of the working directory's parents), never
+		// a file or a sibling.
+		hostFiles := map[string]bool{}
+		if ents, err := os.ReadDir(f.home); err == nil {
+			for _, e := range ents {
+				if !e.IsDir() {
+					hostFiles[e.Name()] = true
+				}
+			}
+		}
+		for _, k := range []string{"list_root", "list_home"} {
+			got := r[k]
+			if strings.HasPrefix(got, "err:") {
+				continue
+			}
+			for _, name := range strings.Split(strings.TrimPrefix(got, "ok:"), ",") {
+				switch {
+				case name == "":
+				case k == "list_root" && name != "webshop" && name != "srv":
+					t.Errorf("%s: %q visible from the jail", k, name)
+				case k == "list_home" && (hostFiles[name] || name == "secret" || name == "state"):
+					t.Errorf("%s: %q visible from the jail", k, name)
+				}
 			}
 		}
 		if t.Failed() {
