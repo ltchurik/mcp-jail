@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- A real-server end-to-end test (`internal/realtest`, run by `make e2e` and
+  CI): the reference filesystem server (node, installed with npm) is driven
+  over JSON-RPC under bubblewrap, `sandbox-exec` and an AppContainer, and a
+  node probe checks what the jail lets the toolchain see. Until now only
+  macOS had been tried with a real server, by hand.
+
 ### Changed
 
 - Release notes also drop "Merge remote-tracking branch" commits (left by `git merge origin/main` on a branch), not only pull-request and branch merges.
