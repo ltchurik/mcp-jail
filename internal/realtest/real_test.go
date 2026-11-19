@@ -388,7 +388,7 @@ const probeJS = `
 const fs = require("fs"), path = require("path");
 const [rw, ro, hidden, audit, root, home] = process.argv.slice(2);
 const r = {};
-const attempt = (k, fn) => { try { fn(); r[k] = "ok"; } catch (e) { r[k] = "err:" + (e.code || e.message); } };
+const attempt = (k, fn) => { try { const v = fn(); r[k] = Array.isArray(v) ? "ok:" + v.join(",") : "ok"; } catch (e) { r[k] = "err:" + (e.code || e.message); } };
 attempt("read_rw", () => fs.readFileSync(path.join(rw, "README.md")));
 attempt("write_rw", () => fs.writeFileSync(path.join(rw, "probe.txt"), "x"));
 attempt("read_ro", () => fs.readFileSync(path.join(ro, "probe.js")));
@@ -398,6 +398,9 @@ attempt("write_hidden", () => fs.writeFileSync(path.join(hidden, "evil.txt"), "x
 attempt("read_state", () => fs.readFileSync(audit));
 attempt("list_root", () => fs.readdirSync(root));
 attempt("list_home", () => fs.readdirSync(home));
+attempt("list_root_parent", () => fs.readdirSync(path.dirname(root)));
+attempt("list_home_parent", () => fs.readdirSync(path.dirname(home)));
+r.env_home = process.env.HOME; r.cwd = process.cwd();
 process.stderr.write("PROBE " + JSON.stringify(r) + "\n");
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(0));
