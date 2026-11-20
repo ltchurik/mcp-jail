@@ -200,7 +200,9 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	for _, n := range RootStatNotes(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
 		logf("appcontainer: %s", n)
 	}
-	for _, a := range statAncestors(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
+	// ... and above the container's own folder: node resolves the path of
+	// the shim it is told to load the same way.
+	for _, a := range statAncestors(append(append([]string{folder}, o.ReadOnly...), o.ReadWrite...), profile) {
 		if systemDir(a) {
 			continue
 		}
