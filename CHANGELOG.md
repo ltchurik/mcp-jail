@@ -1,6 +1,8 @@
 # Changelog
 
-## Unreleased
+## v0.9.3 — 2026-11-20
+
+The reference filesystem server (node) is now driven for real under every sandbox in CI; on Windows that found three things an AppContainer did not let node do.
 
 ### Added
 
