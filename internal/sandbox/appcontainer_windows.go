@@ -182,6 +182,16 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		}
 	}
 	defer acl.removeAll(logf)
+	// The directories above a share: a realpath walks them (node lstats
+	// every component), so the container may read their attributes, and
+	// nothing else. A directory we cannot change (not ours) is reported,
+	// the server starts anyway; only a path through it will fail to resolve.
+	profile, _ := os.UserHomeDir()
+	for _, a := range statAncestors(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
+		if err := acl.attributes(a); err != nil {
+			logf("appcontainer: %v (a path through %s cannot be resolved in the container)", err, a)
+		}
+	}
 
 	caps, freeCaps, err := capabilities(o.Network)
 	if err != nil {
@@ -290,7 +300,9 @@ func containerFolder(sidStr string) (string, error) {
 	return s, nil
 }
 
-// capabilities builds the SID_AND_ATTRIBUTES array for the network mode.
+// capabilities builds the SID_AND_ATTRIBUTES array: the network mode's
+// capabilities and the three that let the container walk a path to a share
+// (see ancestorCapabilities).
 func capabilities(network string) ([]sidAndAttributes, func(), error) {
 	var names []string
 	switch network {
@@ -299,6 +311,9 @@ func capabilities(network string) ([]sidAndAttributes, func(), error) {
 		names = []string{capInternetClient, capPrivateNetworkClientServer}
 	default:
 		return nil, nil, fmt.Errorf("appcontainer: network %q is not none or all", network)
+	}
+	for _, n := range ancestorCapabilities {
+		names = append(names, capabilitySID(n))
 	}
 	var caps []sidAndAttributes
 	free := func() {
@@ -398,6 +413,9 @@ type aclGrants struct {
 	record string
 	Grants []string `json:"grants"`
 	Denies []string `json:"denies"`
+	// Attrs are the directories above a share that got read-attributes
+	// only, so the container can stat them on the way to the share.
+	Attrs []string `json:"attrs"`
 	// Labels are the read_write directories given a Low integrity label:
 	// the container runs at low integrity and could not write to a
 	// medium-integrity directory even with the grant. Restored to Medium.
@@ -445,6 +463,17 @@ func (a *aclGrants) grant(dir, rights string, writable bool) error {
 	return a.save()
 }
 
+// attributes lets the container stat dir (FILE_READ_ATTRIBUTES on the
+// directory itself, not inherited): enough for a realpath to pass through,
+// not to list or read it.
+func (a *aclGrants) attributes(dir string) error {
+	if err := a.icacls(dir, "/grant", "*"+a.sid+":(RA)"); err != nil {
+		return fmt.Errorf("appcontainer: %w", err)
+	}
+	a.Attrs = append(a.Attrs, dir)
+	return a.save()
+}
+
 // deny hides a protected path inside a granted directory: a deny ACE for
 // the container SID, which Windows evaluates before any grant.
 func (a *aclGrants) deny(path string) error {
@@ -461,7 +490,7 @@ func (a *aclGrants) deny(path string) error {
 
 // removeAll takes every recorded ACE back and deletes the record.
 func (a *aclGrants) removeAll(logf func(string, ...any)) {
-	for _, d := range a.Grants {
+	for _, d := range append(append([]string{}, a.Grants...), a.Attrs...) {
 		if err := a.icacls(d, "/remove:g", "*"+a.sid); err != nil {
 			logf("appcontainer: cleanup: %v", err)
 		}
@@ -476,7 +505,7 @@ func (a *aclGrants) removeAll(logf func(string, ...any)) {
 			logf("appcontainer: cleanup: %v", err)
 		}
 	}
-	a.Grants, a.Denies, a.Labels = nil, nil, nil
+	a.Grants, a.Denies, a.Labels, a.Attrs = nil, nil, nil, nil
 	_ = os.Remove(a.record)
 }
 
@@ -487,8 +516,8 @@ func (a *aclGrants) removeStale(logf func(string, ...any)) {
 		return
 	}
 	var old aclGrants
-	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0 || len(old.Labels) > 0) {
-		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies)+len(old.Labels))
+	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0 || len(old.Labels) > 0 || len(old.Attrs) > 0) {
+		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies)+len(old.Labels)+len(old.Attrs))
 		old.sid, old.record = a.sid, a.record
 		old.removeAll(logf)
 	}

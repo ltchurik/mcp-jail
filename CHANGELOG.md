@@ -10,6 +10,17 @@
   node probe checks what the jail lets the toolchain see. Until now only
   macOS had been tried with a real server, by hand.
 
+### Fixed
+
+- Windows: a node server could not start in the AppContainer: node's
+  realpath lstats every component of its script's path, from `C:\` down,
+  and the container was allowed none of them (`EPERM: operation not
+  permitted, lstat 'C:\'`). The container now holds the three Win32 app
+  isolation capabilities Windows grants the least of `C:\`, `C:\Users` and
+  the profile, and the directories between the profile and a share get a
+  read-attributes entry for the run, the counterpart of the macOS fix in
+  v0.9.2. Found by the new real-server test.
+
 ### Changed
 
 - Release notes also drop "Merge remote-tracking branch" commits (left by `git merge origin/main` on a branch), not only pull-request and branch merges.
