@@ -196,23 +196,55 @@ func (j *jail) send(t *testing.T, obj map[string]any) {
 
 func (j *jail) wait(t *testing.T, id float64, timeout time.Duration) map[string]any {
 	t.Helper()
+	m, err := j.waitErr(id, timeout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return m
+}
+
+func (j *jail) waitErr(id float64, timeout time.Duration) (map[string]any, error) {
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		j.mu.Lock()
 		m, ok := j.got[id]
 		j.mu.Unlock()
 		if ok {
-			return m
+			return m, nil
 		}
 		select {
 		case <-j.done:
+			_ = j.cmd.Wait()
 			out, _ := os.ReadFile(j.stderr)
-			t.Fatalf("the jail exited before answering id %v\n%s", id, out)
+			return nil, fmt.Errorf("the jail exited (%v) before answering id %v\n%s", j.cmd.ProcessState, id, out)
 		case <-time.After(100 * time.Millisecond):
 		}
 	}
-	t.Fatalf("no answer to id %v within %s", id, timeout)
-	return nil
+	return nil, fmt.Errorf("no answer to id %v within %s", id, timeout)
+}
+
+// diag runs a command under the policy with one initialize request on
+// stdin, then EOF, and reports everything it produced.
+func (f *fixture) diag(t *testing.T, policy string, args ...string) string {
+	t.Helper()
+	argv := append([]string{"run", "--quiet", "--policy", policy, "--"}, args...)
+	cmd := exec.Command(f.bin, argv...)
+	cmd.Env = append(os.Environ(), "MCP_JAIL_HOME="+filepath.Join(f.state, "home"))
+	cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
+	var buf strings.Builder
+	cmd.Stdout, cmd.Stderr = &buf, &buf
+	done := make(chan error, 1)
+	if err := cmd.Start(); err != nil {
+		return err.Error()
+	}
+	go func() { done <- cmd.Wait() }()
+	select {
+	case err := <-done:
+		return fmt.Sprintf("%v: %v\n%s", args, err, buf.String())
+	case <-time.After(time.Minute):
+		_ = cmd.Process.Kill()
+		return fmt.Sprintf("%v: still running after 1m\n%s", args, buf.String())
+	}
 }
 
 func (j *jail) call(t *testing.T, id float64, tool string, args map[string]any) map[string]any {
@@ -261,7 +293,12 @@ func TestRealServer(t *testing.T) {
 		j.send(t, map[string]any{"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": map[string]any{
 			"protocolVersion": "2025-06-18", "capabilities": map[string]any{},
 			"clientInfo": map[string]any{"name": "realtest", "version": "0"}}})
-		init := j.wait(t, 1, 3*time.Minute)
+		init, err := j.waitErr(1, 3*time.Minute)
+		if err != nil {
+			t.Log(f.diag(t, pol, "node", "--trace-exit", "--trace-uncaught", "--trace-warnings", f.serverJS, f.webshop))
+			t.Log(f.diag(t, pol, "node", "-e", `process.stdout.write("stdout works\n"); process.stderr.write("stderr works\n"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0))`))
+			t.Fatal(err)
+		}
 		if init["error"] != nil {
 			t.Fatalf("initialize: %s", text(init))
 		}
