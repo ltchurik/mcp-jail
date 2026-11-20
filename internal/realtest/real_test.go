@@ -89,7 +89,10 @@ func must(t *testing.T, err error) {
 // y quotes a path for YAML (backslashes stay literal in single quotes).
 func y(s string) string { return "'" + strings.ReplaceAll(s, "'", "''") + "'" }
 
-func (f *fixture) policy(t *testing.T) string {
+func (f *fixture) policy(t *testing.T) string { return f.policyFile(t, "fs.yml", "") }
+
+// policyFile writes the policy as name, with extra sandbox.env entries.
+func (f *fixture) policyFile(t *testing.T, name, extraEnv string) string {
 	t.Helper()
 	p := fmt.Sprintf(`name: real-fs
 network: { mode: none }
@@ -115,9 +118,9 @@ tools:
 lock: { enabled: true }
 audit: { path: %s }
 sandbox:
-  env: [PATH, HOME, LANG]
-`, y(f.webshop), y(f.srv), y(f.webshop), y(f.webshop), y(f.auditPath()))
-	path := filepath.Join(f.state, "fs.yml")
+  env: [PATH, HOME, LANG%s]
+`, y(f.webshop), y(f.srv), y(f.webshop), y(f.webshop), y(f.auditPath()), extraEnv)
+	path := filepath.Join(f.state, name)
 	must(t, os.WriteFile(path, []byte(p), 0o600))
 	return path
 }
@@ -295,8 +298,11 @@ func TestRealServer(t *testing.T) {
 			"clientInfo": map[string]any{"name": "realtest", "version": "0"}}})
 		init, err := j.waitErr(1, 3*time.Minute)
 		if err != nil {
-			t.Log(f.diag(t, pol, "node", "--trace-exit", "--trace-uncaught", "--trace-warnings", f.serverJS, f.webshop))
-			t.Log(f.diag(t, pol, "node", "-e", `process.stdout.write("stdout works\n"); process.stderr.write("stderr works\n"); process.stdin.resume(); process.stdin.on("end", () => process.exit(0))`))
+			t.Log(f.diag(t, pol, "node", "-e", `process.stdin.on("data", d => process.stderr.write("event got " + d.length + "\n")); process.stdin.on("end", () => { process.stderr.write("event end\n"); process.exit(0) }); process.stdin.on("error", e => process.stderr.write("event error " + e + "\n"))`))
+			t.Log(f.diag(t, pol, "node", "-e", `try { const b = require("fs").readFileSync(0); process.stderr.write("sync got " + b.length + "\n") } catch (e) { process.stderr.write("sync error " + e + "\n") }`))
+			t.Log(f.diag(t, pol, "node", "-e", `process.stderr.write("stdin type " + require("tty").isatty(0) + " " + JSON.stringify(require("fs").fstatSync(0)) + "\n")`))
+			dbg := f.policyFile(t, "dbg.yml", ", NODE_DEBUG=net,stream,pipe")
+			t.Log(f.diag(t, dbg, "node", "--trace-exit", "--trace-uncaught", f.serverJS, f.webshop))
 			t.Fatal(err)
 		}
 		if init["error"] != nil {
