@@ -167,6 +167,9 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	acl := &aclGrants{sid: sidStr, record: filepath.Join(folder, aclRecord)}
 	acl.removeStale(logf)
 	for _, d := range o.ReadOnly {
+		if windowsDir(d) { // readable by every package, and not ours to change
+			continue
+		}
 		if err := acl.grant(d, "(OI)(CI)(RX)", false); err != nil {
 			acl.removeAll(logf)
 			return 2, err
@@ -486,12 +489,23 @@ func (a *aclGrants) grant(dir, rights string, writable bool) error {
 	return a.save()
 }
 
-// systemDir reports a directory of Windows itself (Windows, Program Files,
-// ProgramData and their parents), readable by every package already and not
-// ours to change.
+// windowsDir reports a directory inside %SystemRoot%: Windows grants every
+// package read access there (cmd.exe, PowerShell and the system DLLs come
+// from it), and its ACL is not the user's to change.
+func windowsDir(dir string) bool {
+	root := os.Getenv("SystemRoot")
+	return root != "" && (strings.EqualFold(root, dir) || under(strings.ToLower(dir), strings.ToLower(root)))
+}
+
+// systemDir reports a directory of Windows itself or one of its parents
+// (Windows, Program Files, ProgramData): not ours to change, and the
+// ancestors of a toolchain there need no read-attributes entry from us.
 func systemDir(dir string) bool {
-	for _, v := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"} {
-		if d := os.Getenv(v); d != "" && (strings.EqualFold(d, dir) || under(dir, d)) {
+	if windowsDir(dir) {
+		return true
+	}
+	for _, v := range []string{"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"} {
+		if d := os.Getenv(v); d != "" && (strings.EqualFold(d, dir) || under(strings.ToLower(dir), strings.ToLower(d))) {
 			return true
 		}
 	}
