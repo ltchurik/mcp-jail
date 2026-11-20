@@ -298,11 +298,15 @@ func TestRealServer(t *testing.T) {
 			"clientInfo": map[string]any{"name": "realtest", "version": "0"}}})
 		init, err := j.waitErr(1, 3*time.Minute)
 		if err != nil {
-			t.Log(f.diag(t, pol, "node", "-e", `process.stdin.on("data", d => process.stderr.write("event got " + d.length + "\n")); process.stdin.on("end", () => { process.stderr.write("event end\n"); process.exit(0) }); process.stdin.on("error", e => process.stderr.write("event error " + e + "\n"))`))
-			t.Log(f.diag(t, pol, "node", "-e", `try { const b = require("fs").readFileSync(0); process.stderr.write("sync got " + b.length + "\n") } catch (e) { process.stderr.write("sync error " + e + "\n") }`))
-			t.Log(f.diag(t, pol, "node", "-e", `process.stderr.write("stdin type " + require("tty").isatty(0) + " " + JSON.stringify(require("fs").fstatSync(0)) + "\n")`))
-			dbg := f.policyFile(t, "dbg.yml", ", NODE_DEBUG=net,stream,pipe")
-			t.Log(f.diag(t, dbg, "node", "--trace-exit", "--trace-uncaught", f.serverJS, f.webshop))
+			t.Log(f.diag(t, pol, "node", "-p", `process.version + " execArgv=" + process.execArgv + " NODE_OPTIONS=" + process.env.NODE_OPTIONS`))
+			t.Log(f.diag(t, pol, "node", f.serverJS)) // no directory: usage on stderr, exit 1
+			t.Log(f.diag(t, pol, "node", "-e", `process.on("exit", c => process.stderr.write("exit " + c + " " + JSON.stringify(process.getActiveResourcesInfo()) + "\n")); import(process.argv[1]).then(m => process.stderr.write("imported " + Object.keys(m) + "\n"), e => process.stderr.write("import failed " + (e.stack || e) + "\n"))`, f.serverJS, f.webshop))
+			dbg := f.policyFile(t, "dbg.yml", ", NODE_DEBUG=*")
+			out := f.diag(t, dbg, "node", f.serverJS, f.webshop)
+			if lines := strings.Split(out, "\n"); len(lines) > 80 {
+				out = strings.Join(lines[:80], "\n") + "\n..."
+			}
+			t.Log(out)
 			t.Fatal(err)
 		}
 		if init["error"] != nil {
