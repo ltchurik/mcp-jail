@@ -163,3 +163,20 @@ func TestPackagesCanStat(t *testing.T) {
 	home, _ := os.UserHomeDir()
 	t.Logf("root notes on this host: %v", RootStatNotes([]string{dir}, home))
 }
+
+func TestWithNodeRequire(t *testing.T) {
+	shim := `C:\Users\a b\AppData\Local\Packages\x\AC\mcp-jail-realpath.cjs`
+	for _, c := range []struct{ in, want string }{
+		{"", `NODE_OPTIONS=--require "` + shim + `"`},
+		{"NODE_OPTIONS=--max-old-space-size=512", `NODE_OPTIONS=--max-old-space-size=512 --require "` + shim + `"`},
+	} {
+		env := []string{"PATH=x"}
+		if c.in != "" {
+			env = append(env, c.in)
+		}
+		got := withNodeRequire(env, shim)
+		if len(got) != 2 || got[1] != c.want {
+			t.Errorf("%q: %v, want %q", c.in, got, c.want)
+		}
+	}
+}

@@ -24,6 +24,14 @@
   administrator command and `doctor` and the jail's start warn while it is
   missing. A toolchain under `%SystemRoot%` (cmd, PowerShell) no longer
   gets an ACL entry it cannot have. Found by the new real-server test.
+- Windows: node's native `realpath` (`fs.promises.realpath`,
+  `fs.realpath.native`, `fs.realpathSync.native`) fails with EPERM on every
+  path in an AppContainer, since it asks the mount manager, which refuses
+  every package; the reference filesystem server resolves each path it is
+  given and answered every call with that error. Every node process in the
+  container now loads a shim from the container's folder (`NODE_OPTIONS=
+  --require`) that falls back to node's own path walk when the native call
+  is refused, and changes nothing else.
 
 ### Changed
 

@@ -304,7 +304,7 @@ icacls C:\ /grant "*S-1-15-2-1:(RA)"
 icacls C:\Users /grant "*S-1-15-2-1:(RA)"
 ```
 
-`mcp-jail doctor` and the start of a jail say so while it is missing. The container gets a private home and temp folder (`%LOCALAPPDATA%\Packages\mcp-jail-<name>-<hash>\AC`, where npx and uvx caches survive between runs), and `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP` and `TMP` point there unless `sandbox.env` sets them.
+`mcp-jail doctor` and the start of a jail say so while it is missing. One more thing a container may not do is resolve a path the way node's native `realpath` does (it asks the mount manager, which refuses every package), so every node process in the container loads a small shim from the container's folder (`NODE_OPTIONS=--require …\mcp-jail-realpath.cjs`, kept alongside the policy's own options) that answers `fs.promises.realpath`, `fs.realpath.native` and `fs.realpathSync.native` with node's own path walk when the native call is refused, and changes nothing else; the reference filesystem server resolves every path it is given and works with it. The container gets a private home and temp folder (`%LOCALAPPDATA%\Packages\mcp-jail-<name>-<hash>\AC`, where npx and uvx caches survive between runs), and `HOME`, `USERPROFILE`, `APPDATA`, `LOCALAPPDATA`, `TEMP` and `TMP` point there unless `sandbox.env` sets them.
 
 The grants are access-control entries on your directories, written with `icacls` when the jail starts and removed when the server exits; a run that was killed before its cleanup leaves them, and the next start of the same policy removes them first (the list is kept in the container's folder). They name the container's SID only: no other process can use them.
 

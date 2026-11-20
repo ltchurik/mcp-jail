@@ -158,6 +158,11 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// user's profile does not exist for it. An explicit sandbox.env entry wins.
 	env = mergeEnv(env, nil, []string{"USERPROFILE=" + home, "HOME=" + home, "APPDATA=" + filepath.Join(home, "AppData", "Roaming"),
 		"LOCALAPPDATA=" + filepath.Join(home, "AppData", "Local"), "TEMP=" + filepath.Join(folder, "Temp"), "TMP=" + filepath.Join(folder, "Temp")}, passthroughEnv(o.Env), o.Set)
+	shim := filepath.Join(folder, realpathShim)
+	if err := os.WriteFile(shim, []byte(realpathShimJS), 0o600); err != nil {
+		return 2, fmt.Errorf("appcontainer: %w", err)
+	}
+	env = withNodeRequire(env, shim)
 	cwd := o.Cwd
 	if cwd == "" {
 		cwd = home
@@ -214,6 +219,62 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		return 2, err
 	}
 	return code, nil
+}
+
+// realpathShim is the file in the container's folder that NODE_OPTIONS
+// loads into every node process there, see realpathShimJS.
+const realpathShim = "mcp-jail-realpath.cjs"
+
+// realpathShimJS: an AppContainer may not resolve a path the way libuv
+// does it (GetFinalPathNameByHandle asks the mount manager, which refuses
+// every package), so fs.promises.realpath, fs.realpath.native and
+// fs.realpathSync.native fail with EPERM on every path, and a server that
+// resolves paths (the reference filesystem server, on each call) cannot
+// work. node's own JavaScript walk gives the same answer with lstat and
+// readlink per component, which the container may do once the root
+// directories allow it (RootStatNotes). The shim falls back to the walk on
+// EPERM and changes nothing else.
+const realpathShimJS = `// Written by mcp-jail for a node server in an AppContainer. The native
+// realpath (libuv: GetFinalPathNameByHandle) is refused there for every
+// path, with EPERM; node's own path walk (fs.realpathSync, lstat and
+// readlink per component) gives the same answer, so it takes over when
+// that happens and only then. Loaded through NODE_OPTIONS=--require.
+"use strict";
+const fs = require("fs");
+const fsp = require("fs/promises");
+const walk = fs.realpathSync;
+const nativeSync = fs.realpathSync.native;
+const nativeCb = fs.realpath.native;
+const nativeP = fsp.realpath;
+const refused = (e) => e && e.code === "EPERM";
+fs.realpathSync.native = function (p, o) {
+  try { return nativeSync.call(fs, p, o); } catch (e) { if (!refused(e)) throw e; return walk.call(fs, p, o); }
+};
+fs.realpath.native = function (p, o, cb) {
+  if (typeof o === "function") { cb = o; o = undefined; }
+  nativeCb.call(fs, p, o, (e, r) => {
+    if (!refused(e)) return cb(e, r);
+    let v;
+    try { v = walk.call(fs, p, o); } catch (e2) { return cb(e2); }
+    cb(null, v);
+  });
+};
+fsp.realpath = async function (p, o) {
+  try { return await nativeP.call(fsp, p, o); } catch (e) { if (!refused(e)) throw e; return walk.call(fs, p, o); }
+};
+`
+
+// withNodeRequire adds --require shim to NODE_OPTIONS (keeping what the
+// policy set) so every node process in the container loads it.
+func withNodeRequire(env []string, shim string) []string {
+	flag := "--require " + syscall.EscapeArg(shim)
+	for i, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "NODE_OPTIONS") {
+			env[i] = k + "=" + strings.TrimSpace(v+" "+flag)
+			return env
+		}
+	}
+	return append(env, "NODE_OPTIONS="+flag)
 }
 
 // keepTogether puts this process in a job that kills every member when the

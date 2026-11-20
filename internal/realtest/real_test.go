@@ -299,14 +299,6 @@ func TestRealServer(t *testing.T) {
 		}
 		if s := text(j.call(t, 4, "read_text_file", map[string]any{"path": filepath.Join(f.webshop, "README.md")})); s != "webshop readme\n" {
 			t.Errorf("read inside the share: %q", s)
-			probe := filepath.Join(f.srv, "realpath.js")
-			must(t, os.WriteFile(probe, []byte(realpathJS), 0o600))
-			j2 := f.start(t, pol, "node", probe, f.webshop)
-			_ = j2.stdin.Close()
-			<-j2.done
-			_ = j2.cmd.Wait()
-			out, _ := os.ReadFile(j2.stderr)
-			t.Logf("realpath probe:\n%s", out)
 		}
 		// outside the server's root: the server itself refuses, the policy
 		// let it through (read_* is allowed)
@@ -453,24 +445,4 @@ r.env_home = process.env.HOME; r.cwd = process.cwd();
 process.stderr.write("PROBE " + JSON.stringify(r) + "\n");
 process.stdin.resume();
 process.stdin.on("end", () => process.exit(0));
-`
-
-// realpathJS tries every realpath node has on a share (temporary diagnostic).
-const realpathJS = `
-const fs = require("fs"), fsp = require("fs/promises");
-const dir = process.argv[2], file = require("path").join(dir, "README.md");
-const r = {};
-const attempt = (k, fn) => { try { const v = fn(); r[k] = "ok " + v; } catch (e) { r[k] = "err " + (e.code || e.message); } };
-attempt("realpathSync (js walk)", () => fs.realpathSync(dir));
-attempt("realpathSync.native", () => fs.realpathSync.native(dir));
-attempt("realpathSync.native file", () => fs.realpathSync.native(file));
-attempt("realpathSync.native \\\\?\\", () => fs.realpathSync.native("\\\\?\\" + dir));
-attempt("lstat C:\\", () => JSON.stringify(fs.lstatSync("C:\\").isDirectory()));
-attempt("lstat C:\\Users", () => JSON.stringify(fs.lstatSync("C:\\Users").isDirectory()));
-attempt("stat dir", () => JSON.stringify(fs.statSync(dir).isDirectory()));
-attempt("opendir dir", () => fs.readdirSync(dir).join(","));
-fsp.realpath(dir).then(v => { r["fsp.realpath"] = "ok " + v }, e => { r["fsp.realpath"] = "err " + (e.code || e.message) }).then(() => {
-  process.stderr.write(JSON.stringify(r, null, 1) + "\n");
-  process.stdin.resume(); process.stdin.on("end", () => process.exit(0));
-});
 `
