@@ -226,6 +226,26 @@ func (j *jail) waitErr(id float64, timeout time.Duration) (map[string]any, error
 	return nil, fmt.Errorf("no answer to id %v within %s", id, timeout)
 }
 
+// captureStderr runs the command under the policy through cmd.exe with
+// its stderr redirected into a file in the writable share: node's writes to
+// a pipe are asynchronous on Windows and lost when it exits at once.
+func (f *fixture) captureStderr(t *testing.T, policy string, args ...string) string {
+	t.Helper()
+	if runtime.GOOS != "windows" {
+		return ""
+	}
+	errFile := filepath.Join(f.webshop, "err.txt")
+	_ = os.Remove(errFile)
+	argv := append([]string{"run", "--quiet", "--policy", policy, "--", "cmd", "/c"}, args...)
+	argv = append(argv, "2>", errFile)
+	cmd := exec.Command(f.bin, argv...)
+	cmd.Env = append(os.Environ(), "MCP_JAIL_HOME="+filepath.Join(f.state, "home"))
+	cmd.Stdin = strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}` + "\n")
+	out, err := cmd.CombinedOutput()
+	b, _ := os.ReadFile(errFile)
+	return fmt.Sprintf("%v: %v\n%s\n--- server stderr:\n%s", args, err, out, b)
+}
+
 func (j *jail) call(t *testing.T, id float64, tool string, args map[string]any) map[string]any {
 	t.Helper()
 	j.send(t, map[string]any{"jsonrpc": "2.0", "id": id, "method": "tools/call",
@@ -274,6 +294,7 @@ func TestRealServer(t *testing.T) {
 			"clientInfo": map[string]any{"name": "realtest", "version": "0"}}})
 		init, err := j.waitErr(1, 3*time.Minute)
 		if err != nil {
+			t.Log(f.captureStderr(t, pol, "node", f.serverJS, f.webshop))
 			t.Fatal(err)
 		}
 		if init["error"] != nil {
@@ -368,6 +389,7 @@ func TestRealServer(t *testing.T) {
 			}
 		}
 		if line == "" {
+			t.Log(f.captureStderr(t, pol, "node", probe, f.webshop, f.srv, f.secret, f.auditPath(), f.root, f.home))
 			t.Fatalf("no PROBE line from node:\n%s", out)
 		}
 		var r map[string]string
