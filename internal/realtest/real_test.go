@@ -298,15 +298,20 @@ func TestRealServer(t *testing.T) {
 			"clientInfo": map[string]any{"name": "realtest", "version": "0"}}})
 		init, err := j.waitErr(1, 3*time.Minute)
 		if err != nil {
-			t.Log(f.diag(t, pol, "node", "-p", `process.version + " execArgv=" + process.execArgv + " NODE_OPTIONS=" + process.env.NODE_OPTIONS`))
-			t.Log(f.diag(t, pol, "node", f.serverJS)) // no directory: usage on stderr, exit 1
-			t.Log(f.diag(t, pol, "node", "-e", `process.on("exit", c => process.stderr.write("exit " + c + " " + JSON.stringify(process.getActiveResourcesInfo()) + "\n")); import(process.argv[1]).then(m => process.stderr.write("imported " + Object.keys(m) + "\n"), e => process.stderr.write("import failed " + (e.stack || e) + "\n"))`, f.serverJS, f.webshop))
-			dbg := f.policyFile(t, "dbg.yml", ", NODE_DEBUG=*")
-			out := f.diag(t, dbg, "node", f.serverJS, f.webshop)
-			if lines := strings.Split(out, "\n"); len(lines) > 80 {
-				out = strings.Join(lines[:80], "\n") + "\n..."
+			// node's writes to a pipe are asynchronous on Windows and lost when
+			// it exits at once: capture the server's stderr in a file instead.
+			errFile := filepath.Join(f.webshop, "err.txt")
+			for _, extra := range []string{"", ", NODE_DEBUG=*"} {
+				_ = os.Remove(errFile)
+				dbg := f.policyFile(t, "dbg.yml", extra)
+				t.Log(f.diag(t, dbg, "cmd", "/c", "node", f.serverJS, f.webshop, "2>", errFile, "&", "echo", "node exit %ERRORLEVEL%", ">>", errFile))
+				b, _ := os.ReadFile(errFile)
+				lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+				if len(lines) > 60 {
+					lines = append([]string{"..."}, lines[len(lines)-60:]...)
+				}
+				t.Logf("server stderr (NODE_DEBUG%q):\n%s", extra, strings.Join(lines, "\n"))
 			}
-			t.Log(out)
 			t.Fatal(err)
 		}
 		if init["error"] != nil {
