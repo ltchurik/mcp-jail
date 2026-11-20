@@ -15,6 +15,7 @@ lint:
 
 e2e: build
 	./scripts/e2e.sh
+	MCP_JAIL_E2E_REAL=1 go test -count=1 -run TestRealServer ./internal/realtest
 
 install: build
 	install -m 0755 $(BIN) $(HOME)/.local/bin/mcp-jail

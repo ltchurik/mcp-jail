@@ -2,6 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- A real-server end-to-end test (`internal/realtest`, run by `make e2e` and
+  CI): the reference filesystem server (node, installed with npm) is driven
+  over JSON-RPC under bubblewrap, `sandbox-exec` and an AppContainer, and a
+  node probe checks what the jail lets the toolchain see. Until now only
+  macOS had been tried with a real server, by hand.
+
+### Fixed
+
+- Windows: a node server could not start in the AppContainer, or exited
+  quietly: a realpath walks every component of a path from `C:\` down (node
+  does one for its script, the reference filesystem server another to find
+  its entry point) and the container was allowed none of them. The
+  directories between the profile and a share now get a read-attributes
+  entry for the run, the counterpart of the macOS fix in v0.9.2; `C:\` and
+  `C:\Users` are not the user's to change and Windows grants no package
+  anything there (the capability SIDs its own Win32 app isolation uses are
+  refused for an ordinary AppContainer), so README names the one-time
+  administrator command and `doctor` and the jail's start warn while it is
+  missing. A toolchain under `%SystemRoot%` (cmd, PowerShell) no longer
+  gets an ACL entry it cannot have. Found by the new real-server test.
+- Windows: node's native `realpath` (`fs.promises.realpath`,
+  `fs.realpath.native`, `fs.realpathSync.native`) fails with EPERM on every
+  path in an AppContainer, since it asks the mount manager, which refuses
+  every package; the reference filesystem server resolves each path it is
+  given and answered every call with that error. Every node process in the
+  container now loads a shim from the container's folder (`NODE_OPTIONS=
+  --require`) that falls back to node's own path walk when the native call
+  is refused, and changes nothing else.
+
 ### Changed
 
 - Release notes also drop "Merge remote-tracking branch" commits (left by `git merge origin/main` on a branch), not only pull-request and branch merges.

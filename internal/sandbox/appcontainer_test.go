@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sort"
 	"strings"
 	"testing"
 
@@ -109,5 +110,34 @@ func TestExplainAppContainerElsewhere(t *testing.T) {
 	}
 	if _, _, _, err := build(p, Spec{Command: []string{"srv"}}); err == nil || !strings.Contains(err.Error(), "needs Windows") {
 		t.Fatalf("build must refuse: %v", err)
+	}
+}
+
+func TestStatAncestors(t *testing.T) {
+	home := filepath.Join(string(filepath.Separator), "Users", "me")
+	if runtime.GOOS == "windows" {
+		home = `C:\Users\me`
+	}
+	proj := filepath.Join(home, "projects", "webshop")
+	tmp := filepath.Join(home, "AppData", "Local", "Temp", "x", "srv")
+	inside := filepath.Join(proj, "src") // under another share: nothing to add
+	got := statAncestors([]string{proj, tmp, inside}, home)
+	want := []string{
+		filepath.Join(home, "AppData"), filepath.Join(home, "AppData", "Local"), filepath.Join(home, "AppData", "Local", "Temp"),
+		filepath.Join(home, "AppData", "Local", "Temp", "x"), filepath.Join(home, "projects"),
+	}
+	want = append(want, home)
+	sort.Strings(want)
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v\nwant %v", got, want)
+	}
+	// outside the profile: up to, not including, the volume root
+	other := filepath.Join(string(filepath.Separator), "work", "a", "b")
+	if runtime.GOOS == "windows" {
+		other = `D:\work\a\b`
+	}
+	got = statAncestors([]string{other}, home)
+	if want := []string{filepath.Dir(filepath.Dir(other)), filepath.Dir(other)}; strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Errorf("got %v\nwant %v", got, want)
 	}
 }

@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/ltchurik/mcp-jail/internal/sandbox"
 )
 
 // Status of one check.
@@ -103,6 +105,12 @@ func Run(h Host, version string) Report {
 		if path, err := h.Look("icacls"); err == nil {
 			add(Check{Status: OK, Name: "appcontainer", Detail: "Windows AppContainer; grants via " + path})
 			r.Native = "appcontainer"
+			// The volume root and C:\Users: a realpath walks them and no
+			// package may stat them until an administrator allows it.
+			home, _ := os.UserHomeDir()
+			for _, n := range sandbox.RootStatNotes([]string{home}, home) {
+				add(Check{Status: Warn, Name: "appcontainer: root stat", Detail: n})
+			}
 		} else {
 			add(Check{Status: Missing, Name: "appcontainer", Detail: "icacls.exe not found in PATH", Hint: "it ships in %SystemRoot%\\System32; sandbox.backend: docker is the alternative"})
 		}

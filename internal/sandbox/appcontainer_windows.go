@@ -55,14 +55,16 @@ var (
 )
 
 const (
-	procThreadAttributeSecurityCapabilities = 0x00020009
-	extendedStartupInfoPresent              = 0x00080000
-	createUnicodeEnvironment                = 0x00000400
-	startfUseStdHandles                     = 0x00000100
-	jobObjectExtendedLimitInformation       = 9
-	jobObjectLimitKillOnJobClose            = 0x00002000
-	seGroupEnabled                          = 0x00000004
-	hrAlreadyExists                         = 0x800700B7 // HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
+	procThreadAttributeSecurityCapabilities         = 0x00020009
+	procThreadAttributeAllApplicationPackagesPolicy = 0x0002000F
+	processCreationAllApplicationPackagesOptOut     = 0x00000001
+	extendedStartupInfoPresent                      = 0x00080000
+	createUnicodeEnvironment                        = 0x00000400
+	startfUseStdHandles                             = 0x00000100
+	jobObjectExtendedLimitInformation               = 9
+	jobObjectLimitKillOnJobClose                    = 0x00002000
+	seGroupEnabled                                  = 0x00000004
+	hrAlreadyExists                                 = 0x800700B7 // HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
 
 	capInternetClient             = "S-1-15-3-1"
 	capPrivateNetworkClientServer = "S-1-15-3-3"
@@ -156,6 +158,11 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// user's profile does not exist for it. An explicit sandbox.env entry wins.
 	env = mergeEnv(env, nil, []string{"USERPROFILE=" + home, "HOME=" + home, "APPDATA=" + filepath.Join(home, "AppData", "Roaming"),
 		"LOCALAPPDATA=" + filepath.Join(home, "AppData", "Local"), "TEMP=" + filepath.Join(folder, "Temp"), "TMP=" + filepath.Join(folder, "Temp")}, passthroughEnv(o.Env), o.Set)
+	shim := filepath.Join(folder, realpathShim)
+	if err := os.WriteFile(shim, []byte(realpathShimJS), 0o600); err != nil {
+		return 2, fmt.Errorf("appcontainer: %w", err)
+	}
+	env = withNodeRequire(env, shim)
 	cwd := o.Cwd
 	if cwd == "" {
 		cwd = home
@@ -164,6 +171,9 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	acl := &aclGrants{sid: sidStr, record: filepath.Join(folder, aclRecord)}
 	acl.removeStale(logf)
 	for _, d := range o.ReadOnly {
+		if windowsDir(d) { // readable by every package, and not ours to change
+			continue
+		}
 		if err := acl.grant(d, "(OI)(CI)(RX)", false); err != nil {
 			acl.removeAll(logf)
 			return 2, err
@@ -182,6 +192,24 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		}
 	}
 	defer acl.removeAll(logf)
+	// The directories above a share, inside the profile: a realpath walks
+	// them, so the container may read their attributes, and nothing else.
+	// A directory we cannot change is reported, the server starts anyway;
+	// only a path walked through it will fail to resolve.
+	profile, _ := os.UserHomeDir()
+	for _, n := range RootStatNotes(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
+		logf("appcontainer: %s", n)
+	}
+	// ... and above the container's own folder: node resolves the path of
+	// the shim it is told to load the same way.
+	for _, a := range statAncestors(append(append([]string{folder}, o.ReadOnly...), o.ReadWrite...), profile) {
+		if systemDir(a) {
+			continue
+		}
+		if err := acl.attributes(a); err != nil {
+			logf("appcontainer: %v (a path through %s cannot be resolved in the container)", err, a)
+		}
+	}
 
 	caps, freeCaps, err := capabilities(o.Network)
 	if err != nil {
@@ -193,6 +221,62 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		return 2, err
 	}
 	return code, nil
+}
+
+// realpathShim is the file in the container's folder that NODE_OPTIONS
+// loads into every node process there, see realpathShimJS.
+const realpathShim = "mcp-jail-realpath.cjs"
+
+// realpathShimJS: an AppContainer may not resolve a path the way libuv
+// does it (GetFinalPathNameByHandle asks the mount manager, which refuses
+// every package), so fs.promises.realpath, fs.realpath.native and
+// fs.realpathSync.native fail with EPERM on every path, and a server that
+// resolves paths (the reference filesystem server, on each call) cannot
+// work. node's own JavaScript walk gives the same answer with lstat and
+// readlink per component, which the container may do once the root
+// directories allow it (RootStatNotes). The shim falls back to the walk on
+// EPERM and changes nothing else.
+const realpathShimJS = `// Written by mcp-jail for a node server in an AppContainer. The native
+// realpath (libuv: GetFinalPathNameByHandle) is refused there for every
+// path, with EPERM; node's own path walk (fs.realpathSync, lstat and
+// readlink per component) gives the same answer, so it takes over when
+// that happens and only then. Loaded through NODE_OPTIONS=--require.
+"use strict";
+const fs = require("fs");
+const fsp = require("fs/promises");
+const walk = fs.realpathSync;
+const nativeSync = fs.realpathSync.native;
+const nativeCb = fs.realpath.native;
+const nativeP = fsp.realpath;
+const refused = (e) => e && e.code === "EPERM";
+fs.realpathSync.native = function (p, o) {
+  try { return nativeSync.call(fs, p, o); } catch (e) { if (!refused(e)) throw e; return walk.call(fs, p, o); }
+};
+fs.realpath.native = function (p, o, cb) {
+  if (typeof o === "function") { cb = o; o = undefined; }
+  nativeCb.call(fs, p, o, (e, r) => {
+    if (!refused(e)) return cb(e, r);
+    let v;
+    try { v = walk.call(fs, p, o); } catch (e2) { return cb(e2); }
+    cb(null, v);
+  });
+};
+fsp.realpath = async function (p, o) {
+  try { return await nativeP.call(fsp, p, o); } catch (e) { if (!refused(e)) throw e; return walk.call(fs, p, o); }
+};
+`
+
+// withNodeRequire adds --require shim to NODE_OPTIONS (keeping what the
+// policy set) so every node process in the container loads it.
+func withNodeRequire(env []string, shim string) []string {
+	flag := "--require " + syscall.EscapeArg(shim)
+	for i, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "NODE_OPTIONS") {
+			env[i] = k + "=" + strings.TrimSpace(v+" "+flag)
+			return env
+		}
+	}
+	return append(env, "NODE_OPTIONS="+flag)
 }
 
 // keepTogether puts this process in a job that kills every member when the
@@ -398,6 +482,9 @@ type aclGrants struct {
 	record string
 	Grants []string `json:"grants"`
 	Denies []string `json:"denies"`
+	// Attrs are the directories above a share that got read-attributes
+	// only, so the container can stat them on the way to the share.
+	Attrs []string `json:"attrs"`
 	// Labels are the read_write directories given a Low integrity label:
 	// the container runs at low integrity and could not write to a
 	// medium-integrity directory even with the grant. Restored to Medium.
@@ -445,6 +532,40 @@ func (a *aclGrants) grant(dir, rights string, writable bool) error {
 	return a.save()
 }
 
+// windowsDir reports a directory inside %SystemRoot%: Windows grants every
+// package read access there (cmd.exe, PowerShell and the system DLLs come
+// from it), and its ACL is not the user's to change.
+func windowsDir(dir string) bool {
+	root := os.Getenv("SystemRoot")
+	return root != "" && (strings.EqualFold(root, dir) || under(strings.ToLower(dir), strings.ToLower(root)))
+}
+
+// systemDir reports a directory of Windows itself or one of its parents
+// (Windows, Program Files, ProgramData): not ours to change, and the
+// ancestors of a toolchain there need no read-attributes entry from us.
+func systemDir(dir string) bool {
+	if windowsDir(dir) {
+		return true
+	}
+	for _, v := range []string{"ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"} {
+		if d := os.Getenv(v); d != "" && (strings.EqualFold(d, dir) || under(strings.ToLower(dir), strings.ToLower(d))) {
+			return true
+		}
+	}
+	return false
+}
+
+// attributes lets the container stat dir (FILE_READ_ATTRIBUTES on the
+// directory itself, not inherited): enough for a realpath to pass through,
+// not to list or read it.
+func (a *aclGrants) attributes(dir string) error {
+	if err := a.icacls(dir, "/grant", "*"+a.sid+":(RA)"); err != nil {
+		return fmt.Errorf("appcontainer: %w", err)
+	}
+	a.Attrs = append(a.Attrs, dir)
+	return a.save()
+}
+
 // deny hides a protected path inside a granted directory: a deny ACE for
 // the container SID, which Windows evaluates before any grant.
 func (a *aclGrants) deny(path string) error {
@@ -461,7 +582,7 @@ func (a *aclGrants) deny(path string) error {
 
 // removeAll takes every recorded ACE back and deletes the record.
 func (a *aclGrants) removeAll(logf func(string, ...any)) {
-	for _, d := range a.Grants {
+	for _, d := range append(append([]string{}, a.Grants...), a.Attrs...) {
 		if err := a.icacls(d, "/remove:g", "*"+a.sid); err != nil {
 			logf("appcontainer: cleanup: %v", err)
 		}
@@ -476,7 +597,7 @@ func (a *aclGrants) removeAll(logf func(string, ...any)) {
 			logf("appcontainer: cleanup: %v", err)
 		}
 	}
-	a.Grants, a.Denies, a.Labels = nil, nil, nil
+	a.Grants, a.Denies, a.Labels, a.Attrs = nil, nil, nil, nil
 	_ = os.Remove(a.record)
 }
 
@@ -487,8 +608,8 @@ func (a *aclGrants) removeStale(logf func(string, ...any)) {
 		return
 	}
 	var old aclGrants
-	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0 || len(old.Labels) > 0) {
-		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies)+len(old.Labels))
+	if json.Unmarshal(b, &old) == nil && (len(old.Grants) > 0 || len(old.Denies) > 0 || len(old.Labels) > 0 || len(old.Attrs) > 0) {
+		logf("appcontainer: removing %d stale grant(s) left by a previous run", len(old.Grants)+len(old.Denies)+len(old.Labels)+len(old.Attrs))
 		old.sid, old.record = a.sid, a.record
 		old.removeAll(logf)
 	}

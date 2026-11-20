@@ -143,3 +143,40 @@ func TestMergeEnv(t *testing.T) {
 		t.Fatalf("mergeEnv = %v", got)
 	}
 }
+
+// TestPackagesCanStat grants ALL APPLICATION PACKAGES read-attributes on a
+// temp directory and sees the check flip; it changes an ACL, so CI only.
+func TestPackagesCanStat(t *testing.T) {
+	if os.Getenv("CI") == "" && os.Getenv("MCP_JAIL_APPCONTAINER_TEST") == "" {
+		t.Skip("changes an ACL; set MCP_JAIL_APPCONTAINER_TEST=1")
+	}
+	dir := t.TempDir()
+	if ok, err := packagesCanStat(dir); err != nil || ok {
+		t.Fatalf("before: ok=%v err=%v", ok, err)
+	}
+	if out, err := exec.Command(icaclsPath(), dir, "/grant", "*"+allApplicationPackages+":(RA)", "/Q").CombinedOutput(); err != nil {
+		t.Fatalf("icacls: %v\n%s", err, out)
+	}
+	if ok, err := packagesCanStat(dir); err != nil || !ok {
+		t.Fatalf("after: ok=%v err=%v", ok, err)
+	}
+	home, _ := os.UserHomeDir()
+	t.Logf("root notes on this host: %v", RootStatNotes([]string{dir}, home))
+}
+
+func TestWithNodeRequire(t *testing.T) {
+	shim := `C:\Users\a b\AppData\Local\Packages\x\AC\mcp-jail-realpath.cjs`
+	for _, c := range []struct{ in, want string }{
+		{"", `NODE_OPTIONS=--require "` + shim + `"`},
+		{"NODE_OPTIONS=--max-old-space-size=512", `NODE_OPTIONS=--max-old-space-size=512 --require "` + shim + `"`},
+	} {
+		env := []string{"PATH=x"}
+		if c.in != "" {
+			env = append(env, c.in)
+		}
+		got := withNodeRequire(env, shim)
+		if len(got) != 2 || got[1] != c.want {
+			t.Errorf("%q: %v, want %q", c.in, got, c.want)
+		}
+	}
+}

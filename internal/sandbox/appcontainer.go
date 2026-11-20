@@ -5,6 +5,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"runtime"
 	"sort"
 	"strings"
@@ -141,6 +142,38 @@ func appContainerArgv(exe string, o AppContainerOptions) []string {
 // run after a crash finds the grants its predecessor left and the profile's
 // folder (npm and uv caches) is reused; at most 64 characters, from the
 // set Windows accepts.
+// statAncestors lists the directories above the granted ones that the
+// container may stat (the directory entry only, nothing in it) so a path
+// to a share can be walked: everything between a share and the profiles
+// root. The volume root and the profiles root (`C:\`, `C:\Users`) are left
+// out: they are not the user's to change, and Windows grants no package
+// anything there (the capability SIDs its own Win32 app isolation uses on
+// them are refused for an ordinary AppContainer); RootStatNotes says so.
+func statAncestors(granted []string, home string) []string {
+	profiles := filepath.Dir(filepath.Clean(home))
+	seen := map[string]bool{}
+	for _, d := range granted {
+		for a := filepath.Dir(filepath.Clean(d)); a != filepath.Dir(a) && a != profiles; a = filepath.Dir(a) {
+			seen[a] = true
+		}
+	}
+	var out []string
+	for a := range seen {
+		covered := false
+		for _, d := range granted {
+			if under(a, filepath.Clean(d)) {
+				covered = true
+				break
+			}
+		}
+		if !covered {
+			out = append(out, a)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
 func profileName(policyName string) string {
 	var b strings.Builder
 	for _, r := range policyName {
