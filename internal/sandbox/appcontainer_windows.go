@@ -55,14 +55,16 @@ var (
 )
 
 const (
-	procThreadAttributeSecurityCapabilities = 0x00020009
-	extendedStartupInfoPresent              = 0x00080000
-	createUnicodeEnvironment                = 0x00000400
-	startfUseStdHandles                     = 0x00000100
-	jobObjectExtendedLimitInformation       = 9
-	jobObjectLimitKillOnJobClose            = 0x00002000
-	seGroupEnabled                          = 0x00000004
-	hrAlreadyExists                         = 0x800700B7 // HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
+	procThreadAttributeSecurityCapabilities         = 0x00020009
+	procThreadAttributeAllApplicationPackagesPolicy = 0x0002000F
+	processCreationAllApplicationPackagesOptOut     = 0x00000001
+	extendedStartupInfoPresent                      = 0x00080000
+	createUnicodeEnvironment                        = 0x00000400
+	startfUseStdHandles                             = 0x00000100
+	jobObjectExtendedLimitInformation               = 9
+	jobObjectLimitKillOnJobClose                    = 0x00002000
+	seGroupEnabled                                  = 0x00000004
+	hrAlreadyExists                                 = 0x800700B7 // HRESULT_FROM_WIN32(ERROR_ALREADY_EXISTS)
 
 	capInternetClient             = "S-1-15-3-1"
 	capPrivateNetworkClientServer = "S-1-15-3-3"
@@ -188,6 +190,9 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// the server starts anyway; only a path through it will fail to resolve.
 	profile, _ := os.UserHomeDir()
 	for _, a := range statAncestors(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
+		if systemDir(a) {
+			continue
+		}
 		if err := acl.attributes(a); err != nil {
 			logf("appcontainer: %v (a path through %s cannot be resolved in the container)", err, a)
 		}
@@ -198,7 +203,7 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		return 2, err
 	}
 	defer freeCaps()
-	code, err := startLowbox(exe, o.Command, env, cwd, sid, caps)
+	code, err := startLowbox(exe, o.Command, env, cwd, sid, caps, false)
 	if err != nil {
 		return 2, err
 	}
@@ -312,9 +317,6 @@ func capabilities(network string) ([]sidAndAttributes, func(), error) {
 	default:
 		return nil, nil, fmt.Errorf("appcontainer: network %q is not none or all", network)
 	}
-	for _, n := range ancestorCapabilities {
-		names = append(names, capabilitySID(n))
-	}
 	var caps []sidAndAttributes
 	free := func() {
 		for _, c := range caps {
@@ -335,14 +337,18 @@ func capabilities(network string) ([]sidAndAttributes, func(), error) {
 
 // startLowbox creates the server process in the AppContainer, with this
 // process's standard handles, and waits for it.
-func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps []sidAndAttributes) (int, error) {
+func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps []sidAndAttributes, lpac bool) (int, error) {
 	var size uintptr
-	_, _, _ = procInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
+	n := uintptr(1)
+	if lpac {
+		n = 2
+	}
+	_, _, _ = procInitializeProcThreadAttributeList.Call(0, n, 0, uintptr(unsafe.Pointer(&size)))
 	if size == 0 {
 		return 0, errors.New("appcontainer: InitializeProcThreadAttributeList: no size")
 	}
 	list := make([]byte, size)
-	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0])), 1, 0, uintptr(unsafe.Pointer(&size))); r == 0 {
+	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0])), n, 0, uintptr(unsafe.Pointer(&size))); r == 0 {
 		return 0, fmt.Errorf("appcontainer: InitializeProcThreadAttributeList: %w", e)
 	}
 	defer func() { _, _, _ = procDeleteProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0]))) }()
@@ -353,6 +359,13 @@ func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps [
 	if r, _, e := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0, procThreadAttributeSecurityCapabilities,
 		uintptr(unsafe.Pointer(&sc)), unsafe.Sizeof(sc), 0, 0); r == 0 {
 		return 0, fmt.Errorf("appcontainer: UpdateProcThreadAttribute: %w", e)
+	}
+	optOut := uint32(processCreationAllApplicationPackagesOptOut)
+	if lpac {
+		if r, _, e := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0, procThreadAttributeAllApplicationPackagesPolicy,
+			uintptr(unsafe.Pointer(&optOut)), unsafe.Sizeof(optOut), 0, 0); r == 0 {
+			return 0, fmt.Errorf("appcontainer: UpdateProcThreadAttribute (LPAC): %w", e)
+		}
 	}
 
 	for _, h := range []syscall.Handle{syscall.Stdin, syscall.Stdout, syscall.Stderr} {
@@ -461,6 +474,18 @@ func (a *aclGrants) grant(dir, rights string, writable bool) error {
 		a.Labels = append(a.Labels, dir)
 	}
 	return a.save()
+}
+
+// systemDir reports a directory of Windows itself (Windows, Program Files,
+// ProgramData and their parents), readable by every package already and not
+// ours to change.
+func systemDir(dir string) bool {
+	for _, v := range []string{"SystemRoot", "ProgramFiles", "ProgramFiles(x86)", "ProgramW6432", "ProgramData"} {
+		if d := os.Getenv(v); d != "" && (strings.EqualFold(d, dir) || under(dir, d)) {
+			return true
+		}
+	}
+	return false
 }
 
 // attributes lets the container stat dir (FILE_READ_ATTRIBUTES on the
