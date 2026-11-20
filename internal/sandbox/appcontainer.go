@@ -147,8 +147,8 @@ func appContainerArgv(exe string, o AppContainerOptions) []string {
 // to a share can be walked: everything between a share and the profiles
 // root. The volume root and the profiles root (`C:\`, `C:\Users`) are left
 // out: they are not the user's to change, and Windows grants no package
-// anything there (the capability SIDs its own app isolation uses on them
-// are refused for an ordinary AppContainer), see nodeOptions.
+// anything there (the capability SIDs its own Win32 app isolation uses on
+// them are refused for an ordinary AppContainer); RootStatNotes says so.
 func statAncestors(granted []string, home string) []string {
 	profiles := filepath.Dir(filepath.Clean(home))
 	seen := map[string]bool{}

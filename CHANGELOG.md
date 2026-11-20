@@ -12,16 +12,18 @@
 
 ### Fixed
 
-- Windows: a node server could not start in the AppContainer: node's
-  module loader lstats every component of its script's path, from `C:\`
-  down, and the container is allowed none of them (`EPERM: operation not
-  permitted, lstat 'C:\'`). Windows grants no package anything on `C:\` or
-  `C:\Users` (the capability SIDs its own Win32 app isolation uses there
-  are refused for an ordinary AppContainer), so the container runs node with
-  `--preserve-symlinks --preserve-symlinks-main` (`NODE_OPTIONS`, appended
-  to the policy's own), and the directories between the profile and a share
-  get a read-attributes entry for the run, the counterpart of the macOS fix
-  in v0.9.2. Found by the new real-server test.
+- Windows: a node server could not start in the AppContainer, or exited
+  quietly: a realpath walks every component of a path from `C:\` down (node
+  does one for its script, the reference filesystem server another to find
+  its entry point) and the container was allowed none of them. The
+  directories between the profile and a share now get a read-attributes
+  entry for the run, the counterpart of the macOS fix in v0.9.2; `C:\` and
+  `C:\Users` are not the user's to change and Windows grants no package
+  anything there (the capability SIDs its own Win32 app isolation uses are
+  refused for an ordinary AppContainer), so README names the one-time
+  administrator command and `doctor` and the jail's start warn while it is
+  missing. A toolchain under `%SystemRoot%` (cmd, PowerShell) no longer
+  gets an ACL entry it cannot have. Found by the new real-server test.
 
 ### Changed
 

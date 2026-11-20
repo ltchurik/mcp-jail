@@ -158,7 +158,6 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// user's profile does not exist for it. An explicit sandbox.env entry wins.
 	env = mergeEnv(env, nil, []string{"USERPROFILE=" + home, "HOME=" + home, "APPDATA=" + filepath.Join(home, "AppData", "Roaming"),
 		"LOCALAPPDATA=" + filepath.Join(home, "AppData", "Local"), "TEMP=" + filepath.Join(folder, "Temp"), "TMP=" + filepath.Join(folder, "Temp")}, passthroughEnv(o.Env), o.Set)
-	env = withNodeOptions(env)
 	cwd := o.Cwd
 	if cwd == "" {
 		cwd = home
@@ -193,6 +192,9 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// A directory we cannot change is reported, the server starts anyway;
 	// only a path walked through it will fail to resolve.
 	profile, _ := os.UserHomeDir()
+	for _, n := range RootStatNotes(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
+		logf("appcontainer: %s", n)
+	}
 	for _, a := range statAncestors(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
 		if systemDir(a) {
 			continue
@@ -212,28 +214,6 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		return 2, err
 	}
 	return code, nil
-}
-
-// nodeOptions is what node needs to start in an AppContainer: its module
-// loader resolves the real path of the script and of every package by
-// lstat'ing each component from the volume root down, and the container
-// cannot stat `C:\` or `C:\Users` (see statAncestors). With these flags the
-// loader takes paths as given; the policy's own NODE_OPTIONS come first.
-const nodeOptions = "--preserve-symlinks --preserve-symlinks-main"
-
-// withNodeOptions appends nodeOptions to the environment's NODE_OPTIONS
-// (or sets it), so node's loader does not walk `C:\`.
-func withNodeOptions(env []string) []string {
-	for i, kv := range env {
-		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "NODE_OPTIONS") {
-			if strings.Contains(v, "--preserve-symlinks") {
-				return env
-			}
-			env[i] = k + "=" + strings.TrimSpace(v+" "+nodeOptions)
-			return env
-		}
-	}
-	return append(env, "NODE_OPTIONS="+nodeOptions)
 }
 
 // keepTogether puts this process in a job that kills every member when the

@@ -144,19 +144,22 @@ func TestMergeEnv(t *testing.T) {
 	}
 }
 
-func TestWithNodeOptions(t *testing.T) {
-	for _, c := range []struct{ in, want string }{
-		{"", "NODE_OPTIONS=" + nodeOptions},
-		{"NODE_OPTIONS=--max-old-space-size=512", "NODE_OPTIONS=--max-old-space-size=512 " + nodeOptions},
-		{"NODE_OPTIONS=--preserve-symlinks", "NODE_OPTIONS=--preserve-symlinks"},
-	} {
-		env := []string{"PATH=x"}
-		if c.in != "" {
-			env = append(env, c.in)
-		}
-		got := withNodeOptions(env)
-		if len(got) != 2 || got[1] != c.want {
-			t.Errorf("%q: %v, want %q", c.in, got, c.want)
-		}
+// TestPackagesCanStat grants ALL APPLICATION PACKAGES read-attributes on a
+// temp directory and sees the check flip; it changes an ACL, so CI only.
+func TestPackagesCanStat(t *testing.T) {
+	if os.Getenv("CI") == "" && os.Getenv("MCP_JAIL_APPCONTAINER_TEST") == "" {
+		t.Skip("changes an ACL; set MCP_JAIL_APPCONTAINER_TEST=1")
 	}
+	dir := t.TempDir()
+	if ok, err := packagesCanStat(dir); err != nil || ok {
+		t.Fatalf("before: ok=%v err=%v", ok, err)
+	}
+	if out, err := exec.Command(icaclsPath(), dir, "/grant", "*"+allApplicationPackages+":(RA)", "/Q").CombinedOutput(); err != nil {
+		t.Fatalf("icacls: %v\n%s", err, out)
+	}
+	if ok, err := packagesCanStat(dir); err != nil || !ok {
+		t.Fatalf("after: ok=%v err=%v", ok, err)
+	}
+	home, _ := os.UserHomeDir()
+	t.Logf("root notes on this host: %v", RootStatNotes([]string{dir}, home))
 }
