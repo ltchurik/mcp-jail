@@ -113,23 +113,6 @@ func TestExplainAppContainerElsewhere(t *testing.T) {
 	}
 }
 
-func TestCapabilitySID(t *testing.T) {
-	// values Windows itself put on C:\, C:\Users and a profile (seen with icacls)
-	want := map[string]string{
-		"isolatedWin32-volumeRootMinimal":   "S-1-15-3-65536-1888954469-739942743-1668119174-2468466756-4239452838-1296943325-355587736-700089176",
-		"isolatedWin32-profilesRootMinimal": "S-1-15-3-65536-4045685566-1323397456-4055816110-285687253-194181-4019357623-1925838800-191844675",
-		"isolatedWin32-userProfileMinimal":  "S-1-15-3-65536-599108337-2355189375-1353122160-3480128286-3345335107-485756383-4087318168-230526575",
-	}
-	if len(ancestorCapabilities) != len(want) {
-		t.Fatalf("ancestorCapabilities = %v", ancestorCapabilities)
-	}
-	for _, name := range ancestorCapabilities {
-		if got := capabilitySID(name); got != want[name] {
-			t.Errorf("%s: %s, want %s", name, got, want[name])
-		}
-	}
-}
-
 func TestStatAncestors(t *testing.T) {
 	home := filepath.Join(string(filepath.Separator), "Users", "me")
 	if runtime.GOOS == "windows" {

@@ -158,6 +158,7 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 	// user's profile does not exist for it. An explicit sandbox.env entry wins.
 	env = mergeEnv(env, nil, []string{"USERPROFILE=" + home, "HOME=" + home, "APPDATA=" + filepath.Join(home, "AppData", "Roaming"),
 		"LOCALAPPDATA=" + filepath.Join(home, "AppData", "Local"), "TEMP=" + filepath.Join(folder, "Temp"), "TMP=" + filepath.Join(folder, "Temp")}, passthroughEnv(o.Env), o.Set)
+	env = withNodeOptions(env)
 	cwd := o.Cwd
 	if cwd == "" {
 		cwd = home
@@ -184,10 +185,10 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		}
 	}
 	defer acl.removeAll(logf)
-	// The directories above a share: a realpath walks them (node lstats
-	// every component), so the container may read their attributes, and
-	// nothing else. A directory we cannot change (not ours) is reported,
-	// the server starts anyway; only a path through it will fail to resolve.
+	// The directories above a share, inside the profile: a realpath walks
+	// them, so the container may read their attributes, and nothing else.
+	// A directory we cannot change is reported, the server starts anyway;
+	// only a path walked through it will fail to resolve.
 	profile, _ := os.UserHomeDir()
 	for _, a := range statAncestors(append(append([]string{}, o.ReadOnly...), o.ReadWrite...), profile) {
 		if systemDir(a) {
@@ -203,11 +204,33 @@ func RunAppContainer(o AppContainerOptions, logf func(string, ...any)) (int, err
 		return 2, err
 	}
 	defer freeCaps()
-	code, err := startLowbox(exe, o.Command, env, cwd, sid, caps, false)
+	code, err := startLowbox(exe, o.Command, env, cwd, sid, caps)
 	if err != nil {
 		return 2, err
 	}
 	return code, nil
+}
+
+// nodeOptions is what node needs to start in an AppContainer: its module
+// loader resolves the real path of the script and of every package by
+// lstat'ing each component from the volume root down, and the container
+// cannot stat `C:\` or `C:\Users` (see statAncestors). With these flags the
+// loader takes paths as given; the policy's own NODE_OPTIONS come first.
+const nodeOptions = "--preserve-symlinks --preserve-symlinks-main"
+
+// withNodeOptions appends nodeOptions to the environment's NODE_OPTIONS
+// (or sets it), so node's loader does not walk `C:\`.
+func withNodeOptions(env []string) []string {
+	for i, kv := range env {
+		if k, v, ok := strings.Cut(kv, "="); ok && strings.EqualFold(k, "NODE_OPTIONS") {
+			if strings.Contains(v, "--preserve-symlinks") {
+				return env
+			}
+			env[i] = k + "=" + strings.TrimSpace(v+" "+nodeOptions)
+			return env
+		}
+	}
+	return append(env, "NODE_OPTIONS="+nodeOptions)
 }
 
 // keepTogether puts this process in a job that kills every member when the
@@ -305,9 +328,7 @@ func containerFolder(sidStr string) (string, error) {
 	return s, nil
 }
 
-// capabilities builds the SID_AND_ATTRIBUTES array: the network mode's
-// capabilities and the three that let the container walk a path to a share
-// (see ancestorCapabilities).
+// capabilities builds the SID_AND_ATTRIBUTES array for the network mode.
 func capabilities(network string) ([]sidAndAttributes, func(), error) {
 	var names []string
 	switch network {
@@ -337,18 +358,14 @@ func capabilities(network string) ([]sidAndAttributes, func(), error) {
 
 // startLowbox creates the server process in the AppContainer, with this
 // process's standard handles, and waits for it.
-func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps []sidAndAttributes, lpac bool) (int, error) {
+func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps []sidAndAttributes) (int, error) {
 	var size uintptr
-	n := uintptr(1)
-	if lpac {
-		n = 2
-	}
-	_, _, _ = procInitializeProcThreadAttributeList.Call(0, n, 0, uintptr(unsafe.Pointer(&size)))
+	_, _, _ = procInitializeProcThreadAttributeList.Call(0, 1, 0, uintptr(unsafe.Pointer(&size)))
 	if size == 0 {
 		return 0, errors.New("appcontainer: InitializeProcThreadAttributeList: no size")
 	}
 	list := make([]byte, size)
-	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0])), n, 0, uintptr(unsafe.Pointer(&size))); r == 0 {
+	if r, _, e := procInitializeProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0])), 1, 0, uintptr(unsafe.Pointer(&size))); r == 0 {
 		return 0, fmt.Errorf("appcontainer: InitializeProcThreadAttributeList: %w", e)
 	}
 	defer func() { _, _, _ = procDeleteProcThreadAttributeList.Call(uintptr(unsafe.Pointer(&list[0]))) }()
@@ -359,13 +376,6 @@ func startLowbox(exe string, argv, env []string, cwd string, sid uintptr, caps [
 	if r, _, e := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0, procThreadAttributeSecurityCapabilities,
 		uintptr(unsafe.Pointer(&sc)), unsafe.Sizeof(sc), 0, 0); r == 0 {
 		return 0, fmt.Errorf("appcontainer: UpdateProcThreadAttribute: %w", e)
-	}
-	optOut := uint32(processCreationAllApplicationPackagesOptOut)
-	if lpac {
-		if r, _, e := procUpdateProcThreadAttribute.Call(uintptr(unsafe.Pointer(&list[0])), 0, procThreadAttributeAllApplicationPackagesPolicy,
-			uintptr(unsafe.Pointer(&optOut)), unsafe.Sizeof(optOut), 0, 0); r == 0 {
-			return 0, fmt.Errorf("appcontainer: UpdateProcThreadAttribute (LPAC): %w", e)
-		}
 	}
 
 	for _, h := range []syscall.Handle{syscall.Stdin, syscall.Stdout, syscall.Stderr} {

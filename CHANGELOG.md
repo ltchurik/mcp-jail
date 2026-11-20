@@ -13,13 +13,15 @@
 ### Fixed
 
 - Windows: a node server could not start in the AppContainer: node's
-  realpath lstats every component of its script's path, from `C:\` down,
-  and the container was allowed none of them (`EPERM: operation not
-  permitted, lstat 'C:\'`). The container now holds the three Win32 app
-  isolation capabilities Windows grants the least of `C:\`, `C:\Users` and
-  the profile, and the directories between the profile and a share get a
-  read-attributes entry for the run, the counterpart of the macOS fix in
-  v0.9.2. Found by the new real-server test.
+  module loader lstats every component of its script's path, from `C:\`
+  down, and the container is allowed none of them (`EPERM: operation not
+  permitted, lstat 'C:\'`). Windows grants no package anything on `C:\` or
+  `C:\Users` (the capability SIDs its own Win32 app isolation uses there
+  are refused for an ordinary AppContainer), so the container runs node with
+  `--preserve-symlinks --preserve-symlinks-main` (`NODE_OPTIONS`, appended
+  to the policy's own), and the directories between the profile and a share
+  get a read-attributes entry for the run, the counterpart of the macOS fix
+  in v0.9.2. Found by the new real-server test.
 
 ### Changed
 

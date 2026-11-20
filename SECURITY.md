@@ -43,9 +43,7 @@ Known limitations, documented in the README and **not** vulnerabilities:
 - the Windows AppContainer scopes the filesystem (through access-control
   entries for the container SID on the policy's directories, present while
   the jail runs) and the network (none / all) only: no PID isolation,
-  Windows and Program Files stay readable, the top-level names of the
-  system volume and of `C:\Users` are listable (the `isolatedWin32-*Minimal`
-  capabilities), `allowlist` is refused there
+  Windows and Program Files stay readable, `allowlist` is refused there
 - a hostile MCP *client* is out of scope
 
 ## Supported versions

@@ -11,10 +11,8 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 	"time"
-	"unsafe"
 )
 
 func cmdExe() string {
@@ -146,60 +144,19 @@ func TestMergeEnv(t *testing.T) {
 	}
 }
 
-// TestCapabilityVariants (temporary experiment): which capability SIDs
-// CreateProcess accepts for a lowbox, and what each lets cmd.exe list.
-func TestCapabilityVariants(t *testing.T) {
-	if os.Getenv("CI") == "" && os.Getenv("MCP_JAIL_APPCONTAINER_TEST") == "" {
-		t.Skip("creates an AppContainer profile")
-	}
-	var rnd [4]byte
-	_, _ = rand.Read(rnd[:])
-	profile := profileName("caps-" + hex.EncodeToString(rnd[:]))
-	t.Cleanup(func() { _ = deleteProfile(profile) })
-	sid, sidStr, err := ensureProfile(profile)
-	if err != nil {
-		t.Fatal(err)
-	}
-	folder, err := containerFolder(sidStr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	home, _ := os.UserHomeDir()
-	lpacAppExperience := "S-1-15-3-1024-1502825166-1963708345-2616377461-2562897074-4192028372-3968301570-1997628692-1435953622"
-	iso := []string{capabilitySID("isolatedWin32-volumeRootMinimal"), capabilitySID("isolatedWin32-profilesRootMinimal"), capabilitySID("isolatedWin32-userProfileMinimal")}
-	variants := []struct {
-		name string
-		lpac bool
-		sids []string
-	}{
-		{"none", false, nil},
-		{"userProfileMinimal", false, iso[2:]},
-		{"lpacAppExperience", false, []string{lpacAppExperience}},
-		{"three isolatedWin32", false, iso},
-		{"internetClient+userProfileMinimal", false, []string{capInternetClient, iso[2]}},
-		{"LPAC lpacAppExperience", true, []string{lpacAppExperience}},
-		{"LPAC lpacAppExperience+three", true, append([]string{lpacAppExperience}, iso...)},
-		{"LPAC none", true, nil},
-	}
-	env := mergeEnv(windowsBaseEnv(), nil, []string{"USERPROFILE=" + home})
-	for _, v := range variants {
-		var caps []sidAndAttributes
-		for _, n := range v.sids {
-			s16, _ := syscall.UTF16PtrFromString(n)
-			var p uintptr
-			if r, _, e := procConvertStringSidToSid.Call(uintptr(unsafe.Pointer(s16)), uintptr(unsafe.Pointer(&p))); r == 0 {
-				t.Fatalf("%s: %v", n, e)
-			}
-			caps = append(caps, sidAndAttributes{Sid: p, Attributes: seGroupEnabled})
+func TestWithNodeOptions(t *testing.T) {
+	for _, c := range []struct{ in, want string }{
+		{"", "NODE_OPTIONS=" + nodeOptions},
+		{"NODE_OPTIONS=--max-old-space-size=512", "NODE_OPTIONS=--max-old-space-size=512 " + nodeOptions},
+		{"NODE_OPTIONS=--preserve-symlinks", "NODE_OPTIONS=--preserve-symlinks"},
+	} {
+		env := []string{"PATH=x"}
+		if c.in != "" {
+			env = append(env, c.in)
 		}
-		for _, probe := range []string{"exit 0", `dir C:\`, `dir C:\Users`, `dir "` + home + `"`, `dir C:\Windows`, `dir "C:\Program Files"`} {
-			code, err := startLowbox(cmdExe(), []string{cmdExe(), "/c", probe + " >" + filepath.Join(folder, "out.txt") + " 2>&1"}, env, folder, sid, caps, v.lpac)
-			out, _ := os.ReadFile(filepath.Join(folder, "out.txt"))
-			first := strings.SplitN(strings.TrimSpace(string(out)), "\n", 2)[0]
-			t.Logf("%-34s %-28s code=%d err=%v  %s", v.name, probe, code, err, first)
-			if err != nil {
-				break
-			}
+		got := withNodeOptions(env)
+		if len(got) != 2 || got[1] != c.want {
+			t.Errorf("%q: %v, want %q", c.in, got, c.want)
 		}
 	}
 }

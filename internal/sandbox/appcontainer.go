@@ -2,16 +2,13 @@ package sandbox
 
 import (
 	"crypto/sha256"
-	"encoding/binary"
 	"encoding/hex"
 	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
 	"sort"
-	"strconv"
 	"strings"
-	"unicode/utf16"
 
 	"github.com/ltchurik/mcp-jail/internal/policy"
 )
@@ -145,43 +142,13 @@ func appContainerArgv(exe string, o AppContainerOptions) []string {
 // run after a crash finds the grants its predecessor left and the profile's
 // folder (npm and uv caches) is reused; at most 64 characters, from the
 // set Windows accepts.
-// ancestorCapabilities are the Win32 app isolation capabilities Windows
-// itself grants the least a process needs to walk a path: stat and list
-// the volume root (`C:\`, rights S,RD,X,RA), list the profiles root
-// (`C:\Users`, S,RD,X) and traverse the user's profile (S,X). Without them
-// an AppContainer cannot even lstat `C:\`, and node's realpath (which
-// lstats every component of the main module's path, and so does its ESM
-// loader) aborts before the server starts.
-var ancestorCapabilities = []string{
-	"isolatedWin32-volumeRootMinimal",
-	"isolatedWin32-profilesRootMinimal",
-	"isolatedWin32-userProfileMinimal",
-}
-
-// capabilitySID derives a named capability's SID the way Windows'
-// DeriveCapabilitySidsFromName does for this family: S-1-15-3-65536-
-// followed by the SHA-256 of the upper-cased UTF-16 name as eight
-// little-endian words.
-func capabilitySID(name string) string {
-	u := utf16.Encode([]rune(strings.ToUpper(name)))
-	b := make([]byte, 2*len(u))
-	for i, c := range u {
-		binary.LittleEndian.PutUint16(b[2*i:], c)
-	}
-	h := sha256.Sum256(b)
-	parts := make([]string, 8)
-	for i := range parts {
-		parts[i] = strconv.FormatUint(uint64(binary.LittleEndian.Uint32(h[4*i:])), 10)
-	}
-	return "S-1-15-3-65536-" + strings.Join(parts, "-")
-}
-
 // statAncestors lists the directories above the granted ones that the
-// container must be able to stat (the directory entry only, nothing in
-// it) so a path to a share can be resolved: everything between a share and
-// the profiles root, except the volume root and the profiles root, which
-// Windows covers through ancestorCapabilities, and the granted directories
-// themselves.
+// container may stat (the directory entry only, nothing in it) so a path
+// to a share can be walked: everything between a share and the profiles
+// root. The volume root and the profiles root (`C:\`, `C:\Users`) are left
+// out: they are not the user's to change, and Windows grants no package
+// anything there (the capability SIDs its own app isolation uses on them
+// are refused for an ordinary AppContainer), see nodeOptions.
 func statAncestors(granted []string, home string) []string {
 	profiles := filepath.Dir(filepath.Clean(home))
 	seen := map[string]bool{}
